@@ -1,0 +1,3682 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Единый журнал · Свободное Пространство</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F7F4EC;
+    --paper-line:#E4DCC8;
+    --card:#FFFFFF;
+    --ink:#2A2822;
+    --ink-soft:#79735F;
+    --indigo:#33507D;
+    --indigo-dark:#20344F;
+    --ochre:#B9862B;
+    --ochre-bg:#FBF0DC;
+    --teal:#3E7D6B;
+    --teal-bg:#E4F1EC;
+    --brick:#A23E3E;
+    --brick-bg:#F7E7E3;
+    --plum:#7C5C9E;
+    --plum-bg:#EEE7F3;
+    --sky:#2E8B9E;
+    --sky-bg:#E1F0F2;
+    --shadow: 0 1px 2px rgba(42,40,34,0.06), 0 8px 24px rgba(42,40,34,0.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;overflow-x:hidden;}
+  body{
+    background:
+      linear-gradient(var(--paper) 0%, var(--paper) 100%);
+    background-color:var(--paper);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+    padding:28px 20px 80px;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace; font-variant-numeric: tabular-nums;}
+  .wrap{max-width:980px;margin:0 auto;}
+  header.top{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:22px;flex-wrap:wrap;gap:10px;}
+  .brand{display:flex;flex-direction:column;gap:2px;}
+  .brand .eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);}
+  .brand h1{font-family:'Space Grotesk',sans-serif;font-size:26px;margin:0;color:var(--indigo-dark);font-weight:700;}
+  .icon-btn{
+    background:var(--card);border:1px solid var(--paper-line);border-radius:8px;
+    width:36px;height:36px;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;color:var(--ink-soft);font-size:16px;box-shadow:var(--shadow);
+  }
+  .icon-btn:hover{color:var(--indigo);border-color:var(--indigo);}
+  .bell-badge{
+    position:absolute;top:-5px;right:-5px;background:var(--brick);color:#fff;font-family:'IBM Plex Mono',monospace;
+    font-size:10px;font-weight:600;min-width:16px;height:16px;border-radius:20px;display:flex;align-items:center;justify-content:center;padding:0 3px;
+  }
+  .reminder-panel{
+    position:absolute;right:20px;top:64px;width:340px;max-width:90vw;background:#fff;border:1px solid var(--paper-line);
+    border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,0.18);z-index:60;padding:18px;max-height:70vh;overflow-y:auto;
+  }
+  .reminder-panel h4{font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:14px 0 8px;}
+  .reminder-panel h4:first-child{margin-top:0;}
+  .search-cat-label{font-family:'Space Grotesk',sans-serif;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:16px 0 8px;}
+  .search-cat-label:first-child{margin-top:0;}
+  .reminder-row{display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid #F0EDE3;font-size:13px;cursor:pointer;}
+  .reminder-row:last-child{border-bottom:none;}
+  .reminder-row:hover{color:var(--indigo);}
+  .reminder-row .tag{font-size:11px;color:var(--ink-soft);white-space:nowrap;}
+  .reminder-empty{color:var(--ink-soft);font-size:13px;padding:6px 0;}
+  .notify-toggle{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--paper-line);font-size:12.5px;}
+  .switch{position:relative;width:38px;height:22px;flex:none;}
+  .switch input{opacity:0;width:0;height:0;}
+  .slider{position:absolute;inset:0;background:var(--paper-line);border-radius:20px;cursor:pointer;transition:.15s;}
+  .slider:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.15s;}
+  .switch input:checked + .slider{background:var(--indigo);}
+  .switch input:checked + .slider:before{transform:translateX(16px);}
+
+  /* Folder tabs */
+  nav.tabs{display:flex;gap:4px;margin-top:6px;}
+  .tab-btn{
+    font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14.5px;
+    padding:11px 20px 12px;border:1px solid var(--paper-line);border-bottom:none;
+    background:#EFEADA;color:var(--ink-soft);cursor:pointer;
+    border-radius:10px 10px 0 0;position:relative;top:1px;
+    transition:background .15s,color .15s;
+  }
+  .tab-btn .count{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;background:rgba(42,40,34,0.08);
+    padding:1px 6px;border-radius:20px;margin-left:7px;
+  }
+  .tab-btn.active{background:var(--card);color:var(--indigo-dark);border-color:var(--paper-line);z-index:2;}
+  .tab-btn:not(.active):hover{background:#F3EFE1;color:var(--ink);}
+
+  main.card{
+    background:var(--card);border:1px solid var(--paper-line);border-radius:0 12px 12px 12px;
+    box-shadow:var(--shadow);min-height:420px;padding:26px;position:relative;
+  }
+  .ruled{
+    background-image: repeating-linear-gradient(var(--card) 0 37px, var(--paper-line) 37px 38px);
+  }
+
+  h2.section-title{font-family:'Space Grotesk',sans-serif;font-size:19px;margin:0 0 4px;color:var(--indigo-dark);}
+  .subtitle{color:var(--ink-soft);font-size:13.5px;margin:0 0 20px;}
+
+  .row-between{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:16px;}
+  .btn{
+    font-family:'Inter',sans-serif;font-weight:600;font-size:13.5px;padding:9px 16px;
+    border-radius:8px;border:1px solid var(--indigo);background:var(--indigo);color:#fff;cursor:pointer;
+  }
+  .btn:hover{background:var(--indigo-dark);}
+  .btn.ghost{background:transparent;color:var(--indigo);border:1px solid var(--paper-line);}
+  .btn.ghost:hover{border-color:var(--indigo);}
+  .btn.danger{background:transparent;color:var(--brick);border:1px solid var(--brick-bg);}
+  .btn.danger:hover{background:var(--brick-bg);}
+  .btn.small{padding:5px 10px;font-size:12.5px;border-radius:6px;}
+  select,input,textarea{
+    font-family:'Inter',sans-serif;font-size:13.5px;padding:8px 10px;border-radius:7px;
+    border:1px solid var(--paper-line);background:#fff;color:var(--ink);width:100%;
+  }
+  select.invalid,input.invalid,textarea.invalid{
+    border-color:var(--brick);box-shadow:0 0 0 3px var(--brick-bg);
+  }
+  input.mono,textarea.mono{font-family:'IBM Plex Mono',monospace;}
+  label{font-size:12px;color:var(--ink-soft);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.03em;}
+  .field{margin-bottom:14px;}
+  .field-row{display:flex;gap:12px;flex-wrap:wrap;}
+  .field-row .field{flex:1;min-width:150px;}
+
+  /* Calendar */
+  .cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+  .cal-head .month-label{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:16px;color:var(--indigo-dark);}
+  .cal-nav{display:flex;gap:6px;}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;}
+  .cal-dow{font-size:11px;text-align:center;color:var(--ink-soft);font-weight:600;text-transform:uppercase;padding-bottom:4px;}
+  .cal-cell{
+    border:1px solid var(--paper-line);border-radius:8px;height:84px;padding:6px;cursor:pointer;
+    background:#fff;display:flex;flex-direction:column;gap:3px;transition:border-color .15s;overflow:hidden;
+  }
+  .cal-cell:hover{border-color:var(--indigo);}
+  .cal-cell.empty{background:transparent;border:none;cursor:default;}
+  .cal-cell.today{background:var(--ochre-bg);border-color:var(--ochre);}
+  .cal-daynum{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);flex:none;}
+  .cal-cell.today .cal-daynum{color:var(--ochre);font-weight:600;}
+  .cal-evt{
+    font-size:10.5px;background:var(--indigo);color:#fff;border-radius:4px;padding:2px 5px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:none;max-width:100%;
+  }
+  .cal-evt.cat-planning{background:var(--teal);}
+  .cal-evt.cat-meeting{background:var(--ochre);}
+  .cal-evt.cat-personal{background:var(--plum);}
+  .cal-evt.cat-vacation{background:var(--sky);}
+  .cal-evt.cal-task{
+    background:#fff;border:1.5px dashed var(--ink-soft);font-weight:600;
+  }
+  .cal-evt.cal-task.is-done{text-decoration:line-through;opacity:.6;border-style:solid;}
+  .cal-more{font-size:10px;color:var(--ink-soft);flex:none;}
+
+  /* Lists */
+  .item-list{display:flex;flex-direction:column;gap:10px;}
+  .item{
+    border:1px solid var(--paper-line);border-radius:9px;padding:12px 14px;display:flex;
+    justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;
+  }
+  .item .main{flex:1;min-width:0;}
+  .item .title{font-weight:600;font-size:14.5px;margin-bottom:3px;overflow-wrap:anywhere;word-break:break-word;}
+  .item .meta{font-size:12px;color:var(--ink-soft);display:flex;gap:10px;flex-wrap:wrap;overflow-wrap:anywhere;}
+  .item .desc{font-size:13px;color:var(--ink-soft);margin-top:5px;overflow-wrap:anywhere;word-break:break-word;}
+  .item .actions{display:flex;gap:6px;flex-wrap:wrap;}
+  .task-check{width:19px;height:19px;flex:none;margin-top:2px;accent-color:var(--teal);cursor:pointer;}
+  .task-check-locked{opacity:.45;cursor:not-allowed;}
+  .task-toggle{
+    background:none;border:none;padding:0 5px 0 0;margin:0;cursor:pointer;color:var(--ink-soft);
+    font-size:11px;vertical-align:middle;line-height:1;
+  }
+  .task-toggle:hover{color:var(--indigo);}
+  .item.is-done .title{text-decoration:line-through;color:var(--ink-soft);}
+  .item.is-done{opacity:.72;}
+  .badge{font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap;}
+  .badge.progress{background:var(--ochre-bg);color:var(--ochre);}
+  .badge.done{background:var(--teal-bg);color:var(--teal);}
+  .badge.prio-high{background:var(--brick-bg);color:var(--brick);}
+  .badge.prio-med{background:var(--ochre-bg);color:var(--ochre);}
+  .badge.prio-low{background:var(--paper-line);color:var(--ink-soft);}
+
+  .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
+  .filters select{width:auto;min-width:150px;}
+  .cat-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;}
+  .cat-chip{
+    display:flex;align-items:center;gap:7px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12.5px;
+    padding:6px 13px;border-radius:20px;border:1px solid var(--paper-line);background:#fff;color:var(--ink);
+    cursor:pointer;transition:opacity .15s,border-color .15s;
+  }
+  .cat-chip .dot{width:9px;height:9px;border-radius:50%;flex:none;}
+  .cat-chip.off{opacity:.4;border-style:dashed;}
+  .cat-chip:hover{border-color:var(--indigo);}
+
+  .subtabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:1px solid var(--paper-line);padding-bottom:10px;}
+  .subtab-btn{
+    font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;padding:6px 14px;
+    border-radius:20px;border:1px solid var(--paper-line);background:transparent;color:var(--ink-soft);cursor:pointer;
+  }
+  .subtab-btn.active{background:var(--indigo);color:#fff;border-color:var(--indigo);}
+
+  /* Funds ledger - receipt style */
+  .ledger-summary{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;}
+  .sum-card{
+    flex:1;min-width:150px;border:1px solid var(--paper-line);border-radius:10px;padding:14px 16px;background:#fff;
+  }
+  .sum-card .label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);font-weight:600;margin-bottom:4px;}
+  .sum-card .val{font-family:'IBM Plex Mono',monospace;font-size:21px;font-weight:600;}
+  .sum-card.balance{background:var(--indigo);border-color:var(--indigo);}
+  .sum-card.balance .label{color:#cdd8e8;}
+  .sum-card.balance .val{color:#fff;}
+  .sum-card.issued .val{color:var(--teal);}
+  .sum-card.spent .val{color:var(--brick);}
+
+  .ledger{border:1px solid var(--paper-line);border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;position:relative;}
+  .ledger::before{
+    content:"";display:block;height:7px;
+    background:
+      conic-gradient(var(--paper) 0 25%, transparent 0 50%) 0 0/16px 14px;
+  }
+
+  /* Analytics */
+  .an-table{border:1px solid var(--paper-line);border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  table.an-table-inner{width:100%;min-width:520px;border-collapse:collapse;font-size:13px;}
+  table.an-table-inner th{
+    text-align:left;font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--ink-soft);padding:8px 12px;background:#FAF8F2;border-bottom:1px solid var(--paper-line);
+  }
+  table.an-table-inner td{padding:10px 12px;border-bottom:1px solid #F0EDE3;vertical-align:middle;overflow-wrap:anywhere;}
+  table.an-table-inner tr:last-child td{border-bottom:none;}
+  .an-name{font-weight:600;}
+  .an-num{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;}
+  .an-bar-wrap{display:flex;align-items:center;gap:8px;}
+  .an-bar-track{flex:1;height:6px;background:var(--paper-line);border-radius:4px;overflow:hidden;min-width:50px;}
+  .an-bar-fill{height:100%;border-radius:4px;}
+  table.ledger-table{width:100%;min-width:560px;border-collapse:collapse;font-size:13px;}
+  table.ledger-table th{
+    text-align:left;font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--ink-soft);padding:8px 12px;background:#FAF8F2;border-bottom:1px solid var(--paper-line);
+  }
+  table.ledger-table td{padding:9px 12px;border-bottom:1px solid #F0EDE3;vertical-align:top;overflow-wrap:anywhere;}
+  table.ledger-table tr:last-child td{border-bottom:none;}
+  .amt-issue{color:var(--teal);font-family:'IBM Plex Mono',monospace;font-weight:600;}
+  .amt-expense{color:var(--brick);font-family:'IBM Plex Mono',monospace;font-weight:600;}
+  .amt-balance{font-family:'IBM Plex Mono',monospace;font-weight:600;}
+  .ledger-actions{display:flex;gap:4px;}
+
+  .empty-state{text-align:center;padding:50px 20px;color:var(--ink-soft);}
+  .empty-state .big{font-family:'Space Grotesk',sans-serif;font-size:17px;color:var(--ink);margin-bottom:6px;}
+
+  /* Modal */
+  .overlay{
+    position:fixed;inset:0;background:rgba(32,30,25,0.45);display:flex;align-items:center;justify-content:center;
+    z-index:50;padding:20px;
+  }
+  .modal{
+    background:#fff;border-radius:14px;padding:24px;max-width:460px;width:100%;
+    box-shadow:0 20px 50px rgba(0,0,0,0.25);max-height:88vh;overflow-y:auto;
+  }
+  .modal h3{font-family:'Space Grotesk',sans-serif;margin:0 0 16px;color:var(--indigo-dark);font-size:18px;}
+  .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+  .lock-icon{font-size:34px;text-align:center;margin-bottom:10px;}
+  .note{font-size:12px;color:var(--ink-soft);background:#FAF8F2;border:1px solid var(--paper-line);border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.5;}
+
+  .toast{
+    position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--indigo-dark);color:#fff;
+    padding:10px 18px;border-radius:8px;font-size:13.5px;z-index:100;box-shadow:var(--shadow);
+  }
+
+  .lock-screen{text-align:center;padding:60px 20px;}
+  .lock-screen .lock-icon{font-size:40px;}
+  .lock-screen h3{font-family:'Space Grotesk',sans-serif;font-size:18px;margin:6px 0 4px;}
+  .lock-screen p{color:var(--ink-soft);font-size:13.5px;margin-bottom:18px;}
+  .lock-screen input{max-width:240px;margin:0 auto 10px;}
+  .err-msg{color:var(--brick);font-size:12.5px;margin-top:8px;}
+
+  select[multiple]{min-height:84px;}
+  .emp-checklist{
+    border:1px solid var(--paper-line);border-radius:8px;padding:6px 10px;max-height:190px;
+    overflow-y:auto;display:flex;flex-direction:column;gap:1px;background:#fff;
+  }
+  .emp-checklist label{display:flex;align-items:center;gap:9px;font-size:13.5px;padding:6px 2px;cursor:pointer;}
+  .emp-checklist input[type=checkbox]{width:17px;height:17px;flex:none;accent-color:var(--indigo);cursor:pointer;}
+  .chip-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
+  .chip{background:var(--paper-line);color:var(--ink);font-size:11.5px;padding:3px 9px;border-radius:20px;}
+
+  @media (max-width:640px){
+    body{padding:14px 10px 70px;}
+    .wrap{max-width:100%;}
+    .cal-grid{gap:3px;}
+    .cal-cell{height:58px;padding:4px;}
+    .cal-evt{font-size:9px;}
+    main.card{padding:14px;border-radius:0 10px 10px 10px;}
+    table.ledger-table{font-size:12px;}
+    table.ledger-table th,table.ledger-table td{padding:7px 6px;}
+    table.an-table-inner{font-size:12px;}
+    table.an-table-inner th,table.an-table-inner td{padding:7px 6px;}
+    .brand h1{font-size:21px;}
+    .tab-btn{padding:9px 13px 10px;font-size:13px;}
+    .cat-chip{padding:5px 10px;font-size:11.5px;}
+    .subtab-btn{padding:5px 11px;font-size:12px;}
+    .btn{padding:8px 13px;}
+    .item{padding:10px 11px;gap:8px;}
+    .item .actions{width:100%;justify-content:flex-start;}
+    .item .actions .btn{flex:none;}
+    .field-row{gap:10px;}
+    .field-row .field{min-width:130px;}
+    .filters select{min-width:0;flex:1 1 140px;}
+    .modal{padding:18px;}
+    .reminder-panel{right:8px;left:8px;width:auto;max-width:none;}
+    .sum-card{min-width:100px;}
+    .ledger-summary{gap:8px;}
+    #whoAmIBtn{max-width:110px;font-size:12.5px;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <span class="eyebrow">Свободное Пространство</span>
+      <h1>Единый журнал</h1>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
+      <button class="icon-btn" id="searchBtn" title="Поиск">🔍</button>
+      <button class="btn ghost small" id="whoAmIBtn" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">🙋 Кто я?</button>
+      <button class="icon-btn" id="bellBtn" title="Напоминания" style="position:relative;">🔔<span class="bell-badge" id="bellBadge" style="display:none;"></span></button>
+      <button class="icon-btn" id="dataBtn" title="Резервная копия, корзина и архив">🗄️</button>
+      <button class="icon-btn" id="staffBtn" title="Сотрудники">👥</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabsNav"></nav>
+  <main class="card" id="appContent">
+    <div class="empty-state"><div class="big">Загрузка…</div></div>
+  </main>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+<div id="loginRoot"></div>
+
+<script>
+/* ---------------- storage helpers ---------------- */
+async function sGet(key, shared){
+  if(shared === false){
+    try{ return window.localStorage.getItem('lj:'+key); }catch(e){ return null; }
+  }
+  try{
+    const r = await fetch('/api/storage/'+encodeURIComponent(key), {credentials:'include'});
+    if(r.status===404) return null;
+    if(r.status===401){ handleSessionExpired(); return null; }
+    if(!r.ok) return null;
+    const data = await r.json();
+    return data.value;
+  }catch(e){ return null; }
+}
+async function sSet(key, value, shared){
+  if(shared === false){
+    try{ window.localStorage.setItem('lj:'+key, value); return true; }catch(e){ return false; }
+  }
+  try{
+    const r = await fetch('/api/storage/'+encodeURIComponent(key), {
+      method:'PUT', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({value}),
+    });
+    if(r.status===401){ handleSessionExpired(); return false; }
+    return r.ok;
+  }catch(e){ console.error('storage set failed', key, e); return false; }
+}
+async function sDelete(key, shared){
+  if(shared === false){
+    try{ window.localStorage.removeItem('lj:'+key); }catch(e){}
+    return;
+  }
+  try{
+    const r = await fetch('/api/storage/'+encodeURIComponent(key), {method:'DELETE', credentials:'include'});
+    if(r.status===401) handleSessionExpired();
+  }catch(e){}
+}
+function handleSessionExpired(){
+  if(state.sessionExpiredHandled) return;
+  state.sessionExpiredHandled = true;
+  state.loggedInEmployee = null;
+  renderLoginScreen('Сессия истекла — войдите снова.');
+}
+
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
+function fmtDate(iso){
+  if(!iso) return '';
+  const [y,m,d]=iso.split('-');
+  const months=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  return `${parseInt(d)} ${months[parseInt(m)-1]} ${y}`;
+}
+function fmtMoney(n){
+  const num = Number(n)||0;
+  return num.toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2}) + ' ₽';
+}
+function escapeHtml(s){
+  return String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function truncate(str, max){
+  if(!str) return '';
+  return str.length > max ? str.slice(0, Math.max(1,max-1)).trimEnd()+'…' : str;
+}
+function isMobileView(){ return window.innerWidth <= 640; }
+function calMaxShown(){ return isMobileView() ? 2 : 3; }
+function calChipLen(){ return isMobileView() ? 13 : 22; }
+function toast(msg){
+  const el=document.createElement('div');
+  el.className='toast'; el.textContent=msg;
+  document.getElementById('toastRoot').appendChild(el);
+  setTimeout(()=>el.remove(),2400);
+}
+
+/* Custom confirm/prompt dialogs — native window.confirm()/prompt() are blocked
+   inside this sandboxed environment, so we render our own. */
+function showConfirm(message, confirmLabel){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');
+    ov.className='overlay'; ov.style.zIndex=200;
+    ov.innerHTML=`
+      <div class="modal" style="max-width:360px;">
+        <h3>Подтвердите действие</h3>
+        <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;line-height:1.5;">${escapeHtml(message)}</p>
+        <div class="modal-actions">
+          <button class="btn ghost" id="cfNo">Отмена</button>
+          <button class="btn danger" id="cfYes">${escapeHtml(confirmLabel||'Удалить')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const finish=(val)=>{ ov.remove(); resolve(val); };
+    ov.querySelector('#cfNo').onclick=()=>finish(false);
+    ov.querySelector('#cfYes').onclick=()=>finish(true);
+    ov.onclick=(e)=>{ if(e.target===ov) finish(false); };
+    document.addEventListener('keydown', function esc(e){ if(e.key==='Escape'){ finish(false); document.removeEventListener('keydown', esc); } });
+  });
+}
+function showPrompt(title, defaultValue){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');
+    ov.className='overlay'; ov.style.zIndex=200;
+    ov.innerHTML=`
+      <div class="modal" style="max-width:360px;">
+        <h3>${escapeHtml(title)}</h3>
+        <input id="pmInput" value="${escapeHtml(defaultValue||'')}" style="margin-bottom:16px;">
+        <div class="modal-actions">
+          <button class="btn ghost" id="pmCancel">Отмена</button>
+          <button class="btn" id="pmOk">Сохранить</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const input=ov.querySelector('#pmInput');
+    setTimeout(()=>{ input.focus(); input.select(); },0);
+    const finish=(val)=>{ ov.remove(); resolve(val); };
+    ov.querySelector('#pmCancel').onclick=()=>finish(null);
+    ov.querySelector('#pmOk').onclick=()=>finish(input.value.trim());
+    input.onkeydown=(e)=>{ if(e.key==='Enter') finish(input.value.trim()); if(e.key==='Escape') finish(null); };
+    ov.onclick=(e)=>{ if(e.target===ov) finish(null); };
+  });
+}
+function requestCompletionComment(taskTitle){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');
+    ov.className='overlay'; ov.style.zIndex=200;
+    ov.innerHTML=`
+      <div class="modal" style="max-width:400px;">
+        <h3>Что сделано?</h3>
+        <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 12px;line-height:1.5;">Задача «${escapeHtml(taskTitle)}» отмечается выполненной. Опишите коротко, что было сделано — это обязательно.</p>
+        <textarea id="ccInput" rows="3" placeholder="Например: договорился с поставщиком, забрал материалы"></textarea>
+        <div class="err-msg" id="ccErr" style="margin-top:6px;"></div>
+        <div class="modal-actions">
+          <button class="btn ghost" id="ccCancel">Отмена</button>
+          <button class="btn" id="ccOk">Отметить выполненной</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const input=ov.querySelector('#ccInput');
+    setTimeout(()=>input.focus(),0);
+    const finish=(val)=>{ ov.remove(); resolve(val); };
+    ov.querySelector('#ccCancel').onclick=()=>finish(null);
+    ov.querySelector('#ccOk').onclick=()=>{
+      const val = input.value.trim();
+      if(!val){ ov.querySelector('#ccErr').textContent='Напишите, что сделано'; return; }
+      finish(val);
+    };
+    ov.onclick=(e)=>{ if(e.target===ov) finish(null); };
+  });
+}
+function showSeriesDeleteChoice(){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');
+    ov.className='overlay'; ov.style.zIndex=200;
+    ov.innerHTML=`
+      <div class="modal" style="max-width:380px;">
+        <h3>Это часть повторяющейся серии</h3>
+        <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;line-height:1.5;">Что вы хотите удалить?</p>
+        <div class="modal-actions" style="flex-wrap:wrap;">
+          <button class="btn ghost" id="sdCancel">Отмена</button>
+          <button class="btn ghost" id="sdOne">Только это</button>
+          <button class="btn danger" id="sdAll">Всю серию</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const finish=(val)=>{ ov.remove(); resolve(val); };
+    ov.querySelector('#sdCancel').onclick=()=>finish(null);
+    ov.querySelector('#sdOne').onclick=()=>finish('one');
+    ov.querySelector('#sdAll').onclick=()=>finish('series');
+    ov.onclick=(e)=>{ if(e.target===ov) finish(null); };
+  });
+}
+function showSeriesEditChoice(){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');
+    ov.className='overlay'; ov.style.zIndex=200;
+    ov.innerHTML=`
+      <div class="modal" style="max-width:400px;">
+        <h3>Это часть повторяющейся серии</h3>
+        <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;line-height:1.5;">Куда применить изменения? Дата и время каждой даты сохранятся — изменятся только название, формат, участники и остальные общие поля.</p>
+        <div class="modal-actions" style="flex-wrap:wrap;">
+          <button class="btn ghost" id="seCancel">Отмена</button>
+          <button class="btn ghost" id="seOne">Только эту дату</button>
+          <button class="btn" id="seAll">Всю серию</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const finish=(val)=>{ ov.remove(); resolve(val); };
+    ov.querySelector('#seCancel').onclick=()=>finish(null);
+    ov.querySelector('#seOne').onclick=()=>finish('one');
+    ov.querySelector('#seAll').onclick=()=>finish('series');
+    ov.onclick=(e)=>{ if(e.target===ov) finish(null); };
+  });
+}
+
+/* ---------------- crypto helpers (personal tasks) ---------------- */
+function bytesToB64(bytes){ return btoa(String.fromCharCode(...bytes)); }
+function b64ToBytes(b64){ return new Uint8Array(atob(b64).split('').map(c=>c.charCodeAt(0))); }
+
+async function deriveKey(password, saltB64){
+  const salt = b64ToBytes(saltB64);
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), {name:'PBKDF2'}, false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt, iterations:150000, hash:'SHA-256'},
+    keyMaterial, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']
+  );
+}
+async function encryptPersonal(tasks, password, saltB64){
+  const key = await deriveKey(password, saltB64);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, enc.encode(JSON.stringify(tasks)));
+  return JSON.stringify({iv:bytesToB64(iv), data:bytesToB64(new Uint8Array(ct))});
+}
+async function decryptPersonal(blobStr, password, saltB64){
+  const blob = JSON.parse(blobStr);
+  const key = await deriveKey(password, saltB64);
+  const iv = b64ToBytes(blob.iv);
+  const data = b64ToBytes(blob.data);
+  const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, data);
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+function openEmployeePasswordModal(empId, onDone, hasPw){
+  const emp = state.employees.find(e=>e.id===empId);
+  if(!emp) return;
+  const isSelf = state.currentUserId === empId;
+  const needsOldPassword = hasPw && isSelf;
+  const ov = document.createElement('div');
+  ov.className='overlay'; ov.style.zIndex=200;
+  ov.innerHTML = `
+    <div class="modal" style="max-width:380px;">
+      <h3>${hasPw?'Изменить пароль':'Задать пароль'} — ${escapeHtml(emp.name)}</h3>
+      ${needsOldPassword?`<div class="field"><label>Текущий пароль</label><input type="password" id="ep_current"></div>`
+        : (hasPw?`<div class="note" style="margin-bottom:14px;">Вы меняете пароль другого сотрудника через раздел «Сотрудники» — старый пароль вводить не нужно.</div>`:'')}
+      <div class="field"><label>Новый пароль</label><input type="password" id="ep_new" placeholder="Оставьте пустым, чтобы просто убрать пароль"></div>
+      <div class="field"><label>Повторите новый пароль</label><input type="password" id="ep_new2"></div>
+      <div class="err-msg" id="ep_err"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="ep_cancel">Отмена</button>
+        <button class="btn" id="ep_save">Сохранить</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const finish = ()=>{ ov.remove(); };
+  ov.querySelector('#ep_cancel').onclick=finish;
+  ov.onclick=(e)=>{ if(e.target===ov) finish(); };
+  ov.querySelector('#ep_save').onclick=async ()=>{
+    const errEl = ov.querySelector('#ep_err');
+    errEl.textContent='';
+    const currentPassword = needsOldPassword ? ov.querySelector('#ep_current').value : undefined;
+    if(needsOldPassword && !currentPassword){ errEl.textContent='Введите текущий пароль'; return; }
+    const newPw = ov.querySelector('#ep_new').value;
+    const newPw2 = ov.querySelector('#ep_new2').value;
+    if(newPw && newPw !== newPw2){ errEl.textContent='Пароли не совпадают'; return; }
+    const r = await fetch(`/api/employees/${encodeURIComponent(empId)}/password`, {
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({newPassword: newPw || undefined, currentPassword}),
+    });
+    const data = await r.json().catch(()=>({}));
+    if(!r.ok){ errEl.textContent = data.error || 'Не удалось сохранить'; return; }
+    toast(newPw ? (hasPw?'Пароль изменён':'Пароль задан') : 'Пароль убран');
+    finish(); if(onDone) onDone();
+  };
+}
+
+/* ---------------- state ---------------- */
+const state = {
+  loaded:false,
+  tab:'overview',
+  employees:[],
+  events:[],
+  tasksWork:[],
+  fundsEntries:[],
+  personalSalt:null,
+  personalMigrationNeeded:false,
+  personalTasks:[],
+  personalError:'',
+  calYear:new Date().getFullYear(),
+  calMonth:new Date().getMonth(),
+  taskSubtab:'work',
+  taskFilterEmployee:'all',
+  taskFilterStatus:'all',
+  selectedProject:{work:'all', personal:'all'},
+  projectsWork:[],
+  ideaBankWork:[],
+  checklistsWork:[],
+  personalProjects:[],
+  calFilters: {event:true, planning:true, meeting:true, vacation:true, personal:true},
+  calEmployeeFilters: {},
+  browserNotify:false,
+  notifiedEventKeys:new Set(),
+  lastSummaryDate:null,
+  reminderPanelOpen:false,
+  dayModalIso:null,
+  dayDoneExpanded:false,
+  fundsScope:'work',
+  collapsedTaskIds:new Set(),
+  trash:[],
+  personalTrash:[],
+  personalFundsEntries:[],
+  personalEvents:[],
+  personalArchiveTasks:[],
+  personalArchiveEvents:[],
+  currentUserId:null,
+  archiveTasks:[],
+  archiveEvents:[],
+};
+
+const TABS = [
+  {id:'overview', label:'🏠 Обзор'},
+  {id:'tasks', label:'Задачи'},
+  {id:'calendar', label:'Календарь'},
+  {id:'funds', label:'Финансы'},
+];
+const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', personal:'Личные дела Карины'};
+const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', personal:'var(--plum)'};
+const STATUSES = {progress:'В работе', done:'Готово'};
+const PRIORITIES = {low:'Низкий', med:'Средний', high:'Высокий'};
+
+function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+
+/* ---------------- idea bank (Банк идей-проектов) ---------------- */
+async function saveIdeaBank(){ await sSet('tasks:ideabank', JSON.stringify(state.ideaBankWork), true); }
+
+/* ---------------- trash (soft delete, 30 days) ---------------- */
+async function saveTrash(){ await sSet('trash:items', JSON.stringify(state.trash), true); }
+function trashFor(personal){ return personal ? state.personalTrash : state.trash; }
+function setTrashFor(personal, arr){ if(personal) state.personalTrash = arr; else state.trash = arr; }
+async function persistTrashFor(personal){ if(personal) await savePersonalData(); else await saveTrash(); }
+async function moveToTrash(personal, type, data){
+  const entry = {trashId: uid(), type, data, deletedAt: Date.now()};
+  setTrashFor(personal, trashFor(personal).concat([entry]));
+  await persistTrashFor(personal);
+}
+async function performTaskDeletion(personal, targetTask){
+  if(!canDeleteTask(targetTask, personal)){
+    toast(whyCantDelete(targetTask));
+    return false;
+  }
+  const all = tasksFor(personal);
+  function idsToDelete(rootId){
+    let ids=[rootId];
+    all.filter(t=>t.parentId===rootId).forEach(c=>{ ids = ids.concat(idsToDelete(c.id)); });
+    return ids;
+  }
+  let idsSet;
+  if(targetTask.seriesId){
+    const choice = await showSeriesDeleteChoice();
+    if(!choice) return false;
+    if(choice==='one'){
+      idsSet = idsToDelete(targetTask.id);
+    } else {
+      const seriesTasks = all.filter(t=>t.seriesId===targetTask.seriesId);
+      idsSet = [];
+      seriesTasks.forEach(st=>{ idsSet = idsSet.concat(idsToDelete(st.id)); });
+      idsSet = [...new Set(idsSet)];
+    }
+  } else {
+    const single = idsToDelete(targetTask.id);
+    const msg = single.length>1 ? `Удалить задачу вместе с подзадачами (${single.length-1})?` : 'Удалить задачу?';
+    if(!(await showConfirm(msg))) return false;
+    idsSet = single;
+  }
+  for(const tid of idsSet){
+    const doomed = all.find(x=>x.id===tid);
+    if(doomed) await moveToTrash(personal, 'task', doomed);
+  }
+  setTasksFor(personal, all.filter(t=>!idsSet.includes(t.id)));
+  await persistTasksFor(personal);
+  return true;
+}
+async function restoreTrashItem(personal, trashId){
+  const trash = trashFor(personal);
+  const entry = trash.find(t=>t.trashId===trashId);
+  if(!entry) return;
+  if(entry.type==='task'){
+    setTasksFor(personal, tasksFor(personal).concat([entry.data]));
+    await persistTasksFor(personal);
+  } else if(entry.type==='project'){
+    setProjectsFor(personal, projectsFor(personal).concat([entry.data]));
+    await persistProjectsFor(personal);
+  } else if(entry.type==='event'){
+    setEventsFor(personal, eventsFor(personal).concat([entry.data]));
+    await persistEventsFor(personal);
+  } else if(entry.type==='fund'){
+    const fscope = personal ? 'personal' : 'work';
+    setFundsFor(fscope, fundsFor(fscope).concat([entry.data]));
+    await persistFundsFor(fscope);
+  } else if(entry.type==='idea' && !personal){
+    state.ideaBankWork = state.ideaBankWork.concat([entry.data]);
+    await saveIdeaBank();
+  } else if(entry.type==='employee' && !personal){
+    if(!state.employees.some(e=>e.id===entry.data.id)){
+      state.employees = state.employees.concat([entry.data]);
+      await saveEmployees();
+    }
+  }
+  setTrashFor(personal, trashFor(personal).filter(t=>t.trashId!==trashId));
+  await persistTrashFor(personal);
+  toast('Восстановлено');
+}
+function trashTypeLabel(type){
+  return {task:'Задача', event:'Событие', fund:'Запись финансов', project:'Проект', idea:'Идея', employee:'Сотрудник'}[type] || type;
+}
+function trashItemName(entry){
+  if(entry.type==='fund') return entry.data.purpose || (entry.data.type==='issue'?'Доход':'Расход');
+  return entry.data.title || entry.data.name || '—';
+}
+function daysLeftInTrash(deletedAt){
+  const elapsedDays = (Date.now()-deletedAt)/86400000;
+  return Math.max(0, Math.ceil(30-elapsedDays));
+}
+
+/* ---------------- export / import ---------------- */
+function csvEscape(val){
+  const s = String(val==null?'':val);
+  return /[",\n;]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+}
+function downloadTextFile(filename, mime, text){
+  const blob = new Blob([text], {type:mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+}
+function exportFundsCSV(scope){
+  let entries;
+  let label;
+  if(scope==='all'){
+    entries = state.fundsEntries.concat(personalAccessAllowed() ? state.personalFundsEntries : []);
+    label = 'все';
+  } else {
+    entries = fundsFor(scope).slice();
+    label = scope==='personal' ? 'личные' : 'рабочие';
+  }
+  const sorted = entries.sort((a,b)=> a.date===b.date ? a.createdAt-b.createdAt : a.date.localeCompare(b.date));
+  let running = 0;
+  const header = ['Дата','Тип','Категория','Сумма','Назначение','Комментарий','Чек','Остаток'];
+  const lines = [header.map(csvEscape).join(';')];
+  sorted.forEach(f=>{
+    running += (f.type==='issue' ? Number(f.amount) : -Number(f.amount));
+    lines.push([
+      f.date,
+      f.type==='issue'?'Доход':'Расход',
+      (f.scope||'work')==='personal'?'Личные':'Рабочие',
+      f.amount,
+      f.purpose||'',
+      f.comment||'',
+      f.receiptUrl||'',
+      running.toFixed(2),
+    ].map(csvEscape).join(';'));
+  });
+  const csv = '\uFEFF' + lines.join('\r\n');
+  downloadTextFile(`finansy-${label}-${todayISO()}.csv`, 'text/csv;charset=utf-8', csv);
+}
+async function exportAllData(){
+  const payload = {
+    app: 'studio-journal',
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    employees: state.employees,
+    events: state.events,
+    tasksWork: state.tasksWork,
+    projectsWork: state.projectsWork,
+    ideaBankWork: state.ideaBankWork,
+    fundsEntries: state.fundsEntries,
+    trash: state.trash,
+    personalTasks: state.personalTasks,
+    personalProjects: state.personalProjects,
+    personalFundsEntries: state.personalFundsEntries,
+    personalEvents: state.personalEvents,
+    personalTrash: state.personalTrash,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dateStr = new Date().toISOString().slice(0,10);
+  a.href = url;
+  a.download = `studio-journal-backup-${dateStr}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+}
+async function importAllData(payload){
+  state.employees = payload.employees || state.employees;
+  state.events = payload.events || [];
+  state.tasksWork = payload.tasksWork || [];
+  state.projectsWork = payload.projectsWork || [];
+  state.ideaBankWork = payload.ideaBankWork || [];
+  state.fundsEntries = payload.fundsEntries || [];
+  state.trash = payload.trash || [];
+  state.personalTasks = payload.personalTasks || [];
+  state.personalProjects = payload.personalProjects || [];
+  state.personalFundsEntries = payload.personalFundsEntries || [];
+  state.personalEvents = payload.personalEvents || [];
+  state.personalTrash = payload.personalTrash || [];
+  await saveEmployees();
+  await saveEvents();
+  await saveTasksWork();
+  await saveProjectsWork();
+  await saveIdeaBank();
+  await saveFunds();
+  await saveTrash();
+  await savePersonalData();
+  if(payload.personalSalt && payload.personalBlobRaw){
+    state.personalSalt = payload.personalSalt;
+    await sSet('tasks:personal:salt', payload.personalSalt, true);
+    await sSet('tasks:personal:blob', payload.personalBlobRaw, true);
+    state.personalMigrationNeeded = true;
+    await sSet('settings:personalMigrated', '', true);
+  }
+}
+async function applyIdeaToProject(idea){
+  const projects = projectsFor(false);
+  let project = projects.find(p=>p.name.trim().toLowerCase()===idea.name.trim().toLowerCase());
+  const isNewProject = !project;
+  if(!project){
+    project = {id:uid(), name:idea.name};
+    setProjectsFor(false, projects.concat([project]));
+  }
+  await persistProjectsFor(false);
+  const leader = state.employees.find(e=>e.role==='Руководитель');
+  const today = todayISO();
+  const newTasks = (idea.tasks||[]).map((title, idx)=>{
+    const d = new Date(); d.setDate(d.getDate() + (idx+1)*4);
+    return {
+      id: uid()+idx,
+      title,
+      description: `Задача из банка идей «${idea.name}».`,
+      projectId: project.id,
+      parentId: null,
+      assigneeId: null,
+      creatorId: leader ? leader.id : null,
+      createdDate: today,
+      deadline: dateToISO(d),
+      priority: 'med',
+      status: 'progress',
+      completedAt: null,
+      eventId: null,
+      purchaseAmount: null,
+      purchaseStore: '',
+    };
+  });
+  setTasksFor(false, tasksFor(false).concat(newTasks));
+  await persistTasksFor(false);
+  state.selectedProject.work = project.id;
+  state.ideaBankWork = state.ideaBankWork.filter(i=>i.id!==idea.id);
+  await saveIdeaBank();
+  toast(isNewProject
+    ? `Добавлен проект «${idea.name}»${newTasks.length?` с ${newTasks.length} задачами`:''} — идея убрана из банка`
+    : `В проект «${idea.name}» добавлено задач: ${newTasks.length} — идея убрана из банка`);
+}
+async function saveChecklists(){ await sSet('tasks:checklists', JSON.stringify(state.checklistsWork), true); }
+async function applyChecklistToTasks(checklist){
+  const leader = state.employees.find(e=>e.role==='Руководитель');
+  const today = todayISO();
+  const d = new Date(); d.setDate(d.getDate()+7);
+  const mainDeadline = dateToISO(d);
+  const parentTask = {
+    id: uid(),
+    title: checklist.name,
+    description: `Чек-лист «${checklist.name}».`,
+    projectId: null,
+    parentId: null,
+    assigneeId: null,
+    creatorId: leader ? leader.id : null,
+    createdDate: today,
+    deadline: mainDeadline,
+    priority: 'med',
+    status: 'progress',
+    completedAt: null,
+    eventId: null,
+    purchaseAmount: null,
+    purchaseStore: '',
+    purchaseExpenseId: null,
+  };
+  const subtasks = (checklist.items||[]).map((title, idx)=>({
+    id: uid()+idx,
+    title,
+    description: '',
+    projectId: null,
+    parentId: parentTask.id,
+    assigneeId: null,
+    creatorId: leader ? leader.id : null,
+    createdDate: today,
+    deadline: mainDeadline,
+    priority: 'med',
+    status: 'progress',
+    completedAt: null,
+    eventId: null,
+    purchaseAmount: null,
+    purchaseStore: '',
+    purchaseExpenseId: null,
+  }));
+  setTasksFor(false, tasksFor(false).concat([parentTask]).concat(subtasks));
+  await persistTasksFor(false);
+  state.taskSubtab = 'work';
+  state.selectedProject.work = 'all';
+  toast(`Добавлена задача «${checklist.name}» с ${subtasks.length} пунктами чек-листа`);
+}
+const PURCHASES_PROJECT_NAME = 'ПОКУПКИ';
+function isPurchasesProjectName(name){
+  return !!name && name.replace(/\s+/g,' ').trim().toUpperCase() === PURCHASES_PROJECT_NAME;
+}
+function generateRecurrenceDates(startISO, repeatType, weekdaySet, untilISO, maxCount){
+  maxCount = maxCount || 300;
+  const dates = [];
+  const until = new Date((untilISO||startISO)+'T00:00:00');
+  if(repeatType==='daily' || repeatType==='weekly'){
+    let cur = new Date(startISO+'T00:00:00');
+    while(cur<=until && dates.length<maxCount){
+      const isoWd = cur.getDay()===0?7:cur.getDay();
+      if(weekdaySet.has(isoWd)) dates.push(dateToISO(cur));
+      cur.setDate(cur.getDate()+1);
+    }
+  } else if(repeatType==='monthly'){
+    let cur = new Date(startISO+'T00:00:00');
+    const day = cur.getDate();
+    while(cur<=until && dates.length<maxCount){
+      dates.push(dateToISO(cur));
+      const y = cur.getFullYear(), mo = cur.getMonth()+1;
+      const daysInNext = new Date(y, mo+1, 0).getDate();
+      cur = new Date(y, mo, Math.min(day, daysInNext));
+    }
+  } else if(repeatType==='yearly'){
+    let cur = new Date(startISO+'T00:00:00');
+    const day = cur.getDate();
+    while(cur<=until && dates.length<maxCount){
+      dates.push(dateToISO(cur));
+      const y = cur.getFullYear()+1, mo = cur.getMonth();
+      const daysInMonth = new Date(y, mo+1, 0).getDate();
+      cur = new Date(y, mo, Math.min(day, daysInMonth));
+    }
+  }
+  return dates;
+}
+
+
+/* ---------------- load ---------------- */
+async function loadAll(){
+  const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, ideaBank, checklistsRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = await Promise.all([
+    sGet('roster:employees', true),
+    sGet('calendar:events', true),
+    sGet('tasks:work', true),
+    sGet('tasks:personal:salt', true),
+    sGet('funds:ledger', true),
+    sGet('settings:browserNotify', false),
+    sGet('settings:notifySummaryDate', false),
+    sGet('tasks:projects', true),
+    sGet('tasks:ideabank', true),
+    sGet('tasks:checklists', true),
+    sGet('trash:items', true),
+    sGet('archive:tasks', true),
+    sGet('archive:events', true),
+    sGet('settings:demoCleared', true),
+    sGet('personal:tasks', true),
+    sGet('personal:projects', true),
+    sGet('personal:funds', true),
+    sGet('personal:events', true),
+    sGet('personal:trash', true),
+    sGet('personal:archiveTasks', true),
+    sGet('personal:archiveEvents', true),
+    sGet('settings:personalMigrated', true),
+  ]);
+  const DEFAULT_ROLES = ['Руководитель','Ассистент','Маркетолог','Старший администратор','Менеджер','Хостес'];
+  if(!emp){
+    state.employees = DEFAULT_ROLES.map(role=>({id:uid(), name:role, role}));
+    await sSet('roster:employees', JSON.stringify(state.employees), true);
+  } else {
+    state.employees = JSON.parse(emp);
+    const existingNames = state.employees.map(e=>e.name);
+    const missing = DEFAULT_ROLES.filter(role=>!existingNames.includes(role));
+    if(missing.length){
+      state.employees = state.employees.concat(missing.map(role=>({id:uid(), name:role, role})));
+      await sSet('roster:employees', JSON.stringify(state.employees), true);
+    }
+  }
+  state.events = evt ? JSON.parse(evt) : [];
+  if(state.events.some(e=>e.category==='training')){
+    state.events = state.events.map(e=>e.category==='training' ? {...e, category:'meeting'} : e);
+    await sSet('calendar:events', JSON.stringify(state.events), true);
+  }
+  state.tasksWork = tw ? JSON.parse(tw) : [];
+  state.personalSalt = salt || null;
+  state.fundsEntries = fl ? JSON.parse(fl) : [];
+  state.personalTasks = pTasksRaw ? JSON.parse(pTasksRaw) : [];
+  state.personalProjects = pProjectsRaw ? JSON.parse(pProjectsRaw) : [];
+  state.personalFundsEntries = pFundsRaw ? JSON.parse(pFundsRaw) : [];
+  state.personalEvents = pEventsRaw ? JSON.parse(pEventsRaw) : [];
+  state.personalTrash = pTrashRaw ? JSON.parse(pTrashRaw) : [];
+  state.personalArchiveTasks = pArchTasksRaw ? JSON.parse(pArchTasksRaw) : [];
+  state.personalArchiveEvents = pArchEventsRaw ? JSON.parse(pArchEventsRaw) : [];
+  state.personalMigrationNeeded = !!(state.personalSalt && !personalMigrated);
+  state.browserNotify = notifySetting === 'on';
+  state.lastSummaryDate = summaryDate || null;
+  state.projectsWork = projWork ? JSON.parse(projWork) : [];
+  {
+    const pIdx = state.projectsWork.findIndex(p=>isPurchasesProjectName(p.name));
+    if(pIdx===-1){
+      state.projectsWork.push({id:uid(), name:PURCHASES_PROJECT_NAME});
+      await sSet('tasks:projects', JSON.stringify(state.projectsWork), true);
+    } else if(state.projectsWork[pIdx].name !== PURCHASES_PROJECT_NAME){
+      state.projectsWork[pIdx] = {...state.projectsWork[pIdx], name:PURCHASES_PROJECT_NAME};
+      await sSet('tasks:projects', JSON.stringify(state.projectsWork), true);
+    }
+  }
+  state.ideaBankWork = ideaBank ? JSON.parse(ideaBank) : [];
+  state.checklistsWork = checklistsRaw ? JSON.parse(checklistsRaw) : [];
+  {
+    state.trash = trashRaw ? JSON.parse(trashRaw) : [];
+    const cutoff = Date.now() - 30*24*60*60*1000;
+    const before = state.trash.length;
+    state.trash = state.trash.filter(t=>t.deletedAt>=cutoff);
+    if(state.trash.length!==before) await sSet('trash:items', JSON.stringify(state.trash), true);
+  }
+  if(!demoCleared){
+    state.tasksWork = [];
+    state.events = [];
+    await sSet('tasks:work', JSON.stringify(state.tasksWork), true);
+    await sSet('calendar:events', JSON.stringify(state.events), true);
+    await sSet('settings:demoCleared', 'yes', true);
+  }
+  state.archiveTasks = archTasksRaw ? JSON.parse(archTasksRaw) : [];
+  state.archiveEvents = archEventsRaw ? JSON.parse(archEventsRaw) : [];
+  await runArchiveSweep();
+  if(!state.personalMigrationNeeded){
+    await migrateLegacyPersonalFunds();
+    await migrateLegacyPersonalEvents();
+    await pruneAndArchivePersonal();
+  }
+  state.loaded = true;
+}
+
+async function runArchiveSweep(){
+  const cutoffDate = new Date(); cutoffDate.setDate(cutoffDate.getDate()-180);
+  const cutoffISO = dateToISO(cutoffDate);
+  const toArchiveTasks = state.tasksWork.filter(t=>
+    t.status==='done' && t.completedAt && t.completedAt<cutoffISO &&
+    !state.tasksWork.some(x=>x.parentId===t.id)
+  );
+  if(toArchiveTasks.length){
+    state.archiveTasks = state.archiveTasks.concat(toArchiveTasks);
+    state.tasksWork = state.tasksWork.filter(t=>!toArchiveTasks.includes(t));
+    await saveTasksWork();
+    await sSet('archive:tasks', JSON.stringify(state.archiveTasks), true);
+  }
+  const toArchiveEvents = state.events.filter(e=>e.date<cutoffISO);
+  if(toArchiveEvents.length){
+    state.archiveEvents = state.archiveEvents.concat(toArchiveEvents);
+    state.events = state.events.filter(e=>!toArchiveEvents.includes(e));
+    await saveEvents();
+    await sSet('archive:events', JSON.stringify(state.archiveEvents), true);
+  }
+}
+async function saveArchive(){
+  await sSet('archive:tasks', JSON.stringify(state.archiveTasks), true);
+  await sSet('archive:events', JSON.stringify(state.archiveEvents), true);
+}
+async function restoreArchiveTask(taskId){
+  const t = state.archiveTasks.find(x=>x.id===taskId);
+  if(!t) return;
+  state.tasksWork = state.tasksWork.concat([t]);
+  state.archiveTasks = state.archiveTasks.filter(x=>x.id!==taskId);
+  await saveTasksWork();
+  await saveArchive();
+  toast('Задача возвращена из архива');
+}
+async function restoreArchiveEvent(eventId){
+  const e = state.archiveEvents.find(x=>x.id===eventId);
+  if(!e) return;
+  state.events = state.events.concat([e]);
+  state.archiveEvents = state.archiveEvents.filter(x=>x.id!==eventId);
+  await saveEvents();
+  await saveArchive();
+  toast('Событие возвращено из архива');
+}
+
+async function saveEmployees(){ await sSet('roster:employees', JSON.stringify(state.employees), true); }
+async function saveEvents(){ await sSet('calendar:events', JSON.stringify(state.events), true); }
+async function saveTasksWork(){ await sSet('tasks:work', JSON.stringify(state.tasksWork), true); }
+async function saveProjectsWork(){ await sSet('tasks:projects', JSON.stringify(state.projectsWork), true); }
+async function saveFunds(){ await sSet('funds:ledger', JSON.stringify(state.fundsEntries), true); }
+
+async function savePersonalData(){
+  await Promise.all([
+    sSet('personal:tasks', JSON.stringify(state.personalTasks), true),
+    sSet('personal:projects', JSON.stringify(state.personalProjects), true),
+    sSet('personal:funds', JSON.stringify(state.personalFundsEntries), true),
+    sSet('personal:events', JSON.stringify(state.personalEvents), true),
+    sSet('personal:trash', JSON.stringify(state.personalTrash), true),
+    sSet('personal:archiveTasks', JSON.stringify(state.personalArchiveTasks), true),
+    sSet('personal:archiveEvents', JSON.stringify(state.personalArchiveEvents), true),
+  ]);
+}
+
+/* ---------------- project/task helpers (work vs personal) ---------------- */
+function projectsFor(personal){ return personal ? state.personalProjects : state.projectsWork; }
+function tasksFor(personal){ return personal ? state.personalTasks : state.tasksWork; }
+async function migrateLegacyPersonalFunds(){
+  const legacy = state.fundsEntries.filter(f=>f.scope==='personal');
+  if(!legacy.length) return;
+  state.personalFundsEntries = state.personalFundsEntries.concat(legacy);
+  state.fundsEntries = state.fundsEntries.filter(f=>f.scope!=='personal');
+  await saveFunds();
+  await savePersonalData();
+}
+async function migrateLegacyPersonalEvents(){
+  const legacy = state.events.filter(e=>e.category==='personal');
+  if(!legacy.length) return;
+  state.personalEvents = state.personalEvents.concat(legacy);
+  state.events = state.events.filter(e=>e.category!=='personal');
+  await saveEvents();
+  await savePersonalData();
+}
+function eventsFor(personal){ return personal ? state.personalEvents : state.events; }
+function setEventsFor(personal, arr){ if(personal) state.personalEvents = arr; else state.events = arr; }
+async function persistEventsFor(personal){ if(personal) await savePersonalData(); else await saveEvents(); }
+function allVisibleEvents(){
+  const sharedVisible = state.events.filter(e=>e.category!=='personal');
+  return sharedVisible.concat(personalAccessAllowed() ? state.personalEvents : []);
+}
+function isPersonalEvent(id){ return state.personalEvents.some(e=>e.id===id); }
+async function pruneAndArchivePersonal(){
+  let changed = false;
+  const cutoff = Date.now() - 30*24*60*60*1000;
+  const beforeTrash = state.personalTrash.length;
+  state.personalTrash = state.personalTrash.filter(t=>t.deletedAt>=cutoff);
+  if(state.personalTrash.length!==beforeTrash) changed = true;
+
+  const cutoffDate = new Date(); cutoffDate.setDate(cutoffDate.getDate()-180);
+  const cutoffISO = dateToISO(cutoffDate);
+  const toArchiveTasks = state.personalTasks.filter(t=>
+    t.status==='done' && t.completedAt && t.completedAt<cutoffISO &&
+    !state.personalTasks.some(x=>x.parentId===t.id)
+  );
+  if(toArchiveTasks.length){
+    state.personalArchiveTasks = state.personalArchiveTasks.concat(toArchiveTasks);
+    state.personalTasks = state.personalTasks.filter(t=>!toArchiveTasks.includes(t));
+    changed = true;
+  }
+  const toArchiveEvents = state.personalEvents.filter(e=>e.date<cutoffISO);
+  if(toArchiveEvents.length){
+    state.personalArchiveEvents = state.personalArchiveEvents.concat(toArchiveEvents);
+    state.personalEvents = state.personalEvents.filter(e=>!toArchiveEvents.includes(e));
+    changed = true;
+  }
+  if(changed) await savePersonalData();
+}
+async function restorePersonalArchiveTask(taskId){
+  const t = state.personalArchiveTasks.find(x=>x.id===taskId);
+  if(!t) return;
+  state.personalTasks = state.personalTasks.concat([t]);
+  state.personalArchiveTasks = state.personalArchiveTasks.filter(x=>x.id!==taskId);
+  await savePersonalData();
+  toast('Задача возвращена из архива');
+}
+async function restorePersonalArchiveEvent(eventId){
+  const e = state.personalArchiveEvents.find(x=>x.id===eventId);
+  if(!e) return;
+  state.personalEvents = state.personalEvents.concat([e]);
+  state.personalArchiveEvents = state.personalArchiveEvents.filter(x=>x.id!==eventId);
+  await savePersonalData();
+  toast('Событие возвращено из архива');
+}
+async function attemptPersonalMigration(password){
+  try{
+    const blobRaw = await sGet('tasks:personal:blob', true);
+    if(!blobRaw){
+      state.personalMigrationNeeded = false;
+      await sSet('settings:personalMigrated', 'yes', true);
+      return true;
+    }
+    const parsed = await decryptPersonal(blobRaw, password, state.personalSalt);
+    if(Array.isArray(parsed)){
+      state.personalTasks = parsed;
+    } else {
+      state.personalTasks = parsed.tasks||[];
+      state.personalProjects = parsed.projects||[];
+      state.personalTrash = parsed.trash||[];
+      state.personalFundsEntries = parsed.funds||[];
+      state.personalEvents = parsed.events||[];
+      state.personalArchiveTasks = parsed.archiveTasks||[];
+      state.personalArchiveEvents = parsed.archiveEvents||[];
+    }
+    await savePersonalData();
+    state.personalMigrationNeeded = false;
+    await sSet('settings:personalMigrated', 'yes', true);
+    await migrateLegacyPersonalFunds();
+    await migrateLegacyPersonalEvents();
+    await pruneAndArchivePersonal();
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+async function skipPersonalMigration(){
+  state.personalMigrationNeeded = false;
+  await sSet('settings:personalMigrated', 'yes', true);
+  await migrateLegacyPersonalFunds();
+  await migrateLegacyPersonalEvents();
+  await pruneAndArchivePersonal();
+}
+function renderPersonalMigrationScreen(root, onDone){
+  root.innerHTML = `
+    <div class="lock-screen">
+      <div class="lock-icon">🔁</div>
+      <h3>Разовый перенос личных данных</h3>
+      <p>Раньше этот раздел защищался общим паролем. Введите его в последний раз, чтобы перенести личные задачи, финансы и календарь в обычный режим — дальше пароль не понадобится, доступ будет только по входу через «🙋 Кто я?».</p>
+      <input type="password" id="pmInput" placeholder="Старый общий пароль">
+      <div><button class="btn" id="pmSubmit" style="margin-top:6px;">Перенести</button></div>
+      <div class="err-msg" id="pmErr"></div>
+      <button class="btn ghost small" id="pmSkip" style="margin-top:14px;">Не помню пароль — начать личный раздел заново</button>
+    </div>
+  `;
+  root.querySelector('#pmSubmit').onclick=async ()=>{
+    const pw = root.querySelector('#pmInput').value;
+    const errEl = root.querySelector('#pmErr');
+    if(!pw){ errEl.textContent='Введите пароль'; return; }
+    const ok = await attemptPersonalMigration(pw);
+    if(ok){ toast('Личные данные перенесены'); onDone(); }
+    else errEl.textContent='Неверный пароль';
+  };
+  root.querySelector('#pmSkip').onclick=async ()=>{
+    if(!(await showConfirm('Старые личные данные, защищённые паролем, останутся недоступны навсегда, а личный раздел начнётся заново пустым. Продолжить?', 'Начать заново'))) return;
+    await skipPersonalMigration();
+    toast('Личный раздел сброшен, дальше доступ только по входу');
+    onDone();
+  };
+}
+function fundsFor(scope){ return scope==='personal' ? state.personalFundsEntries : state.fundsEntries; }
+function setFundsFor(scope, arr){ if(scope==='personal') state.personalFundsEntries = arr; else state.fundsEntries = arr; }
+async function persistFundsFor(scope){ if(scope==='personal') await savePersonalData(); else await saveFunds(); }
+function setTasksFor(personal, arr){ if(personal) state.personalTasks = arr; else state.tasksWork = arr; }
+function setProjectsFor(personal, arr){ if(personal) state.personalProjects = arr; else state.projectsWork = arr; }
+async function persistTasksFor(personal){ if(personal) await savePersonalData(); else await saveTasksWork(); }
+async function persistProjectsFor(personal){ if(personal) await savePersonalData(); else await saveProjectsWork(); }
+function projectName(personal, id){
+  if(!id) return 'Без проекта';
+  const p = projectsFor(personal).find(x=>x.id===id);
+  return p ? p.name : 'Без проекта';
+}
+function employeeColor(id){
+  const idx = Math.max(0, state.employees.findIndex(e=>e.id===id));
+  const hue = (idx*57)%360;
+  return `hsl(${hue},48%,40%)`;
+}
+function canCompleteTask(t, personal){
+  if(personal) return true;
+  if(!t || !t.assigneeId) return true;
+  return !!state.currentUserId && state.currentUserId === t.assigneeId;
+}
+function canDeleteTask(t, personal){
+  if(personal) return true;
+  if(!t || !t.creatorId) return true;
+  return !!state.currentUserId && state.currentUserId === t.creatorId;
+}
+function whyCantDelete(t){
+  if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
+  return `Удалить задачу может только тот, кто её поставил — ${empName(t.creatorId)}.`;
+}
+function canEditTask(t, personal){
+  if(personal) return true;
+  if(!t || !t.creatorId) return true;
+  return !!state.currentUserId && state.currentUserId === t.creatorId;
+}
+function whyCantEdit(t){
+  if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
+  return `Редактировать задачу может только тот, кто её поставил — ${empName(t.creatorId)}.`;
+}
+function whyCantComplete(t){
+  if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
+  return `Отметить выполненной может только исполнитель — ${empName(t.assigneeId)}.`;
+}
+function withStatus(t, newStatus, comment){
+  if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), completionComment: comment||t.completionComment||''};
+  if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:''};
+  return {...t, status:newStatus};
+}
+async function maybeOfferPurchaseExpense(task, personal){
+  if(!task || personal) return;
+  if(!task.projectId || !task.purchaseAmount || task.purchaseExpenseId) return;
+  const proj = state.projectsWork.find(p=>p.id===task.projectId);
+  if(!proj || !isPurchasesProjectName(proj.name)) return;
+  const label = `${fmtMoney(task.purchaseAmount)}${task.purchaseStore?` (${task.purchaseStore})`:''}`;
+  const ok = await showConfirm(`Задача «${task.title}» выполнена. Создать расход в Финансах на ${label}?`, 'Создать расход');
+  if(!ok) return;
+  const entry = {
+    id: uid(),
+    type: 'expense',
+    scope: 'work',
+    date: todayISO(),
+    amount: task.purchaseAmount,
+    purpose: task.purchaseStore ? `${task.title} — ${task.purchaseStore}` : task.title,
+    receiptUrl: '',
+    comment: `Автоматически создано из задачи «${task.title}» (проект «${PURCHASES_PROJECT_NAME}»).`,
+    createdAt: Date.now(),
+  };
+  state.fundsEntries = state.fundsEntries.concat([entry]);
+  await saveFunds();
+  state.tasksWork = state.tasksWork.map(t=>t.id===task.id?{...t, purchaseExpenseId:entry.id}:t);
+  await saveTasksWork();
+  toast('Расход добавлен в Финансы');
+}
+
+/* ---------------- render root ---------------- */
+function empName(id){
+  const e = state.employees.find(x=>x.id===id);
+  return e ? e.name : '—';
+}
+
+function renderTabs(){
+  const nav = document.getElementById('tabsNav');
+  nav.innerHTML = TABS.map(t=>{
+    let count = '';
+    if(t.id==='tasks'){
+      const openCount = state.tasksWork.filter(x=>x.status!=='done').length;
+      count = `<span class="count">${openCount}</span>`;
+    }
+    if(t.id==='calendar'){
+      const upcoming = state.events.filter(e=>e.date>=todayISO()).length;
+      count = `<span class="count">${upcoming}</span>`;
+    }
+    return `<button class="tab-btn ${state.tab===t.id?'active':''}" data-tab="${t.id}">${t.label}${count}</button>`;
+  }).join('');
+  nav.querySelectorAll('.tab-btn').forEach(btn=>{
+    btn.onclick=()=>{ state.tab=btn.dataset.tab; render(); };
+  });
+}
+
+/* ---------------- reminders ---------------- */
+function nowHHMM(){
+  const d = new Date();
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+function computeReminders(){
+  const today = todayISO();
+  const allTasks = state.tasksWork.concat(personalAccessAllowed() ? state.personalTasks : []);
+  const overdueTasks = allTasks.filter(t=>t.deadline && t.deadline<today && t.status!=='done');
+  const dueTodayTasks = allTasks.filter(t=>t.deadline===today && t.status!=='done');
+  const todayEvents = allVisibleEvents().filter(e=>e.date===today).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
+  const soon = new Date(); soon.setDate(soon.getDate()+3);
+  const soonISO = soon.toISOString().slice(0,10);
+  const upcomingEvents = allVisibleEvents().filter(e=>e.date>today && e.date<=soonISO).sort((a,b)=>a.date.localeCompare(b.date));
+  const dueSoonTasks = allTasks.filter(t=>t.deadline && t.deadline>today && t.deadline<=soonISO && t.status!=='done').sort((a,b)=>a.deadline.localeCompare(b.deadline));
+  return {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks};
+}
+function renderBellBadge(){
+  const {overdueTasks, dueTodayTasks, todayEvents} = computeReminders();
+  const count = overdueTasks.length + dueTodayTasks.length + todayEvents.length;
+  const badge = document.getElementById('bellBadge');
+  if(!badge) return;
+  if(count>0){ badge.style.display='flex'; badge.textContent = count>9?'9+':count; }
+  else badge.style.display='none';
+}
+function currentRole(){
+  const emp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
+  return emp ? emp.role : null;
+}
+function hasRole(...roles){
+  const r = currentRole();
+  return !!r && roles.includes(r);
+}
+function personalAccessAllowed(){
+  return hasRole('Руководитель','Ассистент');
+}
+function accessDeniedScreen(message){
+  const emp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
+  return `
+    <div class="lock-screen">
+      <div class="lock-icon">🚫</div>
+      <h3>Доступ ограничен</h3>
+      <p>${message}</p>
+      <p class="subtitle" style="margin-top:4px;">${emp ? `Вы вошли как ${escapeHtml(emp.name)} (${escapeHtml(emp.role||'')}).` : ''}</p>
+    </div>`;
+}
+function renderWhoAmIBtn(){
+  const btn = document.getElementById('whoAmIBtn');
+  if(!btn) return;
+  const emp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
+  btn.textContent = emp ? `🙋 ${emp.name}` : '🙋';
+  btn.title = emp ? `${emp.name} — нажмите, чтобы выйти` : '';
+}
+function openWhoAmIModal(){
+  const emp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
+  const ov=document.createElement('div');
+  ov.className='overlay'; ov.style.zIndex=200;
+  ov.innerHTML=`
+    <div class="modal" style="max-width:360px;">
+      <h3>${emp?escapeHtml(emp.name):'Вы не вошли'}</h3>
+      <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 16px;">${emp?escapeHtml(emp.role||''):''}</p>
+      <div class="modal-actions">
+        <button class="btn ghost" id="whoAmIClose">Закрыть</button>
+        <button class="btn danger" id="whoAmILogout">Выйти</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const finish=()=>ov.remove();
+  ov.querySelector('#whoAmIClose').onclick=finish;
+  ov.onclick=(e)=>{ if(e.target===ov) finish(); };
+  ov.querySelector('#whoAmILogout').onclick=async ()=>{
+    await fetch('/api/logout', {method:'POST', credentials:'include'});
+    state.currentUserId = null;
+    finish();
+    renderLoginScreen();
+  };
+}
+async function checkSession(){
+  try{
+    const r = await fetch('/api/me', {credentials:'include'});
+    if(!r.ok) return null;
+    const data = await r.json();
+    return data.employee;
+  }catch(e){ return null; }
+}
+async function fetchPublicEmployees(){
+  try{
+    const r = await fetch('/api/employees');
+    if(!r.ok) return {employees:[], bootstrapNeeded:false};
+    return await r.json();
+  }catch(e){ return {employees:[], bootstrapNeeded:false}; }
+}
+function renderLoginScreen(message){
+  state.sessionExpiredHandled = false;
+  const root = document.getElementById('loginRoot');
+  root.innerHTML = `
+    <div class="overlay" style="z-index:500;align-items:flex-start;">
+      <div class="wrap" style="max-width:420px;padding-top:60px;">
+        <div class="brand" style="margin-bottom:24px;text-align:center;">
+          <span class="eyebrow">Свободное Пространство</span>
+          <h1>Единый журнал</h1>
+        </div>
+        <div class="lock-screen" id="loginBox" style="background:#fff;border-radius:14px;">
+          <div class="lock-icon">🔑</div>
+          <h3>Вход</h3>
+          ${message?`<p style="color:var(--brick);">${escapeHtml(message)}</p>`:''}
+          <div id="loginBootstrapNote"></div>
+          <select id="loginEmp" style="margin-bottom:8px;"></select>
+          <input type="password" id="loginPw" placeholder="Пароль">
+          <div><button class="btn" id="loginBtn" style="margin-top:10px;">Войти</button></div>
+          <div class="err-msg" id="loginErr"></div>
+        </div>
+      </div>
+    </div>
+  `;
+  fetchPublicEmployees().then(({employees, bootstrapNeeded})=>{
+    const sel = document.getElementById('loginEmp');
+    if(!sel) return;
+    sel.innerHTML = employees.map(e=>`<option value="${e.id}">${escapeHtml(e.name)} (${escapeHtml(e.role||'')})</option>`).join('');
+    if(bootstrapNeeded){
+      document.getElementById('loginBootstrapNote').innerHTML = `<div class="note" style="margin-bottom:14px;text-align:left;">Ещё ни у кого нет пароля. Выберите сотрудника и придумайте для него первый пароль — он же будет использован при входе.</div>`;
+      document.getElementById('loginBtn').textContent = 'Задать пароль и войти';
+    }
+    const attempt = async ()=>{
+      const employeeId = sel.value;
+      const password = document.getElementById('loginPw').value;
+      const errEl = document.getElementById('loginErr');
+      if(!employeeId || !password){ errEl.textContent='Выберите сотрудника и введите пароль'; return; }
+      if(bootstrapNeeded){
+        const setRes = await fetch(`/api/employees/${encodeURIComponent(employeeId)}/password`, {
+          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({newPassword: password}),
+        });
+        if(!setRes.ok){ errEl.textContent='Не удалось задать пароль'; return; }
+      }
+      const r = await fetch('/api/login', {
+        method:'POST', credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({employeeId, password}),
+      });
+      const data = await r.json();
+      if(!r.ok){ errEl.textContent = data.error || 'Не удалось войти'; return; }
+      state.currentUserId = data.employee.id;
+      root.innerHTML = '';
+      startApp();
+    };
+    document.getElementById('loginBtn').onclick = attempt;
+    document.getElementById('loginPw').onkeydown = (e)=>{ if(e.key==='Enter') attempt(); };
+  });
+}
+function toggleReminderPanel(){
+  state.reminderPanelOpen = !state.reminderPanelOpen;
+  renderReminderPanel();
+}
+function renderReminderPanel(){
+  const existing = document.getElementById('reminderPanel');
+  if(existing) existing.remove();
+  if(!state.reminderPanelOpen) return;
+  const {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks} = computeReminders();
+  const myTasks = state.currentUserId
+    ? state.tasksWork.filter(t=>t.assigneeId===state.currentUserId && t.status!=='done').sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'))
+    : [];
+  const panel = document.createElement('div');
+  panel.className='reminder-panel';
+  panel.id='reminderPanel';
+  function section(title, items, renderItem){
+    return `<h4>${title}</h4>${items.length? items.map(renderItem).join('') : `<div class="reminder-empty">Нет</div>`}`;
+  }
+  panel.innerHTML = `
+    ${state.currentUserId ? section('🙋 Мои задачи', myTasks, t=>{
+      const overdue = t.deadline && t.deadline<todayISO();
+      return `<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="${overdue?'color:var(--brick);':''}">${t.deadline?fmtDate(t.deadline):'без срока'}</span></div>`;
+    }) : ''}
+    ${section('Просрочено', overdueTasks, t=>`<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="color:var(--brick);">${fmtDate(t.deadline)}</span></div>`)}
+    ${section('Задачи на сегодня', dueTodayTasks, t=>`<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag">сегодня</span></div>`)}
+    ${section('Дедлайн через 1–3 дня', dueSoonTasks, t=>{
+      const daysLeft = Math.round((new Date(t.deadline+'T00:00:00') - new Date(todayISO()+'T00:00:00'))/86400000);
+      return `<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="color:var(--ochre);">через ${daysLeft} дн.</span></div>`;
+    })}
+    ${section('Сегодня в календаре', todayEvents, e=>`<div class="reminder-row" data-open-day="${e.date}"><span>${escapeHtml(e.title)}</span><span class="tag">${e.startTime||''}</span></div>`)}
+    ${section('Ближайшие 3 дня', upcomingEvents, e=>`<div class="reminder-row" data-open-day="${e.date}"><span>${escapeHtml(e.title)}</span><span class="tag">${fmtDate(e.date)}</span></div>`)}
+    <div class="notify-toggle">
+      <span>Уведомления браузера${!state.browserNotify?' (пока выключены)':''}</span>
+      <label class="switch"><input type="checkbox" id="notifyToggle" ${state.browserNotify?'checked':''}><span class="slider"></span></label>
+    </div>
+    <div class="note" style="margin-top:10px;">Работает, пока эта вкладка открыта в браузере. Если вкладка или браузер закрыты — уведомления не приходят, это ограничение приложения без сервера.</div>
+  `;
+  document.body.appendChild(panel);
+  panel.querySelectorAll('[data-open-task]').forEach(r=>r.onclick=()=>{
+    state.reminderPanelOpen=false; renderReminderPanel();
+    const isPersonal = state.personalTasks.some(t=>t.id===r.dataset.openTask);
+    state.tab='tasks'; state.taskSubtab = isPersonal?'personal':'work';
+    render();
+    if(!isPersonal || personalAccessAllowed()) setTimeout(()=>openTaskModal(r.dataset.openTask, isPersonal),50);
+  });
+  panel.querySelectorAll('[data-open-day]').forEach(r=>r.onclick=()=>{
+    state.reminderPanelOpen=false; renderReminderPanel();
+    state.tab='calendar'; render();
+    setTimeout(()=>openDayModal(r.dataset.openDay),50);
+  });
+  document.getElementById('notifyToggle').onchange = async (e)=>{
+    if(e.target.checked){
+      if(!('Notification' in window)){ toast('Браузер не поддерживает уведомления'); e.target.checked=false; return; }
+      const perm = await Notification.requestPermission();
+      if(perm!=='granted'){ toast('Разрешение не получено'); e.target.checked=false; return; }
+      state.browserNotify = true;
+      await sSet('settings:browserNotify','on', false);
+      toast('Уведомления браузера включены');
+    } else {
+      state.browserNotify = false;
+      await sSet('settings:browserNotify','off', false);
+    }
+    renderReminderPanel();
+  };
+  setTimeout(()=>{
+    document.addEventListener('click', function closeOnOutside(ev){
+      if(!panel.contains(ev.target) && ev.target.id!=='bellBtn'){
+        state.reminderPanelOpen=false; renderReminderPanel();
+        document.removeEventListener('click', closeOnOutside);
+      }
+    });
+  },0);
+}
+
+function checkNotificationsTick(){
+  if(!state.browserNotify || !('Notification' in window) || Notification.permission!=='granted') return;
+  const today = todayISO();
+  const nowMin = nowHHMM();
+  state.events.filter(e=>e.date===today && e.startTime).forEach(e=>{
+    const key = e.id+'|'+e.date;
+    if(state.notifiedEventKeys.has(key)) return;
+    const [eh,em] = e.startTime.split(':').map(Number);
+    const [nh,nm] = nowMin.split(':').map(Number);
+    const diff = (eh*60+em) - (nh*60+nm);
+    if(diff>=0 && diff<=5){
+      new Notification('Скоро: '+e.title, {body:(e.startTime||'')+' · '+(CATEGORIES[e.category]||'')});
+      state.notifiedEventKeys.add(key);
+    }
+  });
+  const {overdueTasks, dueTodayTasks, dueSoonTasks} = computeReminders();
+  if((overdueTasks.length || dueTodayTasks.length || dueSoonTasks.length) && state.lastSummaryDate!==today){
+    new Notification('Задачи на сегодня', {body:`Просрочено: ${overdueTasks.length} · На сегодня: ${dueTodayTasks.length} · Через 1–3 дня: ${dueSoonTasks.length}`});
+    state.lastSummaryDate = today;
+    sSet('settings:notifySummaryDate', today, false);
+  }
+}
+
+function render(){
+  renderTabs();
+  const root = document.getElementById('appContent');
+  if(!state.loaded){ root.innerHTML = `<div class="empty-state"><div class="big">Загрузка…</div></div>`; return; }
+  if(state.tab==='overview') renderOverview(root);
+  else if(state.tab==='calendar') renderCalendar(root);
+  else if(state.tab==='tasks') renderTasks(root);
+  else if(state.tab==='funds'){
+    if(!hasRole('Руководитель','Ассистент')){
+      root.innerHTML = `
+        <div class="row-between">
+          <div>
+            <h2 class="section-title">Финансы</h2>
+            <p class="subtitle">Доходы и расходы — отдельно рабочие и личные</p>
+          </div>
+        </div>
+      ` + accessDeniedScreen('Раздел «Финансы» доступен только Руководителю и Ассистенту.');
+    } else if(state.personalMigrationNeeded){
+      root.innerHTML = `
+        <div class="row-between">
+          <div>
+            <h2 class="section-title">Финансы</h2>
+            <p class="subtitle">Доходы и расходы — отдельно рабочие и личные</p>
+          </div>
+        </div>
+      `;
+      const migWrap = document.createElement('div');
+      root.appendChild(migWrap);
+      renderPersonalMigrationScreen(migWrap, render);
+    } else {
+      renderFunds(root);
+    }
+  }
+  renderBellBadge();
+  renderWhoAmIBtn();
+}
+
+/* ================= OVERVIEW ================= */
+function renderOverview(root){
+  const {overdueTasks, dueTodayTasks, todayEvents, dueSoonTasks} = computeReminders();
+  const workBalance = state.fundsEntries.reduce((s,f)=> s + (f.type==='issue'?Number(f.amount):-Number(f.amount)), 0);
+  const meEmp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
+  const myTasks = state.currentUserId
+    ? state.tasksWork.filter(t=>t.assigneeId===state.currentUserId && t.status!=='done').sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999')).slice(0,6)
+    : [];
+
+  function taskRow(t){
+    const overdue = t.deadline && t.deadline<todayISO();
+    return `<div class="item" style="cursor:pointer;" data-ov-task="${t.id}">
+      <div class="main"><div class="title">${escapeHtml(t.title)}</div>
+      <div class="meta"><span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}</div></div>
+    </div>`;
+  }
+  function eventRow(e){
+    return `<div class="item" style="cursor:pointer;" data-ov-day="${e.date}">
+      <div class="main"><div class="title">${e.startTime?e.startTime+' · ':''}${escapeHtml(e.title)}</div>
+      <div class="meta"><span>${CATEGORIES[e.category]||''}</span></div></div>
+    </div>`;
+  }
+
+  root.innerHTML = `
+    <div class="row-between">
+      <div>
+        <h2 class="section-title">${meEmp ? `Здравствуйте, ${escapeHtml(meEmp.name)}!` : 'Обзор на сегодня'}</h2>
+        <p class="subtitle">${fmtDate(todayISO())}</p>
+      </div>
+    </div>
+    <div class="ledger-summary" style="margin-bottom:24px;">
+      <div class="sum-card spent"><div class="label">Просрочено задач</div><div class="val mono">${overdueTasks.length}</div></div>
+      <div class="sum-card issued"><div class="label">Задач на сегодня</div><div class="val mono">${dueTodayTasks.length}</div></div>
+      <div class="sum-card"><div class="label">Событий сегодня</div><div class="val mono" style="color:var(--indigo);">${todayEvents.length}</div></div>
+      ${hasRole('Руководитель','Ассистент') ? `<div class="sum-card balance"><div class="label">Остаток (рабочие)</div><div class="val mono">${fmtMoney(workBalance)}</div></div>` : ''}
+    </div>
+    ${meEmp ? `
+      <h2 class="section-title" style="font-size:16px;">🙋 Мои задачи</h2>
+      <div class="item-list" style="margin-bottom:24px;">
+        ${myTasks.length ? myTasks.map(taskRow).join('') : `<p class="subtitle" style="margin:0;">У вас нет открытых задач 🎉</p>`}
+      </div>
+    ` : `<div class="note" style="margin-bottom:24px;">Нажмите «🙋 Кто я?» в шапке, чтобы видеть здесь свои задачи.</div>`}
+    <h2 class="section-title" style="font-size:16px;">Просроченные задачи</h2>
+    <div class="item-list" style="margin-bottom:24px;">
+      ${overdueTasks.length ? overdueTasks.slice(0,8).map(taskRow).join('') : `<p class="subtitle" style="margin:0;">Просроченных задач нет 🎉</p>`}
+    </div>
+    <h2 class="section-title" style="font-size:16px;">Дедлайн через 1–3 дня</h2>
+    <div class="item-list" style="margin-bottom:24px;">
+      ${dueSoonTasks.length ? dueSoonTasks.slice(0,8).map(taskRow).join('') : `<p class="subtitle" style="margin:0;">В ближайшие дни дедлайнов нет</p>`}
+    </div>
+    <h2 class="section-title" style="font-size:16px;">Сегодня в календаре</h2>
+    <div class="item-list">
+      ${todayEvents.length ? todayEvents.map(eventRow).join('') : `<p class="subtitle" style="margin:0;">На сегодня событий не запланировано</p>`}
+    </div>
+  `;
+  root.querySelectorAll('[data-ov-task]').forEach(row=>row.onclick=()=>{
+    const id = row.dataset.ovTask;
+    state.tab='tasks'; state.taskSubtab='work'; render();
+    setTimeout(()=>openTaskModal(id, false), 50);
+  });
+  root.querySelectorAll('[data-ov-day]').forEach(row=>row.onclick=()=>{
+    const iso = row.dataset.ovDay;
+    state.tab='calendar'; render();
+    setTimeout(()=>openDayModal(iso), 50);
+  });
+}
+
+/* ================= CALENDAR ================= */
+function renderCalendar(root){
+  const y=state.calYear, m=state.calMonth;
+  const monthNames=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+  const first = new Date(y,m,1);
+  let startDow = first.getDay(); startDow = startDow===0?6:startDow-1; // Monday start
+  const daysInMonth = new Date(y,m+1,0).getDate();
+  const cells = [];
+  for(let i=0;i<startDow;i++) cells.push(null);
+  for(let d=1; d<=daysInMonth; d++) cells.push(d);
+
+  const eventsByDate = {};
+  allVisibleEvents().filter(e=>state.calFilters[e.category]!==false).forEach(e=>{ (eventsByDate[e.date]=eventsByDate[e.date]||[]).push(e); });
+
+  const activeEmpIds = state.employees.filter(e=>state.calEmployeeFilters[e.id]).map(e=>e.id);
+  const tasksByDate = {};
+  if(activeEmpIds.length){
+    state.tasksWork.filter(t=>t.deadline && t.assigneeId && activeEmpIds.includes(t.assigneeId)).forEach(t=>{
+      (tasksByDate[t.deadline]=tasksByDate[t.deadline]||[]).push(t);
+    });
+  }
+
+  root.innerHTML = `
+    <div class="row-between">
+      <div>
+        <h2 class="section-title">Общий календарь</h2>
+        <p class="subtitle">События, встречи и дедлайны — видны всем сотрудникам</p>
+      </div>
+      <button class="btn" id="addEventBtn">+ Событие</button>
+    </div>
+    <div class="cat-filters" id="catFilters">
+      ${Object.entries(CATEGORIES).map(([k,v])=>`
+        <button class="cat-chip ${state.calFilters[k]?'':'off'}" data-cat="${k}">
+          <span class="dot" style="background:${CATEGORY_COLORS[k]};"></span>${v}${k==='personal' && !personalAccessAllowed()?' 🔒':''}
+        </button>
+      `).join('')}
+    </div>
+    ${!personalAccessAllowed()?`<div class="note" id="calPersonalNote" style="margin-bottom:16px;">🔒 «Личные дела Карины» видны только Руководителю и Ассистенту. <button class="btn ghost small" id="calUnlockBtn" style="margin-left:6px;">🙋 Войти</button></div>`:''}
+    <div class="row-between" style="margin-bottom:6px;">
+      <p class="subtitle" style="margin:0;">Показать задачи на календаре:</p>
+    </div>
+    <div class="cat-filters" id="empFilters" style="margin-bottom:18px;">
+      ${state.employees.map(e=>`
+        <button class="cat-chip ${state.calEmployeeFilters[e.id]?'':'off'}" data-emp="${e.id}">
+          <span class="dot" style="background:${employeeColor(e.id)};"></span>${escapeHtml(e.name)}
+        </button>
+      `).join('') || `<span class="subtitle" style="margin:0;">Сначала добавьте сотрудников</span>`}
+    </div>
+    <div class="cal-head">
+      <div class="cal-nav"><button class="btn ghost small" id="calPrev">←</button></div>
+      <div class="month-label">${monthNames[m]} ${y}</div>
+      <div class="cal-nav"><button class="btn ghost small" id="calNext">→</button></div>
+    </div>
+    <div class="cal-grid">
+      ${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}
+      ${cells.map(d=>{
+        if(d===null) return `<div class="cal-cell empty"></div>`;
+        const iso = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const isToday = iso===todayISO();
+        const evts = (eventsByDate[iso]||[]).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
+        const tasks = (tasksByDate[iso]||[]).sort((a,b)=>(a.priority==='high'?-1:1));
+        const chipLen = calChipLen();
+        const evtChips = evts.map(e=>{
+          const label = truncate((e.seriesId?'🔁 ':'')+(e.startTime?e.startTime+' · ':'')+e.title, chipLen);
+          return `<div class="cal-evt cat-${e.category}" title="${e.seriesId?'🔁 Повтор — ':''}${escapeHtml(e.title)}">${escapeHtml(label)}</div>`;
+        });
+        const taskChips = tasks.map(t=>{
+          const label = truncate((t.status==='done'?'✓ ':'☐ ')+t.title, chipLen);
+          return `<div class="cal-evt cal-task ${t.status==='done'?'is-done':''}" style="border-color:${employeeColor(t.assigneeId)};color:${employeeColor(t.assigneeId)};" title="${escapeHtml(empName(t.assigneeId))}: ${escapeHtml(t.title)}">${escapeHtml(label)}</div>`;
+        });
+        const allChips = evtChips.concat(taskChips);
+        const maxShown = calMaxShown();
+        const shown = allChips.slice(0,maxShown);
+        const more = allChips.length - shown.length;
+        return `<div class="cal-cell ${isToday?'today':''}" data-date="${iso}">
+          <div class="cal-daynum">${d}</div>
+          ${shown.join('')}
+          ${more>0?`<div class="cal-more">+${more} ещё</div>`:''}
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+  root.querySelector('#calPrev').onclick=()=>{ state.calMonth--; if(state.calMonth<0){state.calMonth=11;state.calYear--;} render(); };
+  root.querySelector('#calNext').onclick=()=>{ state.calMonth++; if(state.calMonth>11){state.calMonth=0;state.calYear++;} render(); };
+  root.querySelector('#addEventBtn').onclick=()=>openEventModal();
+  const calUnlockBtn = document.getElementById('calUnlockBtn');
+  if(calUnlockBtn) calUnlockBtn.onclick=()=>openWhoAmIModal();
+  root.querySelectorAll('#catFilters .cat-chip').forEach(chip=>{
+    chip.onclick=()=>{
+      const cat = chip.dataset.cat;
+      state.calFilters[cat] = !state.calFilters[cat];
+      render();
+    };
+  });
+  root.querySelectorAll('#empFilters .cat-chip').forEach(chip=>{
+    chip.onclick=()=>{
+      const empId = chip.dataset.emp;
+      state.calEmployeeFilters[empId] = !state.calEmployeeFilters[empId];
+      render();
+    };
+  });
+  root.querySelectorAll('.cal-cell[data-date]').forEach(cell=>{
+    cell.onclick=()=>openDayModal(cell.dataset.date);
+  });
+}
+
+function openDayModal(iso){
+  if(state.dayModalIso !== iso){ state.dayDoneExpanded = false; }
+  state.dayModalIso = iso;
+  const evts = allVisibleEvents().filter(e=>e.date===iso).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
+  const dayTasks = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[]).filter(t=>t.deadline===iso);
+  const activeTasks = dayTasks.filter(t=>t.status!=='done');
+  const doneTasks = dayTasks.filter(t=>t.status==='done');
+  const isPersonalTaskFn = (id)=> state.personalTasks.some(pt=>pt.id===id);
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" id="ov">
+      <div class="modal" style="max-width:520px;">
+        <h3>${fmtDate(iso)}</h3>
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">События</h4>
+        <div class="item-list" style="margin-bottom:16px;">
+          ${evts.length? evts.map(e=>`
+            <div class="item">
+              <div class="main">
+                <div class="title">${isPersonalEvent(e.id)?'🔒 ':''}${e.startTime?e.startTime+(e.endTime?'–'+e.endTime:'')+' · ':''}${escapeHtml(e.title)}</div>
+                <div class="meta">
+                  <span>${CATEGORIES[e.category]||''}</span>
+                  ${e.seriesId?'<span>🔁 Повтор</span>':''}
+                  <span>${e.format==='online'?'💻 Онлайн':'📍 Оффлайн'}</span>
+                  ${e.employeeIds&&e.employeeIds.length?`<span>${e.employeeIds.map(empName).join(', ')}</span>`:''}
+                  ${e.manualNames?`<span>(${escapeHtml(e.manualNames)})</span>`:''}
+                </div>
+                ${e.format==='offline' && e.location?`<div class="desc">📍 ${escapeHtml(e.location)}</div>`:''}
+                ${e.format==='online' && e.link?`<div class="desc">🔗 <a href="${escapeHtml(e.link)}" target="_blank" rel="noopener" style="color:var(--indigo);">${escapeHtml(e.link)}</a></div>`:''}
+                ${e.notes?`<div class="desc">${escapeHtml(e.notes)}</div>`:''}
+              </div>
+              <div class="actions">
+                <button class="btn ghost small" data-edit="${e.id}">Изм.</button>
+                <button class="btn danger small" data-del="${e.id}">✕</button>
+              </div>
+            </div>
+          `).join('') : `<p class="subtitle" style="margin:0;">Событий нет</p>`}
+        </div>
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Задачи в работе на этот день</h4>
+        <div class="item-list" id="dayTaskListActive" style="margin-bottom:${doneTasks.length?10:16}px;">
+          ${activeTasks.length ? activeTasks.map(t=>taskItemHtml(t, isPersonalTaskFn(t.id))).join('')
+            : (doneTasks.length ? `<p class="subtitle" style="margin:0;">Активных задач нет — все выполнены 🎉</p>` : `<p class="subtitle" style="margin:0;">Задач с таким сроком нет</p>`)}
+        </div>
+        ${doneTasks.length ? `
+        <button class="btn ghost small" id="toggleDoneTasks">${state.dayDoneExpanded?'Скрыть':'Показать'} выполненные задачи (${doneTasks.length})</button>
+        <div class="item-list" id="dayTaskListDone" style="margin:10px 0 16px;${state.dayDoneExpanded?'':'display:none;'}">
+          ${doneTasks.map(t=>taskItemHtml(t, isPersonalTaskFn(t.id))).join('')}
+        </div>` : ''}
+        <div class="modal-actions">
+          <button class="btn ghost" id="closeDayModal">Закрыть</button>
+          <button class="btn" id="addForDay">+ Добавить событие</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('closeDayModal').onclick=()=>{ state.dayModalIso=null; closeModal(); };
+  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov'){ state.dayModalIso=null; closeModal(); } };
+  document.getElementById('addForDay').onclick=()=>openEventModal(null, iso);
+  modal.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openEventModal(b.dataset.edit));
+  modal.querySelectorAll('[data-del]').forEach(b=>b.onclick=async ()=>{
+    const evId = b.dataset.del;
+    const personal = isPersonalEvent(evId);
+    const evObj = eventsFor(personal).find(e=>e.id===evId);
+    if(evObj && evObj.seriesId){
+      const choice = await showSeriesDeleteChoice();
+      if(!choice) return;
+      if(choice==='one'){
+        await moveToTrash(personal, 'event', evObj);
+        setEventsFor(personal, eventsFor(personal).filter(e=>e.id!==evId));
+      } else {
+        const seriesEvents = eventsFor(personal).filter(e=>e.seriesId===evObj.seriesId);
+        for(const se of seriesEvents) await moveToTrash(personal, 'event', se);
+        setEventsFor(personal, eventsFor(personal).filter(e=>e.seriesId!==evObj.seriesId));
+      }
+      await persistEventsFor(personal); closeModal(); render();
+    } else if(await showConfirm('Удалить событие?')){
+      if(evObj) await moveToTrash(personal, 'event', evObj);
+      setEventsFor(personal, eventsFor(personal).filter(e=>e.id!==evId));
+      await persistEventsFor(personal); closeModal(); render();
+    }
+  });
+  const activeListEl = document.getElementById('dayTaskListActive');
+  if(activeTasks.length) wireDayTaskActions(activeListEl, iso);
+  const doneListEl = document.getElementById('dayTaskListDone');
+  if(doneListEl) wireDayTaskActions(doneListEl, iso);
+  const toggleBtn = document.getElementById('toggleDoneTasks');
+  if(toggleBtn) toggleBtn.onclick=()=>{
+    state.dayDoneExpanded = !state.dayDoneExpanded;
+    closeModal(); openDayModal(iso);
+  };
+}
+
+function wireDayTaskActions(el, iso){
+  wireEventLinks(el);
+  const isPersonalTask = (id)=> state.personalTasks.some(pt=>pt.id===id);
+  el.querySelectorAll('[data-done]').forEach(cb=>{
+    cb.onclick = e=>e.stopPropagation();
+    cb.onchange = async ()=>{
+      const id = cb.dataset.done;
+      const personal = isPersonalTask(id);
+      const task = tasksFor(personal).find(t=>t.id===id);
+      if(!canCompleteTask(task, personal)){
+        cb.checked = !cb.checked;
+        toast(state.currentUserId ? `Отметить может только исполнитель${task&&task.assigneeId?': '+empName(task.assigneeId):''}` : 'Сначала выберите «Кто я?» в шапке');
+        return;
+      }
+      if(cb.checked){
+        const comment = await requestCompletionComment(task ? task.title : '');
+        if(comment===null){ cb.checked=false; return; }
+        const updated = tasksFor(personal).map(t=>t.id===id?withStatus(t,'done',comment):t);
+        setTasksFor(personal, updated);
+        await persistTasksFor(personal);
+        await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
+        render();
+        closeModal(); openDayModal(iso);
+      } else {
+        setTasksFor(personal, tasksFor(personal).map(t=>t.id===id?withStatus(t,'progress'):t));
+        await persistTasksFor(personal);
+        render();
+        closeModal(); openDayModal(iso);
+      }
+    };
+  });
+  el.querySelectorAll('[data-edit-task]').forEach(b=>b.onclick=()=>{
+    const id = b.dataset.editTask;
+    const personal = isPersonalTask(id);
+    const t = tasksFor(personal).find(x=>x.id===id);
+    if(!canEditTask(t, personal)){ toast(whyCantEdit(t)); return; }
+    openTaskModal(id, personal);
+  });
+  el.querySelectorAll('[data-add-sub]').forEach(b=>b.onclick=()=>openTaskModal(null, isPersonalTask(b.dataset.addSub), b.dataset.addSub));
+  el.querySelectorAll('[data-del-task]').forEach(b=>b.onclick=async ()=>{
+    const id = b.dataset.delTask;
+    const personal = isPersonalTask(id);
+    const targetTask = tasksFor(personal).find(x=>x.id===id);
+    const didDelete = await performTaskDeletion(personal, targetTask);
+    if(!didDelete) return;
+    render();
+    closeModal(); openDayModal(iso);
+  });
+}
+
+function openEventModal(id, presetDate){
+  const existingPersonal = id ? isPersonalEvent(id) : false;
+  const existing = id ? (existingPersonal ? state.personalEvents : state.events).find(e=>e.id===id) : null;
+  const initialFormat = existing ? (existing.format||'offline') : 'offline';
+  const initialEmpIds = existing && existing.employeeIds ? existing.employeeIds : [];
+  const initialHasManagerHostess = initialEmpIds.some(eid=>{
+    const e = state.employees.find(x=>x.id===eid);
+    return e && (e.role==='Менеджер' || e.role==='Хостес');
+  });
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" id="ov">
+      <div class="modal">
+        <h3>${existing?'Изменить событие':'Новое событие'}</h3>
+        <div class="field"><label>Название</label><input id="f_title" value="${existing?escapeHtml(existing.title):''}" placeholder="Например: Совещание с мастерами"></div>
+        <div class="field-row">
+          <div class="field"><label>Дата</label><input type="date" id="f_date" value="${existing?existing.date:(presetDate||todayISO())}"></div>
+          <div class="field"><label>Начало</label><input type="time" id="f_start" value="${existing?existing.startTime||'':''}"></div>
+          <div class="field"><label>Окончание</label><input type="time" id="f_end" value="${existing?existing.endTime||'':''}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Тип</label>
+            <select id="f_cat">
+              ${Object.entries(CATEGORIES).map(([k,v])=>`<option value="${k}" ${existing&&existing.category===k?'selected':''}>${v}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Формат</label>
+            <select id="f_format">
+              <option value="offline" ${initialFormat==='offline'?'selected':''}>Оффлайн</option>
+              <option value="online" ${initialFormat==='online'?'selected':''}>Онлайн</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" id="f_location_wrap" style="${initialFormat==='online'?'display:none;':''}">
+          <label>Местоположение</label>
+          <input id="f_location" value="${existing?escapeHtml(existing.location||''):''}" placeholder="Например: Мастерская">
+        </div>
+        <div class="field" id="f_link_wrap" style="${initialFormat==='offline'?'display:none;':''}">
+          <label>Ссылка</label>
+          <input id="f_link" value="${existing?escapeHtml(existing.link||''):''}" placeholder="https://...">
+        </div>
+        <div class="field"><label>Участники (можно выбрать несколько)</label>
+          <div class="emp-checklist" id="f_emp_list">
+            ${state.employees.map(e=>`
+              <label>
+                <input type="checkbox" data-emp-cb value="${e.id}" ${initialEmpIds.includes(e.id)?'checked':''}>
+                ${escapeHtml(e.name)}${e.role?' — '+escapeHtml(e.role):''}
+              </label>
+            `).join('') || `<span class="subtitle" style="margin:0;">Сначала добавьте сотрудников</span>`}
+          </div>
+        </div>
+        <div class="field" id="f_manual_wrap" style="${initialHasManagerHostess?'':'display:none;'}">
+          <label>Уточните имена (Менеджер / Хостес)</label>
+          <input id="f_manual_names" value="${existing?escapeHtml(existing.manualNames||''):''}" placeholder="Например: Оля, Настя">
+        </div>
+        <div class="field"><label>Заметка</label><textarea id="f_notes" rows="2">${existing?escapeHtml(existing.notes||''):''}</textarea></div>
+        ${!existing ? `
+        <div class="field"><label>Повтор</label>
+          <select id="f_repeat">
+            <option value="none">Не повторять</option>
+            <option value="daily">Каждый день</option>
+            <option value="weekly">Каждую неделю</option>
+            <option value="monthly">Каждый месяц</option>
+            <option value="yearly">Каждый год</option>
+          </select>
+        </div>
+        <div class="field" id="f_weekdays_wrap" style="display:none;">
+          <label>Дни недели</label>
+          <div class="cat-filters" id="f_weekdays">
+            ${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map((d,i)=>`<button type="button" class="cat-chip off" data-wd="${i+1}">${d}</button>`).join('')}
+          </div>
+        </div>
+        <div class="field" id="f_repeat_until_wrap" style="display:none;">
+          <label>Повторять до</label>
+          <input type="date" id="f_repeat_until">
+        </div>
+        ` : (existing.seriesId ? `<div class="note">🔁 Это событие — часть повторяющейся серии. При сохранении можно применить изменения только к этой дате или сразу ко всей серии.</div>` : '')}
+        <div class="modal-actions">
+          <button class="btn ghost" id="cancelEvt">Отмена</button>
+          <button class="btn" id="saveEvt">Сохранить</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('cancelEvt').onclick=closeModal;
+  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+  document.getElementById('f_format').onchange=(e)=>{
+    const isOnline = e.target.value==='online';
+    document.getElementById('f_location_wrap').style.display = isOnline?'none':'';
+    document.getElementById('f_link_wrap').style.display = isOnline?'':'none';
+  };
+  const empListEl = document.getElementById('f_emp_list');
+  const getSelectedEmpIds = ()=> Array.from(empListEl.querySelectorAll('[data-emp-cb]:checked')).map(cb=>cb.value);
+  const refreshManualWrap = ()=>{
+    const selected = getSelectedEmpIds();
+    const hasMgrHost = selected.some(eid=>{
+      const e = state.employees.find(x=>x.id===eid);
+      return e && (e.role==='Менеджер' || e.role==='Хостес');
+    });
+    document.getElementById('f_manual_wrap').style.display = hasMgrHost?'':'none';
+  };
+  empListEl.querySelectorAll('[data-emp-cb]').forEach(cb=>cb.onchange=refreshManualWrap);
+
+  const repeatEl = document.getElementById('f_repeat');
+  if(repeatEl){
+    const weekdaysWrap = document.getElementById('f_weekdays_wrap');
+    const untilWrap = document.getElementById('f_repeat_until_wrap');
+    document.querySelectorAll('#f_weekdays .cat-chip').forEach(chip=>{
+      chip.onclick=()=>chip.classList.toggle('off');
+    });
+    repeatEl.onchange=(e)=>{
+      const val = e.target.value;
+      if(val==='none'){ weekdaysWrap.style.display='none'; untilWrap.style.display='none'; return; }
+      untilWrap.style.display='';
+      if(val==='daily' || val==='weekly'){
+        weekdaysWrap.style.display='';
+        const startDate = document.getElementById('f_date').value || todayISO();
+        const startWdRaw = new Date(startDate+'T00:00:00').getDay();
+        const startWd = startWdRaw===0?7:startWdRaw;
+        document.querySelectorAll('#f_weekdays .cat-chip').forEach(chip=>{
+          const wd = parseInt(chip.dataset.wd, 10);
+          if(val==='daily') chip.classList.remove('off');
+          else chip.classList.toggle('off', wd!==startWd);
+        });
+      } else {
+        weekdaysWrap.style.display='none';
+      }
+      const untilInput = document.getElementById('f_repeat_until');
+      if(!untilInput.value){
+        const startDate = document.getElementById('f_date').value || todayISO();
+        const d = new Date(startDate+'T00:00:00'); d.setMonth(d.getMonth()+3);
+        untilInput.value = dateToISO(d);
+      }
+    };
+  }
+
+  document.getElementById('saveEvt').onclick=async ()=>{
+    const title = document.getElementById('f_title').value.trim();
+    if(!title){ toast('Укажите название'); return; }
+    const category = document.getElementById('f_cat').value;
+    const newPersonal = category==='personal';
+    if(newPersonal && !personalAccessAllowed()){
+      toast('Категория «Личные дела Карины» доступна только Руководителю и Ассистенту — войдите через «🙋 Кто я?»');
+      return;
+    }
+    const emp = getSelectedEmpIds();
+    const format = document.getElementById('f_format').value;
+    const hasMgrHost = emp.some(eid=>{
+      const e = state.employees.find(x=>x.id===eid);
+      return e && (e.role==='Менеджер' || e.role==='Хостес');
+    });
+    const data = {
+      id: existing?existing.id:uid(),
+      title,
+      date: document.getElementById('f_date').value || todayISO(),
+      startTime: document.getElementById('f_start').value,
+      endTime: document.getElementById('f_end').value,
+      category,
+      format,
+      location: format==='offline' ? document.getElementById('f_location').value.trim() : '',
+      link: format==='online' ? document.getElementById('f_link').value.trim() : '',
+      employeeIds: emp,
+      manualNames: hasMgrHost ? document.getElementById('f_manual_names').value.trim() : '',
+      notes: document.getElementById('f_notes').value.trim(),
+      seriesId: existing ? (existing.seriesId||null) : null,
+    };
+    const repeatType = repeatEl ? repeatEl.value : 'none';
+    if(!existing && repeatType!=='none'){
+      const untilVal = document.getElementById('f_repeat_until').value || data.date;
+      const weekdaySet = new Set(Array.from(document.querySelectorAll('#f_weekdays .cat-chip:not(.off)')).map(c=>parseInt(c.dataset.wd,10)));
+      let dates = generateRecurrenceDates(data.date, repeatType, weekdaySet, untilVal, 300);
+      if(!dates.length) dates = [data.date];
+      const seriesId = uid();
+      const newEvts = dates.map(d=>({...data, id: uid()+d, date: d, seriesId}));
+      setEventsFor(newPersonal, eventsFor(newPersonal).concat(newEvts));
+      await persistEventsFor(newPersonal);
+      toast(`Добавлено событий: ${dates.length}`);
+      closeModal(); render();
+      return;
+    } else if(existing){
+      if(existingPersonal !== newPersonal){
+        // moved between personal/work — remove from old store, add to new
+        setEventsFor(existingPersonal, eventsFor(existingPersonal).filter(e=>e.id!==existing.id));
+        await persistEventsFor(existingPersonal);
+        setEventsFor(newPersonal, eventsFor(newPersonal).concat([data]));
+        await persistEventsFor(newPersonal);
+        toast('Событие сохранено');
+      } else if(existing.seriesId){
+        const choice = await showSeriesEditChoice();
+        if(!choice) return;
+        if(choice==='one'){
+          setEventsFor(newPersonal, eventsFor(newPersonal).map(e=>e.id===existing.id?data:e));
+        } else {
+          setEventsFor(newPersonal, eventsFor(newPersonal).map(e=>{
+            if(e.seriesId===existing.seriesId){
+              return {...data, id:e.id, date:e.date, seriesId:e.seriesId};
+            }
+            return e;
+          }));
+        }
+        await persistEventsFor(newPersonal);
+        toast(choice==='series' ? 'Изменения применены ко всей серии' : 'Событие сохранено');
+      } else {
+        setEventsFor(newPersonal, eventsFor(newPersonal).map(e=>e.id===existing.id?data:e));
+        await persistEventsFor(newPersonal);
+        toast('Событие сохранено');
+      }
+    } else {
+      setEventsFor(newPersonal, eventsFor(newPersonal).concat([data]));
+      await persistEventsFor(newPersonal);
+      toast('Событие сохранено');
+    }
+    closeModal(); render();
+  };
+}
+
+/* ================= TASKS ================= */
+function renderTasks(root){
+  root.innerHTML = `
+    <div class="row-between">
+      <div>
+        <h2 class="section-title">Задачи</h2>
+        <p class="subtitle">Проекты, задачи и подзадачи — рабочие и личные под паролем</p>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn ghost" id="checklistsBtn" style="${state.taskSubtab!=='work'?'display:none;':''}">📋 Чек-листы</button>
+        <button class="btn" id="addTaskBtn" style="${state.taskSubtab==='analytics'?'display:none;':''}">+ Задача</button>
+      </div>
+    </div>
+    <div class="subtabs">
+      <button class="subtab-btn ${state.taskSubtab==='work'?'active':''}" data-st="work">Рабочие</button>
+      <button class="subtab-btn ${state.taskSubtab==='personal'?'active':''}" data-st="personal">🔒 Личные</button>
+      <button class="subtab-btn ${state.taskSubtab==='analytics'?'active':''}" data-st="analytics">📊 Аналитика</button>
+    </div>
+    <div id="taskBody"></div>
+  `;
+  root.querySelectorAll('.subtab-btn').forEach(b=>b.onclick=()=>{ state.taskSubtab=b.dataset.st; render(); });
+  root.querySelector('#addTaskBtn').onclick=()=>{
+    if(state.taskSubtab==='personal' && !personalAccessAllowed()){ toast('Личные задачи доступны только Руководителю и Ассистенту'); return; }
+    openTaskModal(null, state.taskSubtab==='personal');
+  };
+  const checklistsBtn = document.getElementById('checklistsBtn');
+  if(checklistsBtn) checklistsBtn.onclick=()=>openChecklistsModal();
+  if(state.taskSubtab==='work') renderTaskBoard(root.querySelector('#taskBody'), false);
+  else if(state.taskSubtab==='analytics') renderTaskAnalytics(root.querySelector('#taskBody'));
+  else renderPersonalTasks(root.querySelector('#taskBody'));
+}
+
+function linkedEventBadge(t){
+  if(!t.eventId) return '';
+  const ev = allVisibleEvents().find(e=>e.id===t.eventId);
+  if(!ev){
+    if(!personalAccessAllowed()) return `<span>🔗 🔒 (доступно только Руководителю/Ассистенту)</span>`;
+    return `<span style="color:var(--brick);">🔗 мероприятие удалено</span>`;
+  }
+  return `<span data-goto-event="${ev.date}" style="cursor:pointer;text-decoration:underline;color:var(--indigo);">🔗 ${escapeHtml(ev.title)} · ${fmtDate(ev.date)}</span>`;
+}
+function taskItemHtml(t, personal, opts){
+  opts = opts || {};
+  const depth = opts.depth||0;
+  const childCount = opts.childCount||0;
+  const collapsed = !!opts.collapsed;
+  const overdue = t.deadline && t.deadline < todayISO() && t.status!=='done';
+  const canComplete = canCompleteTask(t, personal);
+  return `
+    <div class="item ${t.status==='done'?'is-done':''}" style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
+      <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-done="${t.id}" ${t.status==='done'?'checked':''} title="${canComplete?'Отметить выполненной':whyCantComplete(t)}">
+      <div class="main">
+        <div class="title">
+          ${childCount>0?`<button type="button" class="task-toggle" data-toggle-children="${t.id}" title="${collapsed?'Показать':'Скрыть'} подзадачи">${collapsed?'▸':'▾'}</button>`:''}
+          ${depth>0?'↳ ':''}${escapeHtml(t.title)}
+          ${childCount>0?`<span class="subtitle" style="font-size:11px;">(${childCount})</span>`:''}
+        </div>
+        <div class="meta">
+          <span class="badge ${t.status==='done'?'done':'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
+          <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]}</span>
+          ${t.projectId?`<span>📁 ${escapeHtml(projectName(personal,t.projectId))}</span>`:''}
+          ${opts.orphanParentName?`<span>⤷ подзадача: ${escapeHtml(opts.orphanParentName)}</span>`:''}
+          ${!personal && t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
+          ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
+          ${t.createdDate?`<span>от ${fmtDate(t.createdDate)}</span>`:''}
+          ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}${overdue?' · просрочено':''}</span>`:''}
+          ${t.seriesId?`<span>🔁 повтор</span>`:''}
+          ${t.purchaseStore?`<span>🏬 ${escapeHtml(t.purchaseStore)}</span>`:''}
+          ${t.purchaseAmount?`<span>💰 ${fmtMoney(t.purchaseAmount)}</span>`:''}
+          ${t.purchaseExpenseId?`<span style="color:var(--teal);">💳 расход добавлен</span>`:''}
+          ${linkedEventBadge(t)}
+        </div>
+        ${t.description?`<div class="desc">${escapeHtml(t.description)}</div>`:''}
+        ${t.status==='done' && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${escapeHtml(t.completionComment)}</div>`:''}
+      </div>
+      <div class="actions">
+        <button class="btn ghost small" data-add-sub="${t.id}">+ Подзадача</button>
+        <button class="btn ghost small" data-edit-task="${t.id}" style="${canEditTask(t,personal)?'':'opacity:.4;'}" title="${canEditTask(t,personal)?'Изменить':whyCantEdit(t)}">Изм.</button>
+        <button class="btn danger small" data-del-task="${t.id}" style="${canDeleteTask(t,personal)?'':'opacity:.4;'}" title="${canDeleteTask(t,personal)?'Удалить':whyCantDelete(t)}">✕</button>
+      </div>
+    </div>`;
+}
+
+function renderTaskBoard(el, personal){
+  const selKey = personal?'personal':'work';
+  const projects = projectsFor(personal);
+  const selected = state.selectedProject[selKey];
+
+  el.innerHTML = `
+    <div class="cat-filters" id="projRow"></div>
+    <div class="filters">
+      ${!personal?`<select id="filtEmp">
+        <option value="all">Все сотрудники</option>
+        ${state.employees.map(e=>`<option value="${e.id}" ${state.taskFilterEmployee===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}
+      </select>`:''}
+      <select id="filtStatus">
+        <option value="all" ${state.taskFilterStatus==='all'?'selected':''}>Любой статус</option>
+        ${Object.entries(STATUSES).map(([k,v])=>`<option value="${k}" ${state.taskFilterStatus===k?'selected':''}>${v}</option>`).join('')}
+      </select>
+    </div>
+    <div class="item-list" id="taskList"></div>
+  `;
+
+  const projRow = el.querySelector('#projRow');
+  projRow.innerHTML = `
+    <button class="cat-chip ${selected==='all'?'':'off'}" data-proj="all"><span class="dot" style="background:var(--ink-soft);"></span>Все</button>
+    <button class="cat-chip ${selected==='none'?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>
+    ${projects.map(p=>`<button class="cat-chip ${selected===p.id?'':'off'}" data-proj="${p.id}"><span class="dot" style="background:var(--indigo);"></span>${escapeHtml(p.name)}</button>`).join('')}
+    <button class="btn ghost small" id="manageProjBtn">+ Проект</button>
+  `;
+  projRow.querySelectorAll('[data-proj]').forEach(chip=>{
+    chip.onclick=()=>{ state.selectedProject[selKey]=chip.dataset.proj; render(); };
+  });
+  projRow.querySelector('#manageProjBtn').onclick=()=>openProjectsModal(personal);
+
+  if(!personal){
+    const fe = el.querySelector('#filtEmp');
+    fe.onchange=(e)=>{ state.taskFilterEmployee=e.target.value; render(); };
+  }
+  el.querySelector('#filtStatus').onchange=(e)=>{ state.taskFilterStatus=e.target.value; render(); };
+
+  let list = tasksFor(personal).slice();
+  if(!personal && state.taskFilterEmployee!=='all') list = list.filter(t=>t.assigneeId===state.taskFilterEmployee);
+  if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
+  if(selected==='none') list = list.filter(t=>!t.projectId);
+  else if(selected!=='all') list = list.filter(t=>t.projectId===selected);
+
+  const byId = {}; list.forEach(t=>byId[t.id]=t);
+  const roots = list.filter(t=> !t.parentId || !byId[t.parentId]);
+  roots.sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+
+  function renderNode(t, depth){
+    const children = list.filter(c=>c.parentId===t.id).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+    const allTasks = tasksFor(personal);
+    const orphanParent = (t.parentId && !byId[t.parentId]) ? allTasks.find(x=>x.id===t.parentId) : null;
+    const collapsed = state.collapsedTaskIds.has(t.id);
+    const html = taskItemHtml(t, personal, {depth, orphanParentName: orphanParent?orphanParent.title:null, childCount: children.length, collapsed});
+    if(collapsed || !children.length) return html;
+    return html + children.map(c=>renderNode(c, depth+1)).join('');
+  }
+
+  const listEl = el.querySelector('#taskList');
+  listEl.innerHTML = roots.length ? roots.map(t=>renderNode(t,0)).join('') :
+    `<div class="empty-state"><div class="big">Пока нет задач</div><p>${projects.length?'Добавьте задачу в этот проект':'Добавьте первую задачу'}</p></div>`;
+  wireTaskActions(listEl, personal);
+}
+
+function wireEventLinks(el){
+  el.querySelectorAll('[data-goto-event]').forEach(span=>{
+    span.onclick=(e)=>{
+      e.stopPropagation();
+      const iso = span.dataset.gotoEvent;
+      if(state.tab!=='calendar'){ state.tab='calendar'; render(); }
+      closeModal();
+      setTimeout(()=>openDayModal(iso), 30);
+    };
+  });
+}
+function wireTaskActions(el, personal){
+  wireEventLinks(el);
+  el.querySelectorAll('[data-toggle-children]').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      const id = btn.dataset.toggleChildren;
+      if(state.collapsedTaskIds.has(id)) state.collapsedTaskIds.delete(id);
+      else state.collapsedTaskIds.add(id);
+      render();
+    };
+  });
+  el.querySelectorAll('[data-done]').forEach(cb=>{
+    cb.onclick = e=>e.stopPropagation();
+    cb.onchange = async ()=>{
+      const id = cb.dataset.done;
+      const task = tasksFor(personal).find(t=>t.id===id);
+      if(!canCompleteTask(task, personal)){
+        cb.checked = !cb.checked;
+        toast(state.currentUserId ? `Отметить может только исполнитель${task&&task.assigneeId?': '+empName(task.assigneeId):''}` : 'Сначала выберите «Кто я?» в шапке');
+        return;
+      }
+      if(cb.checked){
+        const comment = await requestCompletionComment(task ? task.title : '');
+        if(comment===null){ cb.checked=false; return; }
+        const updated = tasksFor(personal).map(t=>t.id===id?withStatus(t,'done',comment):t);
+        setTasksFor(personal, updated);
+        await persistTasksFor(personal);
+        await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
+        render();
+      } else {
+        setTasksFor(personal, tasksFor(personal).map(t=>t.id===id?withStatus(t,'progress'):t));
+        await persistTasksFor(personal);
+        render();
+      }
+    };
+  });
+  el.querySelectorAll('[data-add-sub]').forEach(b=>b.onclick=()=>openTaskModal(null, personal, b.dataset.addSub));
+  el.querySelectorAll('[data-edit-task]').forEach(b=>b.onclick=()=>{
+    const id = b.dataset.editTask;
+    const t = tasksFor(personal).find(x=>x.id===id);
+    if(!canEditTask(t, personal)){ toast(whyCantEdit(t)); return; }
+    openTaskModal(id, personal);
+  });
+  el.querySelectorAll('[data-del-task]').forEach(b=>b.onclick=async ()=>{
+    const id = b.dataset.delTask;
+    const targetTask = tasksFor(personal).find(x=>x.id===id);
+    const didDelete = await performTaskDeletion(personal, targetTask);
+    if(!didDelete) return;
+    render();
+  });
+}
+
+function renderPersonalTasks(el){
+  if(!hasRole('Руководитель','Ассистент')){
+    el.innerHTML = accessDeniedScreen('Личные задачи доступны только Руководителю и Ассистенту.');
+    return;
+  }
+  if(state.personalMigrationNeeded){
+    renderPersonalMigrationScreen(el, render);
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="note">Личный раздел виден только Руководителю и Ассистенту (проверяется по входу через «🙋 Кто я?»). Это защита на уровне приложения, а не банковский уровень безопасности — не храните здесь данные, требующие юридической конфиденциальности.</div>
+    <div id="persBoard"></div>
+  `;
+  renderTaskBoard(el.querySelector('#persBoard'), true);
+}
+
+function openTaskModal(id, personal, presetParentId){
+  const source = tasksFor(personal);
+  const existing = id ? source.find(t=>t.id===id) : null;
+  const parentId = existing ? (existing.parentId||null) : (presetParentId||null);
+  const parentTask = parentId ? source.find(x=>x.id===parentId) : null;
+  const projects = projectsFor(personal);
+  const selKey = personal?'personal':'work';
+  const purchasesProject = projects.find(p=>isPurchasesProjectName(p.name));
+  const initialProjectId = parentId
+    ? (parentTask ? parentTask.projectId : null)
+    : (existing ? (existing.projectId||null) : (projects.some(p=>p.id===state.selectedProject[selKey]) ? state.selectedProject[selKey] : null));
+  const initialIsPurchases = !!(purchasesProject && initialProjectId===purchasesProject.id);
+  const assistantEmp = state.employees.find(e=>e.role==='Ассистент');
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" id="ov">
+      <div class="modal">
+        <h3>${existing?'Изменить задачу':(parentId?'Новая подзадача':'Новая задача')}${personal?' · личная':''}</h3>
+        ${parentId?`<div class="note">Подзадача для: <strong>${escapeHtml(parentTask?parentTask.title:'')}</strong></div>`:''}
+        <div class="field"><label>Название *</label><input id="t_title" value="${existing?escapeHtml(existing.title):''}"></div>
+        <div class="field"><label>Описание *</label><textarea id="t_desc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
+        ${!parentId?`
+        <div class="field"><label>Проект</label>
+          <select id="t_project">
+            <option value="">Без проекта</option>
+            ${projects.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (state.selectedProject[selKey]===p.id?'selected':'')}>${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>`:''}
+        <div class="field-row" id="t_purchase_wrap" style="${initialIsPurchases?'':'display:none;'}">
+          <div class="field"><label>Сумма покупки (необязательно)</label><input type="number" min="0" step="0.01" class="mono" id="t_purchase_amount" value="${existing&&existing.purchaseAmount?existing.purchaseAmount:''}"></div>
+          <div class="field"><label>Магазин (необязательно)</label><input id="t_purchase_store" value="${existing?escapeHtml(existing.purchaseStore||''):''}" placeholder="Например: Леонардо"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Кто поставил задачу *</label>
+            <select id="t_creator">
+              <option value="">— выберите —</option>
+              ${state.employees.map(e=>{
+                const isSelected = existing ? existing.creatorId===e.id : (state.currentUserId && e.id===state.currentUserId);
+                return `<option value="${e.id}" ${isSelected?'selected':''}>${escapeHtml(e.name)}</option>`;
+              }).join('')}
+            </select>
+          </div>
+          ${!personal?`
+          <div class="field"><label>Исполнитель *</label>
+            <select id="t_assignee">
+              <option value="">— выберите —</option>
+              ${state.employees.map(e=>{
+                const isSelected = existing ? existing.assigneeId===e.id : (initialIsPurchases && assistantEmp && e.id===assistantEmp.id);
+                return `<option value="${e.id}" ${isSelected?'selected':''}>${escapeHtml(e.name)}</option>`;
+              }).join('')}
+            </select>
+          </div>`:''}
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Дата постановки *</label><input type="date" id="t_createdDate" value="${existing?existing.createdDate||todayISO():todayISO()}"></div>
+          <div class="field"><label>Дедлайн *</label><input type="date" id="t_deadline" value="${existing?existing.deadline||'':''}"></div>
+          <div class="field"><label>Приоритет *</label>
+            <select id="t_priority">
+              ${Object.entries(PRIORITIES).map(([k,v])=>`<option value="${k}" ${existing?existing.priority===k?'selected':'':k==='med'?'selected':''}>${v}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Статус *</label>
+            <select id="t_status">
+              ${Object.entries(STATUSES).map(([k,v])=>`<option value="${k}" ${existing&&existing.status===k?'selected':''}>${v}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="field" id="t_completion_wrap" style="${existing&&existing.status==='done'?'':'display:none;'}">
+          <label>Что сделано? *</label>
+          <textarea id="t_completion_comment" rows="2" placeholder="Опишите, что было сделано">${existing?escapeHtml(existing.completionComment||''):''}</textarea>
+        </div>
+        ${!existing && !parentId ? `
+        <div class="field"><label>Повтор</label>
+          <select id="t_repeat">
+            <option value="none">Не повторять</option>
+            <option value="daily">Каждый день</option>
+            <option value="weekly">Каждую неделю</option>
+            <option value="monthly">Каждый месяц</option>
+            <option value="yearly">Каждый год</option>
+          </select>
+        </div>
+        <div class="field" id="t_weekdays_wrap" style="display:none;">
+          <label>Дни недели</label>
+          <div class="cat-filters" id="t_weekdays">
+            ${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map((d,i)=>`<button type="button" class="cat-chip off" data-wd="${i+1}">${d}</button>`).join('')}
+          </div>
+        </div>
+        <div class="field" id="t_repeat_until_wrap" style="display:none;">
+          <label>Повторять до</label>
+          <input type="date" id="t_repeat_until">
+        </div>
+        ` : (existing && existing.seriesId ? `<div class="note">🔁 Эта задача — часть повторяющейся серии. При сохранении можно применить изменения только к ней или сразу ко всей серии.</div>` : '')}
+        <div class="field"><label>Привязать к мероприятию</label>
+          <div class="cat-filters" id="t_event_cats">
+            <button type="button" class="cat-chip" data-evcat="">Без привязки</button>
+            ${Object.entries(CATEGORIES).map(([k,v])=>`<button type="button" class="cat-chip off" data-evcat="${k}"><span class="dot" style="background:${CATEGORY_COLORS[k]};"></span>${v}</button>`).join('')}
+          </div>
+          <div class="cat-filters" id="t_event_items" style="margin-top:8px;"></div>
+          <input type="hidden" id="t_event" value="">
+        </div>
+        <div class="modal-actions">
+          <button class="btn ghost" id="cancelTask">Отмена</button>
+          <button class="btn" id="saveTask">Сохранить</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('cancelTask').onclick=closeModal;
+  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+
+  if(!parentId){
+    const projectSelect = document.getElementById('t_project');
+    projectSelect.onchange=(e)=>{
+      const pid = e.target.value;
+      const isPurchases = !!(purchasesProject && pid===purchasesProject.id);
+      document.getElementById('t_purchase_wrap').style.display = isPurchases ? '' : 'none';
+      if(isPurchases && !personal && assistantEmp){
+        const assigneeSel = document.getElementById('t_assignee');
+        if(assigneeSel) assigneeSel.value = assistantEmp.id;
+      }
+    };
+  }
+
+  document.getElementById('t_status').onchange=(e)=>{
+    document.getElementById('t_completion_wrap').style.display = e.target.value==='done' ? '' : 'none';
+  };
+
+  const repeatEl = document.getElementById('t_repeat');
+  if(repeatEl){
+    const weekdaysWrap = document.getElementById('t_weekdays_wrap');
+    const untilWrap = document.getElementById('t_repeat_until_wrap');
+    document.querySelectorAll('#t_weekdays .cat-chip').forEach(chip=>{
+      chip.onclick=()=>chip.classList.toggle('off');
+    });
+    repeatEl.onchange=(e)=>{
+      const val = e.target.value;
+      if(val==='none'){ weekdaysWrap.style.display='none'; untilWrap.style.display='none'; return; }
+      untilWrap.style.display='';
+      if(val==='daily' || val==='weekly'){
+        weekdaysWrap.style.display='';
+        const startDate = document.getElementById('t_deadline').value || todayISO();
+        const startWdRaw = new Date(startDate+'T00:00:00').getDay();
+        const startWd = startWdRaw===0?7:startWdRaw;
+        document.querySelectorAll('#t_weekdays .cat-chip').forEach(chip=>{
+          const wd = parseInt(chip.dataset.wd, 10);
+          if(val==='daily') chip.classList.remove('off');
+          else chip.classList.toggle('off', wd!==startWd);
+        });
+      } else {
+        weekdaysWrap.style.display='none';
+      }
+      const untilInput = document.getElementById('t_repeat_until');
+      if(!untilInput.value){
+        const startDate = document.getElementById('t_deadline').value || todayISO();
+        const d = new Date(startDate+'T00:00:00'); d.setMonth(d.getMonth()+3);
+        untilInput.value = dateToISO(d);
+      }
+    };
+  }
+
+  const existingEvent = existing && existing.eventId ? state.events.find(x=>x.id===existing.eventId) : null;
+  const initialEvCat = existingEvent ? existingEvent.category : '';
+  document.getElementById('t_event').value = existing && existing.eventId ? existing.eventId : '';
+
+  function renderEventItems(cat){
+    const wrap = document.getElementById('t_event_items');
+    if(!cat){ wrap.innerHTML=''; return; }
+    if(cat==='personal' && !personalAccessAllowed()){
+      wrap.innerHTML = `<span class="subtitle" style="margin:0;">🔒 Доступно только Руководителю и Ассистенту</span>`;
+      return;
+    }
+    const source = cat==='personal' ? state.personalEvents : state.events;
+    const evs = source.filter(ev=>ev.category===cat).sort((a,b)=>a.date.localeCompare(b.date));
+    const currentVal = document.getElementById('t_event').value;
+    wrap.innerHTML = evs.length
+      ? evs.map(ev=>`<button type="button" class="cat-chip ${currentVal===ev.id?'':'off'}" data-evid="${ev.id}">${fmtDate(ev.date)} · ${escapeHtml(ev.title)}</button>`).join('')
+      : `<span class="subtitle" style="margin:0;">Нет мероприятий в этой категории</span>`;
+    wrap.querySelectorAll('[data-evid]').forEach(btn=>{
+      btn.onclick=()=>{
+        document.getElementById('t_event').value = btn.dataset.evid;
+        wrap.querySelectorAll('[data-evid]').forEach(b=>b.classList.toggle('off', b!==btn));
+        const ev = source.find(x=>x.id===btn.dataset.evid);
+        const deadlineInput = document.getElementById('t_deadline');
+        if(ev && !deadlineInput.value){
+          deadlineInput.value = ev.date;
+          deadlineInput.classList.remove('invalid');
+        }
+      };
+    });
+  }
+
+  document.querySelectorAll('#t_event_cats .cat-chip').forEach(chip=>{
+    chip.classList.toggle('off', chip.dataset.evcat !== initialEvCat);
+    chip.onclick=()=>{
+      const cat = chip.dataset.evcat;
+      document.querySelectorAll('#t_event_cats .cat-chip').forEach(c=>c.classList.toggle('off', c!==chip));
+      if(!cat){
+        document.getElementById('t_event').value = '';
+        document.getElementById('t_event_items').innerHTML = '';
+      } else {
+        renderEventItems(cat);
+      }
+    };
+  });
+  if(initialEvCat) renderEventItems(initialEvCat);
+
+  function flagInvalid(elId){
+    const elm = document.getElementById(elId);
+    elm.classList.add('invalid');
+    const clear = ()=>elm.classList.remove('invalid');
+    elm.addEventListener('input', clear, {once:true});
+    elm.addEventListener('change', clear, {once:true});
+    return elm;
+  }
+
+  document.getElementById('saveTask').onclick=async ()=>{
+    const title = document.getElementById('t_title').value.trim();
+    const description = document.getElementById('t_desc').value.trim();
+    const creatorId = document.getElementById('t_creator').value;
+    const assigneeEl = !personal ? document.getElementById('t_assignee') : null;
+    const assigneeId = assigneeEl ? assigneeEl.value : null;
+    const createdDate = document.getElementById('t_createdDate').value;
+    const deadline = document.getElementById('t_deadline').value;
+
+    let firstInvalid = null;
+    if(!title) firstInvalid = flagInvalid('t_title');
+    if(!description) firstInvalid = firstInvalid || flagInvalid('t_desc');
+    if(!creatorId) firstInvalid = firstInvalid || flagInvalid('t_creator');
+    if(!personal && !assigneeId) firstInvalid = firstInvalid || flagInvalid('t_assignee');
+    if(!createdDate) firstInvalid = firstInvalid || flagInvalid('t_createdDate');
+    if(!deadline) firstInvalid = firstInvalid || flagInvalid('t_deadline');
+    const statusVal = document.getElementById('t_status').value;
+    const completionCommentVal = document.getElementById('t_completion_comment').value.trim();
+    if(statusVal==='done' && !completionCommentVal) firstInvalid = firstInvalid || flagInvalid('t_completion_comment');
+    if(firstInvalid){
+      toast('Заполните все обязательные поля (отмечены *)');
+      firstInvalid.focus();
+      return;
+    }
+    if(deadline < createdDate){
+      toast('Дедлайн не может быть раньше даты постановки');
+      flagInvalid('t_deadline');
+      return;
+    }
+    if(statusVal==='done' && (!existing || existing.status!=='done')){
+      const effectiveAssignee = personal ? null : assigneeId;
+      const wouldBeTask = {assigneeId: effectiveAssignee};
+      if(!canCompleteTask(wouldBeTask, personal)){
+        toast(whyCantComplete({assigneeId: effectiveAssignee}));
+        return;
+      }
+    }
+
+    const projectId = parentId
+      ? (parentTask ? parentTask.projectId : (existing?existing.projectId||null:null))
+      : (document.getElementById('t_project').value || null);
+    const chosenStatus = statusVal;
+    const completedAt = chosenStatus==='done'
+      ? (existing && existing.status==='done' ? existing.completedAt : todayISO())
+      : null;
+    const data = {
+      id: existing?existing.id:uid(),
+      title,
+      description,
+      projectId,
+      parentId: parentId||null,
+      assigneeId: personal? null : assigneeId,
+      creatorId,
+      createdDate,
+      deadline,
+      priority: document.getElementById('t_priority').value,
+      status: chosenStatus,
+      completedAt,
+      completionComment: chosenStatus==='done' ? completionCommentVal : '',
+      eventId: document.getElementById('t_event').value || null,
+      purchaseAmount: document.getElementById('t_purchase_amount').value ? parseFloat(document.getElementById('t_purchase_amount').value) : null,
+      purchaseStore: document.getElementById('t_purchase_store').value.trim(),
+      purchaseExpenseId: existing ? (existing.purchaseExpenseId||null) : null,
+      seriesId: existing ? (existing.seriesId||null) : null,
+    };
+
+    if(!existing && repeatEl && repeatEl.value!=='none'){
+      const repeatType = repeatEl.value;
+      const untilVal = document.getElementById('t_repeat_until').value || deadline;
+      const weekdaySet = new Set(Array.from(document.querySelectorAll('#t_weekdays .cat-chip:not(.off)')).map(c=>parseInt(c.dataset.wd,10)));
+      let dates = generateRecurrenceDates(deadline, repeatType, weekdaySet, untilVal, 300);
+      if(!dates.length) dates = [deadline];
+      const seriesId = uid();
+      const arr = tasksFor(personal);
+      const newTasks = dates.map(d=>({...data, id: uid()+d, deadline: d, seriesId}));
+      setTasksFor(personal, arr.concat(newTasks));
+      await persistTasksFor(personal);
+      closeModal(); render();
+      toast(`Добавлено задач: ${newTasks.length}`);
+      return;
+    }
+
+    if(existing && existing.seriesId){
+      const choice = await showSeriesEditChoice();
+      if(!choice) return;
+      if(choice==='one'){
+        setTasksFor(personal, tasksFor(personal).map(t=>t.id===existing.id?data:t));
+      } else {
+        setTasksFor(personal, tasksFor(personal).map(t=>{
+          if(t.seriesId===existing.seriesId){
+            return {...data, id:t.id, deadline:t.deadline, status:t.status, completedAt:t.completedAt, completionComment:t.completionComment, createdDate:t.createdDate, parentId:t.parentId, seriesId:t.seriesId, purchaseExpenseId:t.purchaseExpenseId};
+          }
+          return t;
+        }));
+      }
+      await persistTasksFor(personal);
+      if(chosenStatus==='done' && existing.status!=='done'){
+        await maybeOfferPurchaseExpense(data, personal);
+      }
+      closeModal(); render();
+      toast(choice==='series' ? 'Изменения применены ко всей серии' : 'Задача сохранена');
+      return;
+    }
+
+    const arr = tasksFor(personal);
+    if(existing) setTasksFor(personal, arr.map(t=>t.id===existing.id?data:t));
+    else setTasksFor(personal, arr.concat([data]));
+    await persistTasksFor(personal);
+    if(chosenStatus==='done' && (!existing || existing.status!=='done')){
+      await maybeOfferPurchaseExpense(data, personal);
+    }
+    closeModal(); render();
+    toast('Задача сохранена');
+  };
+}
+
+function openProjectsModal(personal){
+  const modal = document.getElementById('modalRoot');
+  const selKey = personal?'personal':'work';
+  function body(){
+    const projects = projectsFor(personal);
+    return `
+      <div class="overlay" id="ov">
+        <div class="modal">
+          <h3>Проекты${personal?' (личные)':''}</h3>
+          <div class="item-list" style="margin-bottom:16px;">
+            ${projects.map(p=>`
+              <div class="item">
+                <div class="main"><div class="title">${escapeHtml(p.name)}</div></div>
+                <div class="actions">
+                  <button class="btn ghost small" data-rename-proj="${p.id}">✎</button>
+                  <button class="btn danger small" data-del-proj="${p.id}">✕</button>
+                </div>
+              </div>
+            `).join('') || `<p class="subtitle" style="margin:0;">Проектов пока нет</p>`}
+          </div>
+          <div class="field"><label>Название нового проекта</label><input id="proj_name" placeholder="Например: Запуск нового курса"></div>
+          <div class="modal-actions">
+            <button class="btn ghost" id="closeProj">Закрыть</button>
+            <button class="btn" id="addProj">Добавить</button>
+          </div>
+          ${!personal?`
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:20px 0 8px;">Банк идей-проектов</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Копилка идей на будущее — своих типовых проектов с набором задач. Выберите идею, чтобы превратить её в проект.</p>
+          <div class="item-list" style="margin-bottom:12px;">
+            ${state.ideaBankWork.map(idea=>`
+              <div class="item">
+                <div class="main">
+                  <div class="title">${escapeHtml(idea.name)}</div>
+                  <div class="meta"><span>${(idea.tasks||[]).length} задач(и) в плане</span></div>
+                </div>
+                <div class="actions">
+                  <button class="btn ghost small" data-apply-idea="${idea.id}">Создать проект</button>
+                  <button class="btn ghost small" data-edit-idea="${idea.id}">✎</button>
+                  <button class="btn danger small" data-del-idea="${idea.id}">✕</button>
+                </div>
+              </div>
+            `).join('') || `<p class="subtitle" style="margin:0;">Идей пока нет — добавьте первую</p>`}
+          </div>
+          <button class="btn ghost small" id="addIdeaBtn">+ Добавить идею</button>
+          `:''}
+        </div>
+      </div>`;
+  }
+  modal.innerHTML = body();
+  function wire(){
+    document.getElementById('closeProj').onclick=closeModal;
+    document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+    document.getElementById('addProj').onclick=async ()=>{
+      const name = document.getElementById('proj_name').value.trim();
+      if(!name){ toast('Введите название'); return; }
+      setProjectsFor(personal, projectsFor(personal).concat([{id:uid(), name}]));
+      await persistProjectsFor(personal);
+      modal.innerHTML = body(); wire(); render();
+    };
+    modal.querySelectorAll('[data-rename-proj]').forEach(b=>b.onclick=async ()=>{
+      const pid = b.dataset.renameProj;
+      const current = projectsFor(personal).find(p=>p.id===pid);
+      const newName = await showPrompt('Название проекта', current?current.name:'');
+      if(newName===null || !newName) return;
+      const finalName = isPurchasesProjectName(newName) ? PURCHASES_PROJECT_NAME : newName;
+      setProjectsFor(personal, projectsFor(personal).map(p=>p.id===pid?{...p,name:finalName}:p));
+      await persistProjectsFor(personal);
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-del-proj]').forEach(b=>b.onclick=async ()=>{
+      if(!(await showConfirm('Удалить проект? Задачи останутся, но будут перемещены в «Без проекта».'))) return;
+      const pid = b.dataset.delProj;
+      const doomedProj = projectsFor(personal).find(p=>p.id===pid);
+      if(doomedProj) await moveToTrash(personal, 'project', doomedProj);
+      setProjectsFor(personal, projectsFor(personal).filter(p=>p.id!==pid));
+      setTasksFor(personal, tasksFor(personal).map(t=>t.projectId===pid?{...t,projectId:null}:t));
+      await persistProjectsFor(personal);
+      if(!personal) await saveTasksWork();
+      if(state.selectedProject[selKey]===pid) state.selectedProject[selKey]='all';
+      modal.innerHTML = body(); wire(); render();
+    });
+    if(!personal){
+      const ideaBtn = document.getElementById('addIdeaBtn');
+      if(ideaBtn) ideaBtn.onclick=()=>openIdeaModal(null, ()=>{ modal.innerHTML = body(); wire(); });
+      modal.querySelectorAll('[data-edit-idea]').forEach(b=>b.onclick=()=>openIdeaModal(b.dataset.editIdea, ()=>{ modal.innerHTML = body(); wire(); }));
+      modal.querySelectorAll('[data-del-idea]').forEach(b=>b.onclick=async ()=>{
+        if(!(await showConfirm('Удалить идею из банка?'))) return;
+        const doomedIdea = state.ideaBankWork.find(i=>i.id===b.dataset.delIdea);
+        if(doomedIdea) await moveToTrash(false, 'idea', doomedIdea);
+        state.ideaBankWork = state.ideaBankWork.filter(i=>i.id!==b.dataset.delIdea);
+        await saveIdeaBank();
+        modal.innerHTML = body(); wire();
+      });
+      modal.querySelectorAll('[data-apply-idea]').forEach(b=>b.onclick=async ()=>{
+        const idea = state.ideaBankWork.find(i=>i.id===b.dataset.applyIdea);
+        if(!idea) return;
+        const taskCount = (idea.tasks||[]).length;
+        if(!(await showConfirm(`Создать проект «${idea.name}»${taskCount?` с ${taskCount} задачами`:''}?`, 'Создать'))) return;
+        await applyIdeaToProject(idea);
+        closeModal(); render();
+      });
+    }
+  }
+  wire();
+}
+
+function openIdeaModal(ideaId, onDone){
+  const existing = ideaId ? state.ideaBankWork.find(i=>i.id===ideaId) : null;
+  const ov = document.createElement('div');
+  ov.className='overlay'; ov.style.zIndex=200;
+  const initialTasks = existing && existing.tasks && existing.tasks.length ? existing.tasks.slice() : [''];
+  function taskRowsHtml(tasks){
+    return tasks.map((t,i)=>`
+      <div class="field-row" data-idea-task-row style="margin-bottom:8px;align-items:center;">
+        <input class="idea-task-input" data-idx="${i}" value="${escapeHtml(t)}" placeholder="Например: Забронировать площадку" style="flex:1;">
+        <button type="button" class="btn danger small" data-remove-idea-task="${i}">✕</button>
+      </div>`).join('');
+  }
+  ov.innerHTML = `
+    <div class="modal">
+      <h3>${existing?'Изменить идею':'Новая идея'}</h3>
+      <div class="field"><label>Название идеи / проекта</label><input id="idea_name" value="${existing?escapeHtml(existing.name):''}" placeholder="Например: Запуск нового мастер-класса"></div>
+      <label style="display:block;margin-bottom:6px;">Типовые задачи (необязательно)</label>
+      <div id="idea_task_rows">${taskRowsHtml(initialTasks)}</div>
+      <button type="button" class="btn ghost small" id="addIdeaTaskRow">+ Добавить задачу</button>
+      <div class="modal-actions">
+        <button class="btn ghost" id="cancelIdea">Отмена</button>
+        <button class="btn" id="saveIdea">Сохранить</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const rowsWrap = ov.querySelector('#idea_task_rows');
+  function wireRows(){
+    rowsWrap.querySelectorAll('[data-remove-idea-task]').forEach(b=>b.onclick=()=>{
+      const row = b.closest('[data-idea-task-row]');
+      if(rowsWrap.querySelectorAll('[data-idea-task-row]').length>1) row.remove();
+      else row.querySelector('.idea-task-input').value='';
+    });
+  }
+  wireRows();
+  ov.querySelector('#addIdeaTaskRow').onclick=()=>{
+    const div = document.createElement('div');
+    div.className='field-row'; div.setAttribute('data-idea-task-row','');
+    div.style.cssText='margin-bottom:8px;align-items:center;';
+    div.innerHTML = `<input class="idea-task-input" value="" placeholder="Например: Пригласить участников" style="flex:1;"><button type="button" class="btn danger small" data-remove-idea-task="x">✕</button>`;
+    rowsWrap.appendChild(div);
+    wireRows();
+  };
+  const finish=()=>ov.remove();
+  ov.querySelector('#cancelIdea').onclick=finish;
+  ov.querySelector('#saveIdea').onclick=async ()=>{
+    const name = ov.querySelector('#idea_name').value.trim();
+    if(!name){ toast('Введите название идеи'); return; }
+    const taskTitles = Array.from(rowsWrap.querySelectorAll('.idea-task-input')).map(i=>i.value.trim()).filter(Boolean);
+    if(existing){
+      state.ideaBankWork = state.ideaBankWork.map(i=>i.id===existing.id?{...i, name, tasks:taskTitles}:i);
+    } else {
+      state.ideaBankWork = state.ideaBankWork.concat([{id:uid(), name, tasks:taskTitles}]);
+    }
+    await saveIdeaBank();
+    toast('Идея сохранена');
+    finish();
+    if(onDone) onDone();
+  };
+}
+
+/* ================= CHECKLISTS ================= */
+function openChecklistsModal(){
+  const modal = document.getElementById('modalRoot');
+  function body(){
+    return `
+      <div class="overlay" id="ov">
+        <div class="modal">
+          <h3>Чек-листы задач</h3>
+          <p class="subtitle" style="margin:0 0 14px;">Готовые процессы с шагами. Нажмите «Добавить в задачи» — создастся главная задача с этими шагами как подзадачи, которые можно сразу распределить и назначить сроки.</p>
+          <div class="item-list" style="margin-bottom:14px;">
+            ${state.checklistsWork.map(cl=>`
+              <div class="item">
+                <div class="main">
+                  <div class="title">${escapeHtml(cl.name)}</div>
+                  <div class="meta"><span>${(cl.items||[]).length} пункт(ов)</span></div>
+                </div>
+                <div class="actions">
+                  <button class="btn ghost small" data-apply-checklist="${cl.id}">Добавить в задачи</button>
+                  <button class="btn ghost small" data-edit-checklist="${cl.id}">✎</button>
+                  <button class="btn danger small" data-del-checklist="${cl.id}">✕</button>
+                </div>
+              </div>
+            `).join('') || `<p class="subtitle" style="margin:0;">Чек-листов пока нет — добавьте первый</p>`}
+          </div>
+          <div class="modal-actions" style="justify-content:space-between;">
+            <button class="btn ghost small" id="addChecklistBtn">+ Добавить чек-лист</button>
+            <button class="btn ghost" id="closeChecklists">Закрыть</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  modal.innerHTML = body();
+  function wire(){
+    document.getElementById('closeChecklists').onclick=closeModal;
+    document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+    document.getElementById('addChecklistBtn').onclick=()=>openChecklistEditModal(null, ()=>{ modal.innerHTML = body(); wire(); });
+    modal.querySelectorAll('[data-edit-checklist]').forEach(b=>b.onclick=()=>openChecklistEditModal(b.dataset.editChecklist, ()=>{ modal.innerHTML = body(); wire(); }));
+    modal.querySelectorAll('[data-del-checklist]').forEach(b=>b.onclick=async ()=>{
+      if(!(await showConfirm('Удалить чек-лист?'))) return;
+      state.checklistsWork = state.checklistsWork.filter(c=>c.id!==b.dataset.delChecklist);
+      await saveChecklists();
+      modal.innerHTML = body(); wire();
+    });
+    modal.querySelectorAll('[data-apply-checklist]').forEach(b=>b.onclick=async ()=>{
+      const cl = state.checklistsWork.find(c=>c.id===b.dataset.applyChecklist);
+      if(!cl) return;
+      if(!(await showConfirm(`Создать задачу «${cl.name}» с ${(cl.items||[]).length} подзадачами?`, 'Добавить'))) return;
+      await applyChecklistToTasks(cl);
+      closeModal(); render();
+    });
+  }
+  wire();
+}
+
+function openChecklistEditModal(checklistId, onDone){
+  const existing = checklistId ? state.checklistsWork.find(c=>c.id===checklistId) : null;
+  const ov = document.createElement('div');
+  ov.className='overlay'; ov.style.zIndex=200;
+  const initialItems = existing && existing.items && existing.items.length ? existing.items.slice() : [''];
+  function itemRowsHtml(items){
+    return items.map((it,i)=>`
+      <div class="field-row" data-cl-item-row style="margin-bottom:8px;align-items:center;">
+        <input class="cl-item-input" data-idx="${i}" value="${escapeHtml(it)}" placeholder="Например: Проверить инвентарь" style="flex:1;">
+        <button type="button" class="btn danger small" data-remove-cl-item="${i}">✕</button>
+      </div>`).join('');
+  }
+  ov.innerHTML = `
+    <div class="modal">
+      <h3>${existing?'Изменить чек-лист':'Новый чек-лист'}</h3>
+      <div class="field"><label>Название процесса (станет главной задачей)</label><input id="cl_name" value="${existing?escapeHtml(existing.name):''}" placeholder="Например: Открытие студии утром"></div>
+      <label style="display:block;margin-bottom:6px;">Шаги (станут подзадачами)</label>
+      <div id="cl_item_rows">${itemRowsHtml(initialItems)}</div>
+      <button type="button" class="btn ghost small" id="addClItemRow">+ Добавить шаг</button>
+      <div class="modal-actions">
+        <button class="btn ghost" id="cancelCl">Отмена</button>
+        <button class="btn" id="saveCl">Сохранить</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const rowsWrap = ov.querySelector('#cl_item_rows');
+  function wireRows(){
+    rowsWrap.querySelectorAll('[data-remove-cl-item]').forEach(b=>b.onclick=()=>{
+      const row = b.closest('[data-cl-item-row]');
+      if(rowsWrap.querySelectorAll('[data-cl-item-row]').length>1) row.remove();
+      else row.querySelector('.cl-item-input').value='';
+    });
+  }
+  wireRows();
+  ov.querySelector('#addClItemRow').onclick=()=>{
+    const div = document.createElement('div');
+    div.className='field-row'; div.setAttribute('data-cl-item-row','');
+    div.style.cssText='margin-bottom:8px;align-items:center;';
+    div.innerHTML = `<input class="cl-item-input" value="" placeholder="Например: Включить свет и музыку" style="flex:1;"><button type="button" class="btn danger small" data-remove-cl-item="x">✕</button>`;
+    rowsWrap.appendChild(div);
+    wireRows();
+  };
+  const finish=()=>ov.remove();
+  ov.querySelector('#cancelCl').onclick=finish;
+  ov.querySelector('#saveCl').onclick=async ()=>{
+    const name = ov.querySelector('#cl_name').value.trim();
+    if(!name){ toast('Введите название процесса'); return; }
+    const items = Array.from(rowsWrap.querySelectorAll('.cl-item-input')).map(i=>i.value.trim()).filter(Boolean);
+    if(existing){
+      state.checklistsWork = state.checklistsWork.map(c=>c.id===existing.id?{...c, name, items}:c);
+    } else {
+      state.checklistsWork = state.checklistsWork.concat([{id:uid(), name, items}]);
+    }
+    await saveChecklists();
+    toast('Чек-лист сохранён');
+    finish();
+    if(onDone) onDone();
+  };
+}
+
+/* ================= TASK ANALYTICS ================= */
+function renderTaskAnalytics(el){
+  const today = todayISO();
+  const rows = state.employees.map(e=>{
+    const tasks = state.tasksWork.filter(t=>t.assigneeId===e.id);
+    const inProgress = tasks.filter(t=>t.status!=='done').length;
+    const doneTasks = tasks.filter(t=>t.status==='done');
+    const overdue = tasks.filter(t=>t.deadline && t.deadline<today && t.status!=='done').length;
+    const durations = doneTasks
+      .filter(t=>t.createdDate && t.completedAt)
+      .map(t=>Math.max(0,(new Date(t.completedAt)-new Date(t.createdDate))/86400000));
+    const avgDays = durations.length ? durations.reduce((a,b)=>a+b,0)/durations.length : null;
+    return {employee:e, total:tasks.length, inProgress, doneCount:doneTasks.length, overdue, avgDays};
+  }).filter(r=>r.total>0);
+
+  const unassigned = state.tasksWork.filter(t=>!t.assigneeId);
+  const totalInProgress = state.tasksWork.filter(t=>t.status!=='done').length;
+  const totalDone = state.tasksWork.filter(t=>t.status==='done').length;
+  const totalOverdue = state.tasksWork.filter(t=>t.deadline && t.deadline<today && t.status!=='done').length;
+  const maxTotal = Math.max(1, ...rows.map(r=>r.total));
+
+  const projectRows = state.projectsWork.map(p=>{
+    const tasks = state.tasksWork.filter(t=>t.projectId===p.id);
+    const done = tasks.filter(t=>t.status==='done').length;
+    return {name:p.name, total:tasks.length, done, pct: tasks.length ? Math.round(done/tasks.length*100) : 0};
+  }).filter(r=>r.total>0);
+  const noProjTasks = state.tasksWork.filter(t=>!t.projectId);
+  if(noProjTasks.length){
+    const doneNP = noProjTasks.filter(t=>t.status==='done').length;
+    projectRows.push({name:'Без проекта', total:noProjTasks.length, done:doneNP, pct:Math.round(doneNP/noProjTasks.length*100)});
+  }
+  projectRows.sort((a,b)=>b.pct-a.pct);
+  function barColor(pct){ return pct>=70?'var(--teal)':pct>=30?'var(--ochre)':'var(--brick)'; }
+
+  el.innerHTML = `
+    <div class="ledger-summary">
+      <div class="sum-card issued"><div class="label">В работе</div><div class="val mono">${totalInProgress}</div></div>
+      <div class="sum-card"><div class="label">Выполнено</div><div class="val mono" style="color:var(--indigo);">${totalDone}</div></div>
+      <div class="sum-card spent"><div class="label">Просрочено</div><div class="val mono">${totalOverdue}</div></div>
+    </div>
+    <div class="an-table">
+      <table class="an-table-inner">
+        <thead><tr><th>Сотрудник</th><th>В работе</th><th>Готово</th><th>Просрочено</th><th>Средний срок</th><th>Нагрузка</th></tr></thead>
+        <tbody>
+          ${rows.length ? rows.map(r=>`
+            <tr>
+              <td class="an-name">${escapeHtml(r.employee.name)}<div class="subtitle" style="margin:0;font-size:11px;">${escapeHtml(r.employee.role||'')}</div></td>
+              <td class="an-num">${r.inProgress}</td>
+              <td class="an-num" style="color:var(--teal);">${r.doneCount}</td>
+              <td class="an-num" style="color:${r.overdue>0?'var(--brick)':'var(--ink-soft)'};font-weight:${r.overdue>0?'600':'400'};">${r.overdue}</td>
+              <td class="an-num">${r.avgDays!==null ? r.avgDays.toFixed(1)+' дн.' : '—'}</td>
+              <td><div class="an-bar-wrap"><div class="an-bar-track"><div class="an-bar-fill" style="width:${(r.total/maxTotal*100).toFixed(0)}%;background:var(--indigo);"></div></div><span class="an-num" style="font-size:11px;color:var(--ink-soft);">${r.total}</span></div></td>
+            </tr>
+          `).join('') : `<tr><td colspan="6"><div class="empty-state"><div class="big">Пока нет данных</div><p>Назначьте задачи сотрудникам, чтобы увидеть статистику</p></div></td></tr>`}
+          ${unassigned.length ? `
+            <tr>
+              <td class="an-name">Без исполнителя</td>
+              <td class="an-num">${unassigned.filter(t=>t.status!=='done').length}</td>
+              <td class="an-num" style="color:var(--teal);">${unassigned.filter(t=>t.status==='done').length}</td>
+              <td class="an-num" style="color:${unassigned.filter(t=>t.deadline&&t.deadline<today&&t.status!=='done').length>0?'var(--brick)':'var(--ink-soft)'};">${unassigned.filter(t=>t.deadline&&t.deadline<today&&t.status!=='done').length}</td>
+              <td class="an-num">—</td>
+              <td></td>
+            </tr>` : ''}
+        </tbody>
+      </table>
+    </div>
+    <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:22px 0 8px;">Прогресс по проектам</h4>
+    <div class="an-table">
+      <table class="an-table-inner">
+        <thead><tr><th>Проект</th><th>Готово</th><th>Всего</th><th>% выполнения</th></tr></thead>
+        <tbody>
+          ${projectRows.length ? projectRows.map(r=>`
+            <tr>
+              <td class="an-name">${escapeHtml(r.name)}</td>
+              <td class="an-num" style="color:var(--teal);">${r.done}</td>
+              <td class="an-num">${r.total}</td>
+              <td><div class="an-bar-wrap"><div class="an-bar-track"><div class="an-bar-fill" style="width:${r.pct}%;background:${barColor(r.pct)};"></div></div><span class="an-num" style="font-size:11px;color:var(--ink-soft);min-width:32px;text-align:right;">${r.pct}%</span></div></td>
+            </tr>
+          `).join('') : `<tr><td colspan="4"><div class="empty-state"><div class="big">Нет данных по проектам</div><p>Добавьте задачи в проект, чтобы увидеть прогресс</p></div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <p class="subtitle" style="margin-top:14px;">Средний срок выполнения считается от даты постановки задачи до отметки «Готово». Личные задачи в статистику не входят.</p>
+  `;
+}
+
+/* ================= FUNDS ================= */
+function renderFunds(root){
+  const scope = state.fundsScope;
+  let scoped;
+  if(scope==='all'){
+    scoped = state.fundsEntries.slice().concat(state.personalFundsEntries.slice());
+  } else {
+    scoped = fundsFor(scope).slice();
+  }
+  const sorted = scoped.sort((a,b)=> a.date===b.date ? a.createdAt-b.createdAt : a.date.localeCompare(b.date));
+  let running = 0;
+  const rows = sorted.map(f=>{
+    running += (f.type==='issue' ? Number(f.amount) : -Number(f.amount));
+    return {...f, runningBalance: running};
+  });
+  const totalIncome = sorted.filter(f=>f.type==='issue').reduce((s,f)=>s+Number(f.amount),0);
+  const totalExpense = sorted.filter(f=>f.type==='expense').reduce((s,f)=>s+Number(f.amount),0);
+  const balance = totalIncome - totalExpense;
+  const showScopeCol = scope==='all';
+
+  root.innerHTML = `
+    <div class="row-between">
+      <div>
+        <h2 class="section-title">Финансы</h2>
+        <p class="subtitle">Доходы и расходы — отдельно рабочие и личные</p>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn ghost" id="exportCsvBtn">📊 Экспорт CSV</button>
+        <button class="btn" id="addFundBtn">+ Запись</button>
+      </div>
+    </div>
+    <div class="subtabs">
+      <button class="subtab-btn ${scope==='work'?'active':''}" data-fscope="work">Рабочие</button>
+      <button class="subtab-btn ${scope==='personal'?'active':''}" data-fscope="personal">🔒 Личные</button>
+      <button class="subtab-btn ${scope==='all'?'active':''}" data-fscope="all">Всего</button>
+    </div>
+    <div class="ledger-summary">
+      <div class="sum-card issued"><div class="label">Доходы</div><div class="val mono">${fmtMoney(totalIncome)}</div></div>
+      <div class="sum-card spent"><div class="label">Расходы</div><div class="val mono">${fmtMoney(totalExpense)}</div></div>
+      <div class="sum-card balance"><div class="label">${showScopeCol?'Общий остаток':'Текущий остаток'}</div><div class="val mono">${fmtMoney(balance)}</div></div>
+    </div>
+    <div class="ledger">
+      <table class="ledger-table">
+        <thead><tr><th>Дата</th><th>Тип</th>${showScopeCol?'<th>Категория</th>':''}<th>Сумма</th><th>Назначение</th><th>Чек</th><th>Остаток</th><th></th></tr></thead>
+        <tbody>
+          ${rows.length ? rows.slice().reverse().map(f=>`
+            <tr>
+              <td class="mono">${fmtDate(f.date)}</td>
+              <td>${f.type==='issue'?'Доход':'Расход'}</td>
+              ${showScopeCol?`<td>${(f.scope||'work')==='personal'?'🔒 Личные':'Рабочие'}</td>`:''}
+              <td class="${f.type==='issue'?'amt-issue':'amt-expense'}">${f.type==='issue'?'+':'−'}${fmtMoney(f.amount)}</td>
+              <td>${escapeHtml(f.purpose||'')}${f.comment?`<div class="desc" style="margin-top:2px;">${escapeHtml(f.comment)}</div>`:''}</td>
+              <td>${f.receiptUrl?`<a href="${escapeHtml(f.receiptUrl)}" target="_blank" rel="noopener" style="color:var(--indigo);">🧾 Чек</a>`:'—'}</td>
+              <td class="amt-balance">${fmtMoney(f.runningBalance)}</td>
+              <td>
+                <div class="ledger-actions">
+                  <button class="btn ghost small" data-edit-fund="${f.id}" data-fund-scope="${f.scope||'work'}">Изм.</button>
+                  <button class="btn danger small" data-del-fund="${f.id}" data-fund-scope="${f.scope||'work'}">✕</button>
+                </div>
+              </td>
+            </tr>
+          `).join('') : `<tr><td colspan="${showScopeCol?8:7}"><div class="empty-state"><div class="big">Записей пока нет</div><p>Добавьте первый доход или расход</p></div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  root.querySelectorAll('.subtab-btn').forEach(b=>b.onclick=()=>{ state.fundsScope=b.dataset.fscope; render(); });
+  root.querySelector('#addFundBtn').onclick=()=>openFundModal(null, scope==='all'?'work':scope);
+  root.querySelector('#exportCsvBtn').onclick=()=>exportFundsCSV(scope);
+  root.querySelectorAll('[data-edit-fund]').forEach(b=>b.onclick=()=>openFundModal(b.dataset.editFund, b.dataset.fundScope));
+  root.querySelectorAll('[data-del-fund]').forEach(b=>b.onclick=async ()=>{
+    if(!(await showConfirm('Удалить запись?'))) return;
+    const fscope = b.dataset.fundScope;
+    const doomed = fundsFor(fscope).find(f=>f.id===b.dataset.delFund);
+    if(doomed) await moveToTrash(fscope==='personal', 'fund', doomed);
+    setFundsFor(fscope, fundsFor(fscope).filter(f=>f.id!==b.dataset.delFund));
+    await persistFundsFor(fscope);
+    render();
+  });
+}
+
+function openFundModal(id, scope){
+  scope = scope || 'work';
+  const existing = id ? fundsFor(scope).find(f=>f.id===id) : null;
+  if(existing) scope = existing.scope || 'work';
+  const initialType = existing ? existing.type : 'expense';
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" id="ov">
+      <div class="modal">
+        <h3>${existing?'Изменить запись':'Новая запись'} · ${scope==='personal'?'🔒 личная':'рабочая'}</h3>
+        <div class="field-row">
+          <div class="field"><label>Тип</label>
+            <select id="fn_type">
+              <option value="issue" ${initialType==='issue'?'selected':''}>Доход</option>
+              <option value="expense" ${initialType==='expense'?'selected':''}>Расход</option>
+            </select>
+          </div>
+          <div class="field"><label>Дата</label><input type="date" id="fn_date" value="${existing?existing.date:todayISO()}"></div>
+          <div class="field"><label>Сумма, ₽</label><input type="number" min="0" step="0.01" class="mono" id="fn_amount" value="${existing?existing.amount:''}"></div>
+        </div>
+        <div class="field"><label>Назначение</label><input id="fn_purpose" value="${existing?escapeHtml(existing.purpose||''):''}" placeholder="Например: закупка глины"></div>
+        <div class="field" id="fn_receipt_wrap" style="${initialType==='expense'?'':'display:none;'}">
+          <label>Ссылка на чек</label>
+          <input id="fn_receipt" value="${existing?escapeHtml(existing.receiptUrl||''):''}" placeholder="https://...">
+        </div>
+        <div class="field"><label>Комментарий</label><textarea id="fn_comment" rows="2">${existing?escapeHtml(existing.comment||''):''}</textarea></div>
+        <div class="modal-actions">
+          <button class="btn ghost" id="cancelFund">Отмена</button>
+          <button class="btn" id="saveFund">Сохранить</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('cancelFund').onclick=closeModal;
+  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+  document.getElementById('fn_type').onchange=(e)=>{
+    document.getElementById('fn_receipt_wrap').style.display = e.target.value==='expense' ? '' : 'none';
+  };
+  document.getElementById('saveFund').onclick=async ()=>{
+    const amount = parseFloat(document.getElementById('fn_amount').value);
+    if(!amount || amount<=0){ toast('Укажите сумму'); return; }
+    const type = document.getElementById('fn_type').value;
+    const data = {
+      id: existing?existing.id:uid(),
+      type,
+      scope,
+      date: document.getElementById('fn_date').value || todayISO(),
+      amount,
+      purpose: document.getElementById('fn_purpose').value.trim(),
+      receiptUrl: type==='expense' ? document.getElementById('fn_receipt').value.trim() : '',
+      comment: document.getElementById('fn_comment').value.trim(),
+      createdAt: existing?existing.createdAt:Date.now(),
+    };
+    if(existing) setFundsFor(scope, fundsFor(scope).map(f=>f.id===existing.id?data:f));
+    else setFundsFor(scope, fundsFor(scope).concat([data]));
+    await persistFundsFor(scope);
+    closeModal(); render();
+    toast('Запись сохранена');
+  };
+}
+
+/* ================= EMPLOYEES ================= */
+/* ================= GLOBAL SEARCH ================= */
+async function openTaskFromSearch(taskId, personal){
+  if(personal && !personalAccessAllowed()) return false;
+  const t = tasksFor(personal).find(x=>x.id===taskId);
+  if(!t) return false;
+  if(!canEditTask(t, personal)){ toast(whyCantEdit(t)); return false; }
+  state.tab='tasks'; state.taskSubtab = personal?'personal':'work';
+  render();
+  setTimeout(()=>openTaskModal(taskId, personal), 50);
+  return true;
+}
+function performGlobalSearch(query){
+  const q = query.trim().toLowerCase();
+  if(q.length<2) return null;
+  const match = (s)=> s && String(s).toLowerCase().includes(q);
+  const allTasks = state.tasksWork.map(t=>({...t, __personal:false}))
+    .concat(personalAccessAllowed() ? state.personalTasks.map(t=>({...t, __personal:true})) : []);
+  const tasks = allTasks.filter(t=> match(t.title) || match(t.description) || match(t.purchaseStore)).slice(0,8);
+
+  const allEvents = state.events.map(e=>({...e, __personal:false}))
+    .concat(personalAccessAllowed() ? state.personalEvents.map(e=>({...e, __personal:true})) : []);
+  const events = allEvents.filter(e=> match(e.title) || match(e.notes) || match(e.location)).slice(0,8);
+
+  const allFunds = hasRole('Руководитель','Ассистент')
+    ? state.fundsEntries.map(f=>({...f, __personal:false})).concat(personalAccessAllowed() ? state.personalFundsEntries.map(f=>({...f, __personal:true})) : [])
+    : [];
+  const funds = allFunds.filter(f=> match(f.purpose) || match(f.comment)).slice(0,8);
+
+  const allProjects = state.projectsWork.map(p=>({...p, __personal:false}))
+    .concat(personalAccessAllowed() ? state.personalProjects.map(p=>({...p, __personal:true})) : []);
+  const projects = allProjects.filter(p=> match(p.name)).slice(0,8);
+
+  const ideas = state.ideaBankWork.filter(i=> match(i.name)).slice(0,8);
+
+  return {tasks, events, funds, projects, ideas};
+}
+function openSearchModal(){
+  const ov = document.createElement('div');
+  ov.className='overlay'; ov.style.zIndex=150;
+  ov.innerHTML = `
+    <div class="modal" style="max-width:560px;">
+      <h3>Поиск по всему приложению</h3>
+      <input type="text" id="globalSearchInput" placeholder="Задача, проект, событие, расход..." autocomplete="off">
+      <div id="globalSearchResults" style="margin-top:16px;max-height:55vh;overflow-y:auto;"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="closeSearch">Закрыть</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const finish=()=>ov.remove();
+  ov.querySelector('#closeSearch').onclick=finish;
+  ov.onclick=(e)=>{ if(e.target===ov) finish(); };
+  const input = ov.querySelector('#globalSearchInput');
+  const resultsEl = ov.querySelector('#globalSearchResults');
+  setTimeout(()=>input.focus(),0);
+
+  function renderResults(){
+    const q = input.value;
+    if(q.trim().length<2){
+      resultsEl.innerHTML = `<p class="subtitle" style="margin:0;">Введите минимум 2 символа</p>`;
+      return;
+    }
+    const res = performGlobalSearch(q);
+    const totalCount = res.tasks.length+res.events.length+res.funds.length+res.projects.length+res.ideas.length;
+    if(!totalCount){
+      resultsEl.innerHTML = `<div class="empty-state"><div class="big">Ничего не найдено</div></div>`;
+      return;
+    }
+    let html = '';
+    if(res.tasks.length){
+      html += `<div class="search-cat-label">Задачи</div><div class="item-list" style="margin-bottom:8px;">`;
+      html += res.tasks.map(t=>`
+        <div class="item" style="cursor:pointer;" data-sr-task="${t.id}" data-sr-personal="${t.__personal?'1':'0'}">
+          <div class="main"><div class="title">${t.__personal?'🔒 ':''}${escapeHtml(t.title)}</div>
+          <div class="meta"><span class="badge ${t.status==='done'?'done':'progress'}">${STATUSES[t.status]||''}</span>${t.deadline?`<span>до ${fmtDate(t.deadline)}</span>`:''}</div></div>
+        </div>`).join('');
+      html += `</div>`;
+    }
+    if(res.events.length){
+      html += `<div class="search-cat-label">Календарь</div><div class="item-list" style="margin-bottom:8px;">`;
+      html += res.events.map(e=>`
+        <div class="item" style="cursor:pointer;" data-sr-day="${e.date}">
+          <div class="main"><div class="title">${e.__personal?'🔒 ':''}${escapeHtml(e.title)}</div>
+          <div class="meta"><span>${CATEGORIES[e.category]||''}</span><span>${fmtDate(e.date)}</span></div></div>
+        </div>`).join('');
+      html += `</div>`;
+    }
+    if(res.funds.length){
+      html += `<div class="search-cat-label">Финансы</div><div class="item-list" style="margin-bottom:8px;">`;
+      html += res.funds.map(f=>`
+        <div class="item" style="cursor:pointer;" data-sr-fund="${f.id}" data-sr-fund-scope="${f.__personal?'personal':'work'}">
+          <div class="main"><div class="title">${f.__personal?'🔒 ':''}${escapeHtml(f.purpose||(f.type==='issue'?'Доход':'Расход'))}</div>
+          <div class="meta"><span class="${f.type==='issue'?'amt-issue':'amt-expense'}">${f.type==='issue'?'+':'−'}${fmtMoney(f.amount)}</span><span>${fmtDate(f.date)}</span></div></div>
+        </div>`).join('');
+      html += `</div>`;
+    }
+    if(res.projects.length){
+      html += `<div class="search-cat-label">Проекты</div><div class="item-list" style="margin-bottom:8px;">`;
+      html += res.projects.map(p=>`
+        <div class="item" style="cursor:pointer;" data-sr-project="${p.id}" data-sr-project-personal="${p.__personal?'1':'0'}">
+          <div class="main"><div class="title">${p.__personal?'🔒 ':''}${escapeHtml(p.name)}</div></div>
+        </div>`).join('');
+      html += `</div>`;
+    }
+    if(res.ideas.length){
+      html += `<div class="search-cat-label">Банк идей-проектов</div><div class="item-list" style="margin-bottom:8px;">`;
+      html += res.ideas.map(i=>`
+        <div class="item" style="cursor:pointer;" data-sr-idea="${i.id}">
+          <div class="main"><div class="title">${escapeHtml(i.name)}</div><div class="meta"><span>${(i.tasks||[]).length} задач(и) в плане</span></div></div>
+        </div>`).join('');
+      html += `</div>`;
+    }
+    resultsEl.innerHTML = html;
+
+    resultsEl.querySelectorAll('[data-sr-task]').forEach(row=>row.onclick=async ()=>{
+      const ok = await openTaskFromSearch(row.dataset.srTask, row.dataset.srPersonal==='1');
+      if(ok) finish();
+    });
+    resultsEl.querySelectorAll('[data-sr-day]').forEach(row=>row.onclick=()=>{
+      finish();
+      state.tab='calendar'; render();
+      setTimeout(()=>openDayModal(row.dataset.srDay), 50);
+    });
+    resultsEl.querySelectorAll('[data-sr-fund]').forEach(row=>row.onclick=()=>{
+      finish();
+      const fscope = row.dataset.srFundScope;
+      state.fundsScope = fscope; state.tab='funds'; render();
+      setTimeout(()=>openFundModal(row.dataset.srFund, fscope), 50);
+    });
+    resultsEl.querySelectorAll('[data-sr-project]').forEach(row=>row.onclick=()=>{
+      finish();
+      const personal = row.dataset.srProjectPersonal==='1';
+      state.tab='tasks'; state.taskSubtab = personal?'personal':'work';
+      state.selectedProject[personal?'personal':'work'] = row.dataset.srProject;
+      render();
+    });
+    resultsEl.querySelectorAll('[data-sr-idea]').forEach(row=>row.onclick=()=>{
+      finish();
+      state.tab='tasks'; state.taskSubtab='work'; render();
+      setTimeout(()=>openProjectsModal(false), 50);
+    });
+  }
+  input.oninput = renderResults;
+  input.onkeydown = (e)=>{ if(e.key==='Escape') finish(); };
+  renderResults();
+}
+
+function openDataModal(){
+  const modal = document.getElementById('modalRoot');
+  function body(){
+    const allTrash = state.trash.slice().sort((a,b)=>b.deletedAt-a.deletedAt);
+    const personalTrashRows = personalAccessAllowed() ? state.personalTrash.slice().sort((a,b)=>b.deletedAt-a.deletedAt) : [];
+    return `
+      <div class="overlay" id="ov">
+        <div class="modal" style="max-width:520px;">
+          <h3>Резервная копия, корзина и архив</h3>
+
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Резервная копия</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Выгружает задачи, проекты, календарь, финансы и сотрудников в один файл. Личные задачи включаются в зашифрованном виде — без пароля их не открыть.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;">
+            <button class="btn" id="exportBtn">📤 Скачать резервную копию</button>
+            <label class="btn ghost" style="cursor:pointer;">
+              📥 Восстановить из файла
+              <input type="file" id="importFile" accept="application/json" style="display:none;">
+            </label>
+          </div>
+          <div class="note" style="margin-bottom:20px;">Восстановление из файла заменит текущие рабочие данные (задачи, проекты, календарь, финансы, сотрудников).</div>
+
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Корзина — рабочие данные (${allTrash.length})</h4>
+          <div class="item-list" style="margin-bottom:20px;">
+            ${allTrash.length ? allTrash.map(t=>`
+              <div class="item">
+                <div class="main">
+                  <div class="title">${escapeHtml(trashItemName(t))}</div>
+                  <div class="meta"><span>${trashTypeLabel(t.type)}</span><span>удалено ${fmtDate(new Date(t.deletedAt).toISOString().slice(0,10))}</span><span>${daysLeftInTrash(t.deletedAt)} дн. до удаления навсегда</span></div>
+                </div>
+                <div class="actions"><button class="btn ghost small" data-restore="${t.trashId}">Восстановить</button></div>
+              </div>
+            `).join('') : `<p class="subtitle" style="margin:0;">Корзина пуста</p>`}
+          </div>
+
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Корзина — личное (задачи, финансы, календарь) ${personalAccessAllowed()?`(${personalTrashRows.length})`:''}</h4>
+          <div class="item-list" style="margin-bottom:10px;">
+            ${!personalAccessAllowed()
+              ? `<p class="subtitle" style="margin:0;">Войдите как Руководитель или Ассистент («🙋 Кто я?»), чтобы увидеть эту корзину.</p>`
+              : (personalTrashRows.length ? personalTrashRows.map(t=>`
+                <div class="item">
+                  <div class="main">
+                    <div class="title">${escapeHtml(trashItemName(t))}</div>
+                    <div class="meta"><span>${trashTypeLabel(t.type)}</span><span>удалено ${fmtDate(new Date(t.deletedAt).toISOString().slice(0,10))}</span><span>${daysLeftInTrash(t.deletedAt)} дн. до удаления навсегда</span></div>
+                  </div>
+                  <div class="actions"><button class="btn ghost small" data-restore-personal="${t.trashId}">Восстановить</button></div>
+                </div>
+              `).join('') : `<p class="subtitle" style="margin:0;">Корзина пуста</p>`)}
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn ghost" id="closeData">Закрыть</button>
+          </div>
+
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:20px 0 8px;">Архив (старше 6 месяцев) — рабочее</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Выполненные задачи и прошедшие события старше полугода переезжают сюда автоматически, чтобы не загромождать основные списки. Хранятся без ограничения по времени.</p>
+          <p class="subtitle" style="margin:0 0 8px;font-weight:600;">Задачи (${state.archiveTasks.length})</p>
+          <div class="item-list" style="margin-bottom:14px;">
+            ${state.archiveTasks.length ? state.archiveTasks.slice().sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||'')).map(t=>`
+              <div class="item">
+                <div class="main"><div class="title">${escapeHtml(t.title)}</div><div class="meta"><span>выполнено ${t.completedAt?fmtDate(t.completedAt):'—'}</span></div></div>
+                <div class="actions"><button class="btn ghost small" data-restore-archive-task="${t.id}">Вернуть</button></div>
+              </div>
+            `).join('') : `<p class="subtitle" style="margin:0;">Архив задач пуст</p>`}
+          </div>
+          <p class="subtitle" style="margin:0 0 8px;font-weight:600;">События (${state.archiveEvents.length})</p>
+          <div class="item-list" style="margin-bottom:20px;">
+            ${state.archiveEvents.length ? state.archiveEvents.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e=>`
+              <div class="item">
+                <div class="main"><div class="title">${escapeHtml(e.title)}</div><div class="meta"><span>${fmtDate(e.date)}</span><span>${CATEGORIES[e.category]||''}</span></div></div>
+                <div class="actions"><button class="btn ghost small" data-restore-archive-event="${e.id}">Вернуть</button></div>
+              </div>
+            `).join('') : `<p class="subtitle" style="margin:0;">Архив событий пуст</p>`}
+          </div>
+
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Архив — личное ${personalAccessAllowed()?'':'🔒'}</h4>
+          ${!personalAccessAllowed() ? `<p class="subtitle" style="margin:0;">Доступно только Руководителю и Ассистенту.</p>` : `
+          <p class="subtitle" style="margin:0 0 8px;font-weight:600;">Задачи (${state.personalArchiveTasks.length})</p>
+          <div class="item-list" style="margin-bottom:14px;">
+            ${state.personalArchiveTasks.length ? state.personalArchiveTasks.slice().sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||'')).map(t=>`
+              <div class="item">
+                <div class="main"><div class="title">${escapeHtml(t.title)}</div><div class="meta"><span>выполнено ${t.completedAt?fmtDate(t.completedAt):'—'}</span></div></div>
+                <div class="actions"><button class="btn ghost small" data-restore-personal-archive-task="${t.id}">Вернуть</button></div>
+              </div>
+            `).join('') : `<p class="subtitle" style="margin:0;">Архив задач пуст</p>`}
+          </div>
+          <p class="subtitle" style="margin:0 0 8px;font-weight:600;">События (${state.personalArchiveEvents.length})</p>
+          <div class="item-list" style="margin-bottom:10px;">
+            ${state.personalArchiveEvents.length ? state.personalArchiveEvents.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e=>`
+              <div class="item">
+                <div class="main"><div class="title">${escapeHtml(e.title)}</div><div class="meta"><span>${fmtDate(e.date)}</span><span>${CATEGORIES[e.category]||''}</span></div></div>
+                <div class="actions"><button class="btn ghost small" data-restore-personal-archive-event="${e.id}">Вернуть</button></div>
+              </div>
+            `).join('') : `<p class="subtitle" style="margin:0;">Архив событий пуст</p>`}
+          </div>
+          `}
+        </div>
+      </div>`;
+  }
+  modal.innerHTML = body();
+  function wire(){
+    document.getElementById('closeData').onclick=closeModal;
+    document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+    document.getElementById('exportBtn').onclick=()=>exportAllData();
+    document.getElementById('importFile').onchange=async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      try{
+        const text = await file.text();
+        const payload = JSON.parse(text);
+        if(payload.app!=='studio-journal'){ toast('Файл не похож на резервную копию этого приложения'); return; }
+        if(!(await showConfirm('Восстановление заменит текущие рабочие данные (задачи, проекты, календарь, финансы, сотрудников). Продолжить?', 'Восстановить'))) return;
+        await importAllData(payload);
+        modal.innerHTML = body(); wire(); render();
+        toast('Данные восстановлены');
+      }catch(err){
+        toast('Не удалось прочитать файл — проверьте, что это корректная резервная копия');
+      }
+    };
+    modal.querySelectorAll('[data-restore-personal-archive-task]').forEach(b=>b.onclick=async ()=>{
+      await restorePersonalArchiveTask(b.dataset.restorePersonalArchiveTask);
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-restore-personal-archive-event]').forEach(b=>b.onclick=async ()=>{
+      await restorePersonalArchiveEvent(b.dataset.restorePersonalArchiveEvent);
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-restore-archive-task]').forEach(b=>b.onclick=async ()=>{
+      await restoreArchiveTask(b.dataset.restoreArchiveTask);
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-restore-archive-event]').forEach(b=>b.onclick=async ()=>{
+      await restoreArchiveEvent(b.dataset.restoreArchiveEvent);
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-restore]').forEach(b=>b.onclick=async ()=>{
+      await restoreTrashItem(false, b.dataset.restore);
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-restore-personal]').forEach(b=>b.onclick=async ()=>{
+      await restoreTrashItem(true, b.dataset.restorePersonal);
+      modal.innerHTML = body(); wire(); render();
+    });
+  }
+  wire();
+}
+
+function openStaffModal(){
+  const modal = document.getElementById('modalRoot');
+  let pwStatus = {};
+  function body(){
+    return `
+      <div class="overlay" id="ov">
+        <div class="modal">
+          <h3>Сотрудники</h3>
+          <div class="item-list" id="empList" style="margin-bottom:16px;">
+            ${state.employees.map(e=>`
+              <div class="item">
+                <div class="main">
+                  <div class="title">${escapeHtml(e.name)}</div>
+                  <div class="meta"><span>${escapeHtml(e.role||'')}</span>${pwStatus[e.id]?'<span>🔒 пароль задан</span>':''}</div>
+                </div>
+                <div class="actions">
+                  <button class="btn ghost small" data-view-tasks="${e.id}">Задачи</button>
+                  <button class="btn ghost small" data-pw-emp="${e.id}">${pwStatus[e.id]?'🔒 Сменить пароль':'🔒 Задать пароль'}</button>
+                  <button class="btn danger small" data-del-emp="${e.id}">✕</button>
+                </div>
+              </div>
+            `).join('') || `<p class="subtitle" style="margin:0;">Пока нет сотрудников</p>`}
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Имя</label><input id="emp_name" placeholder="Имя сотрудника"></div>
+            <div class="field"><label>Роль</label><input id="emp_role" placeholder="Например: Мастер"></div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn ghost" id="closeStaff">Закрыть</button>
+            <button class="btn" id="addEmp">Добавить</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  modal.innerHTML = body();
+  function wire(){
+    document.getElementById('closeStaff').onclick=closeModal;
+    document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+    document.getElementById('addEmp').onclick=async ()=>{
+      const name = document.getElementById('emp_name').value.trim();
+      if(!name){ toast('Введите имя'); return; }
+      const role = document.getElementById('emp_role').value.trim();
+      state.employees.push({id:uid(), name, role});
+      await saveEmployees();
+      modal.innerHTML = body(); wire(); render();
+    };
+    modal.querySelectorAll('[data-view-tasks]').forEach(b=>b.onclick=()=>{
+      const empId = b.dataset.viewTasks;
+      closeModal();
+      state.tab='tasks'; state.taskSubtab='work';
+      state.taskFilterEmployee=empId;
+      state.selectedProject.work='all';
+      render();
+    });
+    modal.querySelectorAll('[data-pw-emp]').forEach(b=>b.onclick=()=>{
+      openEmployeePasswordModal(b.dataset.pwEmp, ()=>{ refreshAndRender(); }, pwStatus[b.dataset.pwEmp]);
+    });
+    modal.querySelectorAll('[data-del-emp]').forEach(b=>b.onclick=async ()=>{
+      if(!(await showConfirm('Удалить сотрудника? Задачи и события останутся, но без привязки к нему. Можно будет вернуть через корзину (🗄️).'))) return;
+      const doomedEmp = state.employees.find(e=>e.id===b.dataset.delEmp);
+      if(doomedEmp) await moveToTrash(false, 'employee', doomedEmp);
+      state.employees = state.employees.filter(e=>e.id!==b.dataset.delEmp);
+      await saveEmployees();
+      modal.innerHTML = body(); wire(); render();
+    });
+  }
+  function refreshAndRender(){
+    fetchPublicEmployees().then(({employees})=>{
+      pwStatus = {};
+      employees.forEach(e=>{ pwStatus[e.id] = e.hasPassword; });
+      modal.innerHTML = body(); wire(); render();
+    });
+  }
+  fetchPublicEmployees().then(({employees})=>{
+    pwStatus = {};
+    employees.forEach(e=>{ pwStatus[e.id] = e.hasPassword; });
+    modal.innerHTML = body(); wire();
+  });
+  wire();
+}
+
+/* ---------------- modal helpers ---------------- */
+function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeModal(); });
+
+function staffAccessAllowed(){
+  return hasRole('Руководитель','Ассистент');
+}
+document.getElementById('staffBtn').onclick = ()=>{
+  if(!staffAccessAllowed()){
+    toast('Доступ к разделу «Сотрудники» есть только у Руководителя и Ассистента');
+    return;
+  }
+  openStaffModal();
+};
+document.getElementById('dataBtn').onclick = ()=>{
+  if(!hasRole('Руководитель','Ассистент')){
+    toast('Резервная копия, экспорт и импорт доступны только Руководителю и Ассистенту');
+    return;
+  }
+  openDataModal();
+};
+document.getElementById('whoAmIBtn').onclick = openWhoAmIModal;
+document.getElementById('searchBtn').onclick = openSearchModal;
+document.getElementById('bellBtn').onclick = (e)=>{ e.stopPropagation(); toggleReminderPanel(); };
+
+let calResizeTimer;
+window.addEventListener('resize', ()=>{
+  clearTimeout(calResizeTimer);
+  calResizeTimer = setTimeout(()=>{ if(state.loaded && state.tab==='calendar') render(); }, 200);
+});
+
+/* ---------------- init ---------------- */
+async function startApp(){
+  await loadAll();
+  render();
+  if(state.browserNotify && 'Notification' in window && Notification.permission==='granted'){
+    checkNotificationsTick();
+  }
+  if(!state.notifyIntervalSet){
+    state.notifyIntervalSet = true;
+    setInterval(checkNotificationsTick, 60000);
+  }
+}
+(async function init(){
+  const emp = await checkSession();
+  if(!emp){
+    renderLoginScreen();
+    return;
+  }
+  state.currentUserId = emp.id;
+  await startApp();
+})();
+</script>
+</body>
+</html>

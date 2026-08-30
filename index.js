@@ -281,7 +281,7 @@ app.get('*', (req, res) => {
   }
 
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`Единый журнал: сервер запущен на порту ${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Единый журнал: сервер запущен на порту ${PORT} (слушает 0.0.0.0)`);
   });
 })();

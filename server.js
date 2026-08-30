@@ -4,38 +4,50 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
-const Database = require('better-sqlite3');
-const SqliteStore = require('better-sqlite3-session-store')(session);
 
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const DB_PATH = path.join(DATA_DIR, 'studio-journal.db');
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
+const STORE_PATH = path.join(DATA_DIR, 'store.json');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS kv_store (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS credentials (
-    employee_id TEXT PRIMARY KEY,
-    bcrypt_hash TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    sid TEXT PRIMARY KEY,
-    sess TEXT NOT NULL,
-    expire INTEGER NOT NULL
-  );
-`);
+// ---------- простое файловое хранилище (без баз данных, без компиляции) ----------
+function loadStore() {
+  if (!fs.existsSync(STORE_PATH)) {
+    return { kv: {}, credentials: {} };
+  }
+  try {
+    const raw = fs.readFileSync(STORE_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    return { kv: parsed.kv || {}, credentials: parsed.credentials || {} };
+  } catch (e) {
+    console.error('Не удалось прочитать файл данных, начинаем с пустого хранилища:', e.message);
+    return { kv: {}, credentials: {} };
+  }
+}
+let store = loadStore();
+
+// Пишем на диск по очереди (без параллельных записей), атомарно через временный файл
+let writeQueue = Promise.resolve();
+function persist() {
+  writeQueue = writeQueue.then(() => new Promise((resolve) => {
+    const tmpPath = STORE_PATH + '.tmp';
+    fs.writeFile(tmpPath, JSON.stringify(store), (err) => {
+      if (err) { console.error('Ошибка записи данных:', err.message); return resolve(); }
+      fs.rename(tmpPath, STORE_PATH, (err2) => {
+        if (err2) console.error('Ошибка сохранения данных:', err2.message);
+        resolve();
+      });
+    });
+  }));
+  return writeQueue;
+}
 
 // Сеем список ролей по умолчанию при самом первом запуске, чтобы было кого выбрать при входе
 (function seedDefaultEmployees() {
-  const row = db.prepare('SELECT value FROM kv_store WHERE key = ?').get('roster:employees');
-  if (row) return;
+  if (store.kv['roster:employees']) return;
   const DEFAULT_ROLES = ['Руководитель', 'Ассистент', 'Маркетолог', 'Старший администратор', 'Менеджер', 'Хостес'];
   const employees = DEFAULT_ROLES.map((role, i) => ({ id: `emp-seed-${i}-${Date.now()}`, name: role, role }));
-  db.prepare('INSERT INTO kv_store (key, value) VALUES (?, ?)').run('roster:employees', JSON.stringify(employees));
+  store.kv['roster:employees'] = JSON.stringify(employees);
+  persist();
   console.log('Список сотрудников по умолчанию создан (6 ролей). Задайте пароли через экран входа.');
 })();
 
@@ -49,7 +61,8 @@ if (!process.env.SESSION_SECRET) {
 }
 
 app.use(session({
-  store: new SqliteStore({ client: db, expired: { clear: true, intervalMs: 15 * 60 * 1000 } }),
+  // Хранилище сессий по умолчанию (в памяти процесса): при перезапуске сервера
+  // всем придётся войти заново — это нормально для небольшой команды.
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -63,15 +76,14 @@ app.use(session({
 
 // ---------- helpers ----------
 function getEmployees() {
-  const row = db.prepare('SELECT value FROM kv_store WHERE key = ?').get('roster:employees');
-  return row ? JSON.parse(row.value) : [];
+  const raw = store.kv['roster:employees'];
+  return raw ? JSON.parse(raw) : [];
 }
 function findEmployee(id) {
   return getEmployees().find(e => e.id === id) || null;
 }
 function hasAnyCredential() {
-  const row = db.prepare('SELECT COUNT(*) AS c FROM credentials').get();
-  return row.c > 0;
+  return Object.keys(store.credentials).length > 0;
 }
 function currentEmployee(req) {
   if (!req.session || !req.session.employeeId) return null;
@@ -86,31 +98,30 @@ function requireAuth(req, res, next) {
 function isPrivilegedRole(role) {
   return role === 'Руководитель' || role === 'Ассистент';
 }
-// Keys that only Руководитель/Ассистент may read or write
+// Ключи, которые может читать/писать только Руководитель/Ассистент
 function isRestrictedKey(key) {
   return key.startsWith('funds:') || key.startsWith('personal:');
 }
-// Keys that only Руководитель/Ассистент may WRITE (but anyone logged in may read)
+// Ключ, который может ИЗМЕНЯТЬ только Руководитель/Ассистент (но читать может любой залогиненный)
 function isRosterKey(key) {
   return key === 'roster:employees';
 }
 
-// ---------- public: employee list (no passwords) ----------
+// ---------- публично: список сотрудников (без паролей) ----------
 app.get('/api/employees', (req, res) => {
-  const creds = new Set(db.prepare('SELECT employee_id FROM credentials').all().map(r => r.employee_id));
-  const list = getEmployees().map(e => ({ id: e.id, name: e.name, role: e.role, hasPassword: creds.has(e.id) }));
+  const list = getEmployees().map(e => ({ id: e.id, name: e.name, role: e.role, hasPassword: !!store.credentials[e.id] }));
   res.json({ employees: list, bootstrapNeeded: !hasAnyCredential() });
 });
 
-// ---------- auth ----------
+// ---------- вход ----------
 app.post('/api/login', (req, res) => {
   const { employeeId, password } = req.body || {};
   if (!employeeId || !password) return res.status(400).json({ error: 'Укажите сотрудника и пароль' });
   const emp = findEmployee(employeeId);
   if (!emp) return res.status(404).json({ error: 'Сотрудник не найден' });
-  const cred = db.prepare('SELECT bcrypt_hash FROM credentials WHERE employee_id = ?').get(employeeId);
-  if (!cred) return res.status(401).json({ error: 'У этого сотрудника ещё не задан пароль' });
-  if (!bcrypt.compareSync(password, cred.bcrypt_hash)) {
+  const hash = store.credentials[employeeId];
+  if (!hash) return res.status(401).json({ error: 'У этого сотрудника ещё не задан пароль' });
+  if (!bcrypt.compareSync(password, hash)) {
     return res.status(401).json({ error: 'Неверный пароль' });
   }
   req.session.employeeId = employeeId;
@@ -127,9 +138,9 @@ app.get('/api/me', (req, res) => {
   res.json({ employee: { id: emp.id, name: emp.name, role: emp.role } });
 });
 
-// Set / change / remove a password.
-// - Bootstrap: if nobody has a credential at all, anyone (even unauthenticated) may set the FIRST password.
-// - Логика после бутстрапа:
+// Установка / смена / снятие пароля.
+// - Бутстрап: если вообще ни у кого нет пароля, разрешаем задать самый первый без сессии.
+// - После бутстрапа:
 //     * Руководитель/Ассистент могут задать/сбросить пароль ЛЮБОГО сотрудника без старого пароля.
 //     * Сотрудник может сменить СВОЙ пароль, но должен указать текущий (если он уже задан).
 app.post('/api/employees/:id/password', (req, res) => {
@@ -149,9 +160,9 @@ app.post('/api/employees/:id/password', (req, res) => {
       return res.status(403).json({ error: 'Менять пароль другого сотрудника может только Руководитель или Ассистент' });
     }
     if (isSelf) {
-      const existingCred = db.prepare('SELECT bcrypt_hash FROM credentials WHERE employee_id = ?').get(targetId);
-      if (existingCred) {
-        if (!currentPassword || !bcrypt.compareSync(currentPassword, existingCred.bcrypt_hash)) {
+      const existingHash = store.credentials[targetId];
+      if (existingHash) {
+        if (!currentPassword || !bcrypt.compareSync(currentPassword, existingHash)) {
           return res.status(401).json({ error: 'Текущий пароль неверен' });
         }
       }
@@ -159,23 +170,24 @@ app.post('/api/employees/:id/password', (req, res) => {
   }
 
   if (!newPassword) {
-    db.prepare('DELETE FROM credentials WHERE employee_id = ?').run(targetId);
+    delete store.credentials[targetId];
+    persist();
     return res.json({ ok: true, removed: true });
   }
-  const hash = bcrypt.hashSync(newPassword, 10);
-  db.prepare('INSERT INTO credentials (employee_id, bcrypt_hash) VALUES (?, ?) ON CONFLICT(employee_id) DO UPDATE SET bcrypt_hash = excluded.bcrypt_hash').run(targetId, hash);
+  store.credentials[targetId] = bcrypt.hashSync(newPassword, 10);
+  persist();
   res.json({ ok: true });
 });
 
-// ---------- generic key-value storage API (replaces window.storage) ----------
+// ---------- универсальное хранилище ключ-значение (замена window.storage) ----------
 app.get('/api/storage/:key', requireAuth, (req, res) => {
   const key = req.params.key;
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
-  const row = db.prepare('SELECT value FROM kv_store WHERE key = ?').get(key);
-  if (!row) return res.status(404).json({ error: 'not found' });
-  res.json({ key, value: row.value });
+  const value = store.kv[key];
+  if (value === undefined) return res.status(404).json({ error: 'not found' });
+  res.json({ key, value });
 });
 
 app.put('/api/storage/:key', requireAuth, (req, res) => {
@@ -188,7 +200,8 @@ app.put('/api/storage/:key', requireAuth, (req, res) => {
   if (isRosterKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Изменять список сотрудников может только Руководитель или Ассистент' });
   }
-  db.prepare('INSERT INTO kv_store (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  store.kv[key] = value;
+  persist();
   res.json({ ok: true });
 });
 
@@ -197,11 +210,12 @@ app.delete('/api/storage/:key', requireAuth, (req, res) => {
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
-  db.prepare('DELETE FROM kv_store WHERE key = ?').run(key);
+  delete store.kv[key];
+  persist();
   res.json({ ok: true });
 });
 
-// ---------- static front-end ----------
+// ---------- статика (сам интерфейс) ----------
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

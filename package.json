@@ -1,7 +1,7 @@
 {
   "name": "studio-journal-server",
   "version": "1.0.0",
-  "description": "Единый журнал — сервер (Node.js/Express, хранение в JSON-файле)",
+  "description": "Единый журнал — сервер (Node.js/Express, хранение в S3)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -10,6 +10,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.658.1",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
     "express": "^4.19.2",

@@ -1,21 +1,65 @@
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
+const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const STORE_PATH = path.join(DATA_DIR, 'store.json');
+// ---------- хранилище: S3 (постоянное, переживает передеплой), с запасным
+// вариантом — временный файл ОС, если переменные S3 не заданы (например,
+// при локальной проверке без реального хранилища) ----------
+const S3_BUCKET = process.env.S3_BUCKET;
+const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY;
+const S3_SECRET_KEY = process.env.S3_SECRET_KEY;
+const S3_ENDPOINT = process.env.S3_ENDPOINT || 'https://s3.twcstorage.ru';
+const S3_REGION = process.env.S3_REGION || 'ru-1';
+const S3_OBJECT_KEY = 'store.json';
+const USE_S3 = !!(S3_BUCKET && S3_ACCESS_KEY && S3_SECRET_KEY);
 
-// ---------- простое файловое хранилище (без баз данных, без компиляции) ----------
-function loadStore() {
-  if (!fs.existsSync(STORE_PATH)) {
-    return { kv: {}, credentials: {} };
+const FALLBACK_DIR = process.env.DATA_DIR || path.join(os.tmpdir(), 'studio-journal-data');
+const FALLBACK_PATH = path.join(FALLBACK_DIR, 'store.json');
+
+let s3Client = null;
+if (USE_S3) {
+  s3Client = new S3Client({
+    region: S3_REGION,
+    endpoint: S3_ENDPOINT,
+    forcePathStyle: true,
+    credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
+  });
+  console.log(`Хранилище: S3, бакет "${S3_BUCKET}" (${S3_ENDPOINT}) — данные переживут передеплой.`);
+} else {
+  console.warn('[ВНИМАНИЕ] Переменные S3 (S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY) не заданы — используется временное хранилище на диске. Данные будут потеряны при следующем деплое! Задайте переменные в панели Timeweb.');
+  if (!fs.existsSync(FALLBACK_DIR)) fs.mkdirSync(FALLBACK_DIR, { recursive: true });
+}
+
+async function streamToString(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function loadStoreFromBackend() {
+  if (USE_S3) {
+    try {
+      const res = await s3Client.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY }));
+      const raw = await streamToString(res.Body);
+      const parsed = JSON.parse(raw);
+      return { kv: parsed.kv || {}, credentials: parsed.credentials || {} };
+    } catch (e) {
+      if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) {
+        console.log('В S3 ещё нет сохранённых данных — начинаем с пустого хранилища.');
+      } else {
+        console.error('Не удалось прочитать данные из S3, начинаем с пустого хранилища:', e.message);
+      }
+      return { kv: {}, credentials: {} };
+    }
   }
+  if (!fs.existsSync(FALLBACK_PATH)) return { kv: {}, credentials: {} };
   try {
-    const raw = fs.readFileSync(STORE_PATH, 'utf8');
+    const raw = fs.readFileSync(FALLBACK_PATH, 'utf8');
     const parsed = JSON.parse(raw);
     return { kv: parsed.kv || {}, credentials: parsed.credentials || {} };
   } catch (e) {
@@ -23,33 +67,35 @@ function loadStore() {
     return { kv: {}, credentials: {} };
   }
 }
-let store = loadStore();
 
-// Пишем на диск по очереди (без параллельных записей), атомарно через временный файл
+let store = { kv: {}, credentials: {} };
+
+// Пишем по очереди (без параллельных записей), чтобы не гонять одновременные PUT
 let writeQueue = Promise.resolve();
 function persist() {
-  writeQueue = writeQueue.then(() => new Promise((resolve) => {
-    const tmpPath = STORE_PATH + '.tmp';
-    fs.writeFile(tmpPath, JSON.stringify(store), (err) => {
-      if (err) { console.error('Ошибка записи данных:', err.message); return resolve(); }
-      fs.rename(tmpPath, STORE_PATH, (err2) => {
-        if (err2) console.error('Ошибка сохранения данных:', err2.message);
-        resolve();
+  writeQueue = writeQueue.then(async () => {
+    const body = JSON.stringify(store);
+    if (USE_S3) {
+      try {
+        await s3Client.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY, Body: body, ContentType: 'application/json' }));
+      } catch (e) {
+        console.error('Ошибка сохранения данных в S3:', e.message);
+      }
+      return;
+    }
+    await new Promise((resolve) => {
+      const tmpPath = FALLBACK_PATH + '.tmp';
+      fs.writeFile(tmpPath, body, (err) => {
+        if (err) { console.error('Ошибка записи данных:', err.message); return resolve(); }
+        fs.rename(tmpPath, FALLBACK_PATH, (err2) => {
+          if (err2) console.error('Ошибка сохранения данных:', err2.message);
+          resolve();
+        });
       });
     });
-  }));
+  });
   return writeQueue;
 }
-
-// Сеем список ролей по умолчанию при самом первом запуске, чтобы было кого выбрать при входе
-(function seedDefaultEmployees() {
-  if (store.kv['roster:employees']) return;
-  const DEFAULT_ROLES = ['Руководитель', 'Ассистент', 'Маркетолог', 'Старший администратор', 'Менеджер', 'Хостес'];
-  const employees = DEFAULT_ROLES.map((role, i) => ({ id: `emp-seed-${i}-${Date.now()}`, name: role, role }));
-  store.kv['roster:employees'] = JSON.stringify(employees);
-  persist();
-  console.log('Список сотрудников по умолчанию создан (6 ролей). Задайте пароли через экран входа.');
-})();
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -221,7 +267,21 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Единый журнал: сервер запущен на порту ${PORT}`);
-});
+// ---------- запуск: сначала грузим данные из хранилища, потом слушаем порт ----------
+(async function main() {
+  store = await loadStoreFromBackend();
+
+  // Сеем список ролей по умолчанию при самом первом запуске, чтобы было кого выбрать при входе
+  if (!store.kv['roster:employees']) {
+    const DEFAULT_ROLES = ['Руководитель', 'Ассистент', 'Маркетолог', 'Старший администратор', 'Менеджер', 'Хостес'];
+    const employees = DEFAULT_ROLES.map((role, i) => ({ id: `emp-seed-${i}-${Date.now()}`, name: role, role }));
+    store.kv['roster:employees'] = JSON.stringify(employees);
+    await persist();
+    console.log('Список сотрудников по умолчанию создан (6 ролей). Задайте пароли через экран входа.');
+  }
+
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`Единый журнал: сервер запущен на порту ${PORT}`);
+  });
+})();

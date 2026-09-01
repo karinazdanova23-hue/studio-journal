@@ -250,6 +250,13 @@
   .empty-state{text-align:center;padding:50px 20px;color:var(--ink-soft);}
   .empty-state .big{font-family:'Space Grotesk',sans-serif;font-size:17px;color:var(--ink);margin-bottom:6px;}
 
+  .saving-spinner{
+    display:inline-block;width:11px;height:11px;border-radius:50%;
+    border:2px solid var(--paper-line);border-top-color:var(--indigo);
+    animation:saving-spin .7s linear infinite;
+  }
+  @keyframes saving-spin{ to{ transform:rotate(360deg); } }
+
   /* Modal */
   .overlay{
     position:fixed;inset:0;background:rgba(32,30,25,0.45);display:flex;align-items:center;justify-content:center;
@@ -324,6 +331,9 @@
       <h1>Единый журнал</h1>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
+      <span id="savingIndicator" style="display:none;font-size:12.5px;color:var(--ink-soft);align-items:center;gap:5px;">
+        <span class="saving-spinner"></span>Сохранение…
+      </span>
       <button class="icon-btn" id="searchBtn" title="Поиск">🔍</button>
       <button class="btn ghost small" id="whoAmIBtn" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">🙋 Кто я?</button>
       <button class="icon-btn" id="bellBtn" title="Напоминания" style="position:relative;">🔔<span class="bell-badge" id="bellBadge" style="display:none;"></span></button>
@@ -344,42 +354,86 @@
 
 <script>
 /* ---------------- storage helpers ---------------- */
+function sleep(ms){ return new Promise(res=>setTimeout(res, ms)); }
+let pendingSaveCount = 0;
+function updateSavingIndicator(){
+  const el = document.getElementById('savingIndicator');
+  if(!el) return;
+  el.style.display = pendingSaveCount > 0 ? 'inline-flex' : 'none';
+}
 async function sGet(key, shared){
   if(shared === false){
     try{ return window.localStorage.getItem('lj:'+key); }catch(e){ return null; }
   }
-  try{
-    const r = await fetch('/api/storage/'+encodeURIComponent(key), {credentials:'include'});
-    if(r.status===404) return null;
-    if(r.status===401){ handleSessionExpired(); return null; }
-    if(!r.ok) return null;
-    const data = await r.json();
-    return data.value;
-  }catch(e){ return null; }
+  const maxAttempts = 3;
+  for(let attempt=1; attempt<=maxAttempts; attempt++){
+    try{
+      const r = await fetch('/api/storage/'+encodeURIComponent(key), {credentials:'include'});
+      if(r.status===404) return null;
+      if(r.status===401){ handleSessionExpired(); return null; }
+      if(r.ok){ const data = await r.json(); return data.value; }
+      if(r.status>=500 && attempt<maxAttempts){ await sleep(400*attempt); continue; }
+      return null;
+    }catch(e){
+      if(attempt<maxAttempts){ await sleep(400*attempt); continue; }
+      return null;
+    }
+  }
+  return null;
 }
 async function sSet(key, value, shared){
   if(shared === false){
     try{ window.localStorage.setItem('lj:'+key, value); return true; }catch(e){ return false; }
   }
+  pendingSaveCount++; updateSavingIndicator();
   try{
-    const r = await fetch('/api/storage/'+encodeURIComponent(key), {
-      method:'PUT', credentials:'include',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({value}),
-    });
-    if(r.status===401){ handleSessionExpired(); return false; }
-    return r.ok;
-  }catch(e){ console.error('storage set failed', key, e); return false; }
+    const maxAttempts = 3;
+    for(let attempt=1; attempt<=maxAttempts; attempt++){
+      try{
+        const r = await fetch('/api/storage/'+encodeURIComponent(key), {
+          method:'PUT', credentials:'include',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({value}),
+        });
+        if(r.status===401){ handleSessionExpired(); return false; }
+        if(r.ok) return true;
+        if(r.status>=500 && attempt<maxAttempts){ await sleep(400*attempt); continue; }
+        return false;
+      }catch(e){
+        if(attempt<maxAttempts){ await sleep(400*attempt); continue; }
+        console.error('storage set failed', key, e);
+        return false;
+      }
+    }
+    return false;
+  } finally {
+    pendingSaveCount--; updateSavingIndicator();
+  }
 }
 async function sDelete(key, shared){
   if(shared === false){
     try{ window.localStorage.removeItem('lj:'+key); }catch(e){}
-    return;
+    return true;
   }
+  pendingSaveCount++; updateSavingIndicator();
   try{
-    const r = await fetch('/api/storage/'+encodeURIComponent(key), {method:'DELETE', credentials:'include'});
-    if(r.status===401) handleSessionExpired();
-  }catch(e){}
+    const maxAttempts = 3;
+    for(let attempt=1; attempt<=maxAttempts; attempt++){
+      try{
+        const r = await fetch('/api/storage/'+encodeURIComponent(key), {method:'DELETE', credentials:'include'});
+        if(r.status===401){ handleSessionExpired(); return false; }
+        if(r.ok) return true;
+        if(r.status>=500 && attempt<maxAttempts){ await sleep(400*attempt); continue; }
+        return false;
+      }catch(e){
+        if(attempt<maxAttempts){ await sleep(400*attempt); continue; }
+        return false;
+      }
+    }
+    return false;
+  } finally {
+    pendingSaveCount--; updateSavingIndicator();
+  }
 }
 function handleSessionExpired(){
   if(state.sessionExpiredHandled) return;
@@ -402,6 +456,23 @@ function fmtMoney(n){
 }
 function escapeHtml(s){
   return String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// Экранирует текст и превращает ссылки (http/https/www.) в кликабельные <a> — безопасно от XSS,
+// т.к. экранирование происходит ДО оборачивания в теги.
+function linkifyEscaped(s){
+  const escaped = escapeHtml(s);
+  const urlRe = /((https?:\/\/|www\.)[^\s<]+)/gi;
+  return escaped.replace(urlRe, (match) => {
+    // Не захватываем случайную завершающую пунктуацию вроде точки или запятой на конце ссылки
+    let url = match;
+    let trailing = '';
+    while(url.length && /[.,!?;:)\]]$/.test(url)){
+      trailing = url.slice(-1) + trailing;
+      url = url.slice(0, -1);
+    }
+    const href = url.startsWith('http') ? url : 'https://' + url;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;">${url}</a>${trailing}`;
+  });
 }
 function truncate(str, max){
   if(!str) return '';
@@ -619,6 +690,8 @@ const state = {
   fundsEntries:[],
   personalSalt:null,
   personalMigrationNeeded:false,
+  overviewFilterEmployee:null,
+  calendarFullView:false,
   personalTasks:[],
   personalError:'',
   calYear:new Date().getFullYear(),
@@ -630,6 +703,7 @@ const state = {
   projectsWork:[],
   ideaBankWork:[],
   checklistsWork:[],
+  quickIdeasWork:[],
   personalProjects:[],
   calFilters: {event:true, planning:true, meeting:true, vacation:true, personal:true},
   calEmployeeFilters: {},
@@ -899,6 +973,7 @@ async function applyIdeaToProject(idea){
     : `В проект «${idea.name}» добавлено задач: ${newTasks.length} — идея убрана из банка`);
 }
 async function saveChecklists(){ await sSet('tasks:checklists', JSON.stringify(state.checklistsWork), true); }
+async function saveQuickIdeas(){ await sSet('tasks:quickideas', JSON.stringify(state.quickIdeasWork), true); }
 async function applyChecklistToTasks(checklist){
   const leader = state.employees.find(e=>e.role==='Руководитель');
   const today = todayISO();
@@ -986,7 +1061,7 @@ function generateRecurrenceDates(startISO, repeatType, weekdaySet, untilISO, max
 
 /* ---------------- load ---------------- */
 async function loadAll(){
-  const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, ideaBank, checklistsRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = await Promise.all([
+  const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, ideaBank, checklistsRaw, quickIdeasRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = await Promise.all([
     sGet('roster:employees', true),
     sGet('calendar:events', true),
     sGet('tasks:work', true),
@@ -997,6 +1072,7 @@ async function loadAll(){
     sGet('tasks:projects', true),
     sGet('tasks:ideabank', true),
     sGet('tasks:checklists', true),
+    sGet('tasks:quickideas', true),
     sGet('trash:items', true),
     sGet('archive:tasks', true),
     sGet('archive:events', true),
@@ -1054,6 +1130,7 @@ async function loadAll(){
   }
   state.ideaBankWork = ideaBank ? JSON.parse(ideaBank) : [];
   state.checklistsWork = checklistsRaw ? JSON.parse(checklistsRaw) : [];
+  state.quickIdeasWork = quickIdeasRaw ? JSON.parse(quickIdeasRaw) : [];
   {
     state.trash = trashRaw ? JSON.parse(trashRaw) : [];
     const cutoff = Date.now() - 30*24*60*60*1000;
@@ -1123,14 +1200,14 @@ async function restoreArchiveEvent(eventId){
   toast('Событие возвращено из архива');
 }
 
-async function saveEmployees(){ await sSet('roster:employees', JSON.stringify(state.employees), true); }
-async function saveEvents(){ await sSet('calendar:events', JSON.stringify(state.events), true); }
-async function saveTasksWork(){ await sSet('tasks:work', JSON.stringify(state.tasksWork), true); }
+async function saveEmployees(){ return await sSet('roster:employees', JSON.stringify(state.employees), true); }
+async function saveEvents(){ return await sSet('calendar:events', JSON.stringify(state.events), true); }
+async function saveTasksWork(){ return await sSet('tasks:work', JSON.stringify(state.tasksWork), true); }
 async function saveProjectsWork(){ await sSet('tasks:projects', JSON.stringify(state.projectsWork), true); }
-async function saveFunds(){ await sSet('funds:ledger', JSON.stringify(state.fundsEntries), true); }
+async function saveFunds(){ return await sSet('funds:ledger', JSON.stringify(state.fundsEntries), true); }
 
 async function savePersonalData(){
-  await Promise.all([
+  const results = await Promise.all([
     sSet('personal:tasks', JSON.stringify(state.personalTasks), true),
     sSet('personal:projects', JSON.stringify(state.personalProjects), true),
     sSet('personal:funds', JSON.stringify(state.personalFundsEntries), true),
@@ -1139,6 +1216,7 @@ async function savePersonalData(){
     sSet('personal:archiveTasks', JSON.stringify(state.personalArchiveTasks), true),
     sSet('personal:archiveEvents', JSON.stringify(state.personalArchiveEvents), true),
   ]);
+  return results.every(Boolean);
 }
 
 /* ---------------- project/task helpers (work vs personal) ---------------- */
@@ -1162,9 +1240,26 @@ async function migrateLegacyPersonalEvents(){
 }
 function eventsFor(personal){ return personal ? state.personalEvents : state.events; }
 function setEventsFor(personal, arr){ if(personal) state.personalEvents = arr; else state.events = arr; }
-async function persistEventsFor(personal){ if(personal) await savePersonalData(); else await saveEvents(); }
+async function persistEventsFor(personal){ return personal ? await savePersonalData() : await saveEvents(); }
+function canSeeEvent(e){
+  // Отпуска — видны всем (информационно, не требует участия).
+  if(e.category==='vacation') return true;
+  // Личные дела Карины — уже отдельно защищены (personalAccessAllowed), доступ не по участникам.
+  if(e.category==='personal') return true;
+  // Руководитель может включить полное расписание — видит все планёрки/встречи/события.
+  if(state.calendarFullView && hasRole('Руководитель')) return true;
+  const participants = e.employeeIds || [];
+  // Сам участник встречи всегда видит её.
+  if(state.currentUserId && participants.includes(state.currentUserId)) return true;
+  // Ассистент дополнительно всегда видит всё, где участвует Руководитель.
+  if(hasRole('Ассистент')){
+    const leaderIds = state.employees.filter(emp=>emp.role==='Руководитель').map(emp=>emp.id);
+    if(participants.some(id=>leaderIds.includes(id))) return true;
+  }
+  return false;
+}
 function allVisibleEvents(){
-  const sharedVisible = state.events.filter(e=>e.category!=='personal');
+  const sharedVisible = state.events.filter(e=>e.category!=='personal' && canSeeEvent(e));
   return sharedVisible.concat(personalAccessAllowed() ? state.personalEvents : []);
 }
 function isPersonalEvent(id){ return state.personalEvents.some(e=>e.id===id); }
@@ -1277,10 +1372,10 @@ function renderPersonalMigrationScreen(root, onDone){
 }
 function fundsFor(scope){ return scope==='personal' ? state.personalFundsEntries : state.fundsEntries; }
 function setFundsFor(scope, arr){ if(scope==='personal') state.personalFundsEntries = arr; else state.fundsEntries = arr; }
-async function persistFundsFor(scope){ if(scope==='personal') await savePersonalData(); else await saveFunds(); }
+async function persistFundsFor(scope){ return scope==='personal' ? await savePersonalData() : await saveFunds(); }
 function setTasksFor(personal, arr){ if(personal) state.personalTasks = arr; else state.tasksWork = arr; }
 function setProjectsFor(personal, arr){ if(personal) state.personalProjects = arr; else state.projectsWork = arr; }
-async function persistTasksFor(personal){ if(personal) await savePersonalData(); else await saveTasksWork(); }
+async function persistTasksFor(personal){ return personal ? await savePersonalData() : await saveTasksWork(); }
 async function persistProjectsFor(personal){ if(personal) await savePersonalData(); else await saveProjectsWork(); }
 function projectName(personal, id){
   if(!id) return 'Без проекта';
@@ -1323,6 +1418,21 @@ function withStatus(t, newStatus, comment){
   if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), completionComment: comment||t.completionComment||''};
   if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:''};
   return {...t, status:newStatus};
+}
+function saveFailedToast(){
+  toast('⚠️ Не удалось сохранить — проверьте подключение к интернету и попробуйте ещё раз');
+}
+// Перед изменением статуса задачи подтягиваем самую свежую версию списка с сервера —
+// это уменьшает риск затереть изменение, которое кто-то успел сохранить с другого устройства
+// в промежутке между вашей загрузкой страницы и этим кликом.
+async function refreshTasksFromServer(personal){
+  const raw = await sGet(personal ? 'personal:tasks' : 'tasks:work', true);
+  if(raw === null) return null;
+  try{
+    const arr = JSON.parse(raw);
+    if(personal) state.personalTasks = arr; else state.tasksWork = arr;
+    return arr;
+  }catch(e){ return null; }
 }
 async function maybeOfferPurchaseExpense(task, personal){
   if(!task || personal) return;
@@ -1380,9 +1490,10 @@ function nowHHMM(){
   const d = new Date();
   return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
 }
-function computeReminders(){
+function computeReminders(filterAssigneeId){
   const today = todayISO();
-  const allTasks = state.tasksWork.concat(personalAccessAllowed() ? state.personalTasks : []);
+  let allTasks = state.tasksWork.concat(personalAccessAllowed() ? state.personalTasks : []);
+  if(filterAssigneeId){ allTasks = allTasks.filter(t=>t.assigneeId===filterAssigneeId); }
   const overdueTasks = allTasks.filter(t=>t.deadline && t.deadline<today && t.status!=='done');
   const dueTodayTasks = allTasks.filter(t=>t.deadline===today && t.status!=='done');
   const todayEvents = allVisibleEvents().filter(e=>e.date===today).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
@@ -1660,18 +1771,27 @@ function render(){
 
 /* ================= OVERVIEW ================= */
 function renderOverview(root){
-  const {overdueTasks, dueTodayTasks, todayEvents, dueSoonTasks} = computeReminders();
+  const canChooseWhoToView = hasRole('Руководитель','Ассистент');
+  // По умолчанию каждый видит только свои задачи. Руководитель/Ассистент могут выбрать чужой обзор или "Все".
+  let viewingId = canChooseWhoToView ? (state.overviewFilterEmployee || state.currentUserId) : state.currentUserId;
+  const viewCompanyWide = canChooseWhoToView && viewingId === 'all';
+  const {overdueTasks, dueTodayTasks, todayEvents, dueSoonTasks} = computeReminders(viewCompanyWide ? null : viewingId);
   const workBalance = state.fundsEntries.reduce((s,f)=> s + (f.type==='issue'?Number(f.amount):-Number(f.amount)), 0);
+  const personalBalance = state.personalFundsEntries.reduce((s,f)=> s + (f.type==='issue'?Number(f.amount):-Number(f.amount)), 0);
   const meEmp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
-  const myTasks = state.currentUserId
-    ? state.tasksWork.filter(t=>t.assigneeId===state.currentUserId && t.status!=='done').sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999')).slice(0,6)
-    : [];
+  const viewingEmp = viewingId ? state.employees.find(e=>e.id===viewingId) : null;
+  const tasksLabel = viewCompanyWide ? 'Все задачи (компания)' : (viewingId===state.currentUserId ? '🙋 Мои задачи' : `Задачи: ${viewingEmp?escapeHtml(viewingEmp.name):''}`);
 
   function taskRow(t){
     const overdue = t.deadline && t.deadline<todayISO();
-    return `<div class="item" style="cursor:pointer;" data-ov-task="${t.id}">
-      <div class="main"><div class="title">${escapeHtml(t.title)}</div>
-      <div class="meta"><span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}</div></div>
+    const personal = state.personalTasks.some(pt=>pt.id===t.id);
+    const canComplete = canCompleteTask(t, personal);
+    return `<div class="item">
+      <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-ov-done="${t.id}" data-ov-done-personal="${personal?'1':'0'}" ${t.status==='done'?'checked':''} title="${canComplete?'Отметить выполненной':whyCantComplete(t)}">
+      <div class="main" style="cursor:pointer;" data-ov-task="${t.id}">
+        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="meta"><span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}</div>
+      </div>
     </div>`;
   }
   function eventRow(e){
@@ -1687,17 +1807,32 @@ function renderOverview(root){
         <h2 class="section-title">${meEmp ? `Здравствуйте, ${escapeHtml(meEmp.name)}!` : 'Обзор на сегодня'}</h2>
         <p class="subtitle">${fmtDate(todayISO())}</p>
       </div>
+      ${canChooseWhoToView ? `
+        <select id="ovWhoSelect" style="width:auto;min-width:200px;">
+          <option value="${state.currentUserId||''}" ${viewingId===state.currentUserId?'selected':''}>🙋 Мои задачи</option>
+          ${state.employees.filter(e=>e.id!==state.currentUserId).map(e=>`<option value="${e.id}" ${viewingId===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}
+          <option value="all" ${viewCompanyWide?'selected':''}>Все сотрудники</option>
+        </select>
+      ` : ''}
     </div>
     <div class="ledger-summary" style="margin-bottom:24px;">
       <div class="sum-card spent"><div class="label">Просрочено задач</div><div class="val mono">${overdueTasks.length}</div></div>
       <div class="sum-card issued"><div class="label">Задач на сегодня</div><div class="val mono">${dueTodayTasks.length}</div></div>
       <div class="sum-card"><div class="label">Событий сегодня</div><div class="val mono" style="color:var(--indigo);">${todayEvents.length}</div></div>
-      ${hasRole('Руководитель','Ассистент') ? `<div class="sum-card balance"><div class="label">Остаток (рабочие)</div><div class="val mono">${fmtMoney(workBalance)}</div></div>` : ''}
+      ${hasRole('Руководитель','Ассистент') ? `
+        <div class="sum-card balance"><div class="label">Остаток (рабочие)</div><div class="val mono">${fmtMoney(workBalance)}</div></div>
+        <div class="sum-card balance"><div class="label">Остаток (личные)</div><div class="val mono">${fmtMoney(personalBalance)}</div></div>
+      ` : ''}
     </div>
-    ${meEmp ? `
-      <h2 class="section-title" style="font-size:16px;">🙋 Мои задачи</h2>
+    ${state.currentUserId ? `
+      <h2 class="section-title" style="font-size:16px;">${tasksLabel}</h2>
       <div class="item-list" style="margin-bottom:24px;">
-        ${myTasks.length ? myTasks.map(taskRow).join('') : `<p class="subtitle" style="margin:0;">У вас нет открытых задач 🎉</p>`}
+        ${(() => {
+          const activeList = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
+            .filter(t=> t.status!=='done' && (viewCompanyWide || t.assigneeId===viewingId))
+            .sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999')).slice(0,8);
+          return activeList.length ? activeList.map(taskRow).join('') : `<p class="subtitle" style="margin:0;">Открытых задач нет 🎉</p>`;
+        })()}
       </div>
     ` : `<div class="note" style="margin-bottom:24px;">Нажмите «🙋 Кто я?» в шапке, чтобы видеть здесь свои задачи.</div>`}
     <h2 class="section-title" style="font-size:16px;">Просроченные задачи</h2>
@@ -1713,6 +1848,38 @@ function renderOverview(root){
       ${todayEvents.length ? todayEvents.map(eventRow).join('') : `<p class="subtitle" style="margin:0;">На сегодня событий не запланировано</p>`}
     </div>
   `;
+  const whoSelect = document.getElementById('ovWhoSelect');
+  if(whoSelect) whoSelect.onchange=()=>{
+    state.overviewFilterEmployee = whoSelect.value;
+    render();
+  };
+  root.querySelectorAll('[data-ov-done]').forEach(cb=>{
+    cb.onclick = e=>e.stopPropagation();
+    cb.onchange = async ()=>{
+      const id = cb.dataset.ovDone;
+      const personal = cb.dataset.ovDonePersonal==='1';
+      const task = tasksFor(personal).find(t=>t.id===id);
+      if(cb.checked){
+        const comment = await requestCompletionComment(task ? task.title : '');
+        if(comment===null){ cb.checked=false; return; }
+        const fresh = await refreshTasksFromServer(personal);
+        const before = fresh || tasksFor(personal);
+        const updated = before.map(t=>t.id===id?withStatus(t,'done',comment):t);
+        setTasksFor(personal, updated);
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
+        await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
+        render();
+      } else {
+        const fresh = await refreshTasksFromServer(personal);
+        const before = fresh || tasksFor(personal);
+        setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(); return; }
+        render();
+      }
+    };
+  });
   root.querySelectorAll('[data-ov-task]').forEach(row=>row.onclick=()=>{
     const id = row.dataset.ovTask;
     state.tab='tasks'; state.taskSubtab='work'; render();
@@ -1751,9 +1918,12 @@ function renderCalendar(root){
     <div class="row-between">
       <div>
         <h2 class="section-title">Общий календарь</h2>
-        <p class="subtitle">События, встречи и дедлайны — видны всем сотрудникам</p>
+        <p class="subtitle">${hasRole('Руководитель') && state.calendarFullView ? 'Полное расписание — видны все планёрки, встречи и события' : 'Показаны только те планёрки, встречи и события, где вы участвуете'}</p>
       </div>
-      <button class="btn" id="addEventBtn">+ Событие</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${hasRole('Руководитель') ? `<button class="btn ghost" id="toggleFullScheduleBtn">${state.calendarFullView?'👁 Скрыть до моих':'🔭 Показать общее расписание'}</button>` : ''}
+        <button class="btn" id="addEventBtn">+ Событие</button>
+      </div>
     </div>
     <div class="cat-filters" id="catFilters">
       ${Object.entries(CATEGORIES).map(([k,v])=>`
@@ -1810,6 +1980,11 @@ function renderCalendar(root){
   root.querySelector('#calPrev').onclick=()=>{ state.calMonth--; if(state.calMonth<0){state.calMonth=11;state.calYear--;} render(); };
   root.querySelector('#calNext').onclick=()=>{ state.calMonth++; if(state.calMonth>11){state.calMonth=0;state.calYear++;} render(); };
   root.querySelector('#addEventBtn').onclick=()=>openEventModal();
+  const toggleFullBtn = document.getElementById('toggleFullScheduleBtn');
+  if(toggleFullBtn) toggleFullBtn.onclick=()=>{
+    state.calendarFullView = !state.calendarFullView;
+    render();
+  };
   const calUnlockBtn = document.getElementById('calUnlockBtn');
   if(calUnlockBtn) calUnlockBtn.onclick=()=>openWhoAmIModal();
   root.querySelectorAll('#catFilters .cat-chip').forEach(chip=>{
@@ -1895,19 +2070,25 @@ function openDayModal(iso){
     if(evObj && evObj.seriesId){
       const choice = await showSeriesDeleteChoice();
       if(!choice) return;
+      const before = eventsFor(personal);
       if(choice==='one'){
         await moveToTrash(personal, 'event', evObj);
-        setEventsFor(personal, eventsFor(personal).filter(e=>e.id!==evId));
+        setEventsFor(personal, before.filter(e=>e.id!==evId));
       } else {
-        const seriesEvents = eventsFor(personal).filter(e=>e.seriesId===evObj.seriesId);
+        const seriesEvents = before.filter(e=>e.seriesId===evObj.seriesId);
         for(const se of seriesEvents) await moveToTrash(personal, 'event', se);
-        setEventsFor(personal, eventsFor(personal).filter(e=>e.seriesId!==evObj.seriesId));
+        setEventsFor(personal, before.filter(e=>e.seriesId!==evObj.seriesId));
       }
-      await persistEventsFor(personal); closeModal(); render();
+      const ok = await persistEventsFor(personal);
+      if(!ok){ setEventsFor(personal, before); saveFailedToast(); return; }
+      closeModal(); render();
     } else if(await showConfirm('Удалить событие?')){
+      const before = eventsFor(personal);
       if(evObj) await moveToTrash(personal, 'event', evObj);
-      setEventsFor(personal, eventsFor(personal).filter(e=>e.id!==evId));
-      await persistEventsFor(personal); closeModal(); render();
+      setEventsFor(personal, before.filter(e=>e.id!==evId));
+      const ok = await persistEventsFor(personal);
+      if(!ok){ setEventsFor(personal, before); saveFailedToast(); return; }
+      closeModal(); render();
     }
   });
   const activeListEl = document.getElementById('dayTaskListActive');
@@ -1938,15 +2119,21 @@ function wireDayTaskActions(el, iso){
       if(cb.checked){
         const comment = await requestCompletionComment(task ? task.title : '');
         if(comment===null){ cb.checked=false; return; }
-        const updated = tasksFor(personal).map(t=>t.id===id?withStatus(t,'done',comment):t);
+        const fresh = await refreshTasksFromServer(personal);
+        const before = fresh || tasksFor(personal);
+        const updated = before.map(t=>t.id===id?withStatus(t,'done',comment):t);
         setTasksFor(personal, updated);
-        await persistTasksFor(personal);
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
         await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
         render();
         closeModal(); openDayModal(iso);
       } else {
-        setTasksFor(personal, tasksFor(personal).map(t=>t.id===id?withStatus(t,'progress'):t));
-        await persistTasksFor(personal);
+        const fresh = await refreshTasksFromServer(personal);
+        const before = fresh || tasksFor(personal);
+        setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(); return; }
         render();
         closeModal(); openDayModal(iso);
       }
@@ -2144,42 +2331,60 @@ function openEventModal(id, presetDate){
       if(!dates.length) dates = [data.date];
       const seriesId = uid();
       const newEvts = dates.map(d=>({...data, id: uid()+d, date: d, seriesId}));
-      setEventsFor(newPersonal, eventsFor(newPersonal).concat(newEvts));
-      await persistEventsFor(newPersonal);
+      const before = eventsFor(newPersonal);
+      setEventsFor(newPersonal, before.concat(newEvts));
+      const ok = await persistEventsFor(newPersonal);
+      if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
       toast(`Добавлено событий: ${dates.length}`);
       closeModal(); render();
       return;
     } else if(existing){
       if(existingPersonal !== newPersonal){
         // moved between personal/work — remove from old store, add to new
-        setEventsFor(existingPersonal, eventsFor(existingPersonal).filter(e=>e.id!==existing.id));
-        await persistEventsFor(existingPersonal);
-        setEventsFor(newPersonal, eventsFor(newPersonal).concat([data]));
-        await persistEventsFor(newPersonal);
+        const beforeOld = eventsFor(existingPersonal);
+        setEventsFor(existingPersonal, beforeOld.filter(e=>e.id!==existing.id));
+        const ok1 = await persistEventsFor(existingPersonal);
+        if(!ok1){ setEventsFor(existingPersonal, beforeOld); saveFailedToast(); return; }
+        const beforeNew = eventsFor(newPersonal);
+        setEventsFor(newPersonal, beforeNew.concat([data]));
+        const ok2 = await persistEventsFor(newPersonal);
+        if(!ok2){
+          setEventsFor(newPersonal, beforeNew);
+          setEventsFor(existingPersonal, beforeOld);
+          await persistEventsFor(existingPersonal);
+          saveFailedToast();
+          return;
+        }
         toast('Событие сохранено');
       } else if(existing.seriesId){
         const choice = await showSeriesEditChoice();
         if(!choice) return;
+        const before = eventsFor(newPersonal);
         if(choice==='one'){
-          setEventsFor(newPersonal, eventsFor(newPersonal).map(e=>e.id===existing.id?data:e));
+          setEventsFor(newPersonal, before.map(e=>e.id===existing.id?data:e));
         } else {
-          setEventsFor(newPersonal, eventsFor(newPersonal).map(e=>{
+          setEventsFor(newPersonal, before.map(e=>{
             if(e.seriesId===existing.seriesId){
               return {...data, id:e.id, date:e.date, seriesId:e.seriesId};
             }
             return e;
           }));
         }
-        await persistEventsFor(newPersonal);
+        const ok = await persistEventsFor(newPersonal);
+        if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
         toast(choice==='series' ? 'Изменения применены ко всей серии' : 'Событие сохранено');
       } else {
-        setEventsFor(newPersonal, eventsFor(newPersonal).map(e=>e.id===existing.id?data:e));
-        await persistEventsFor(newPersonal);
+        const before = eventsFor(newPersonal);
+        setEventsFor(newPersonal, before.map(e=>e.id===existing.id?data:e));
+        const ok = await persistEventsFor(newPersonal);
+        if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
         toast('Событие сохранено');
       }
     } else {
-      setEventsFor(newPersonal, eventsFor(newPersonal).concat([data]));
-      await persistEventsFor(newPersonal);
+      const before = eventsFor(newPersonal);
+      setEventsFor(newPersonal, before.concat([data]));
+      const ok = await persistEventsFor(newPersonal);
+      if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
       toast('Событие сохранено');
     }
     closeModal(); render();
@@ -2248,7 +2453,7 @@ function taskItemHtml(t, personal, opts){
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]}</span>
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(personal,t.projectId))}</span>`:''}
           ${opts.orphanParentName?`<span>⤷ подзадача: ${escapeHtml(opts.orphanParentName)}</span>`:''}
-          ${!personal && t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
+          ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
           ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
           ${t.createdDate?`<span>от ${fmtDate(t.createdDate)}</span>`:''}
           ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}${overdue?' · просрочено':''}</span>`:''}
@@ -2259,7 +2464,7 @@ function taskItemHtml(t, personal, opts){
           ${linkedEventBadge(t)}
         </div>
         ${t.description?`<div class="desc">${escapeHtml(t.description)}</div>`:''}
-        ${t.status==='done' && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${escapeHtml(t.completionComment)}</div>`:''}
+        ${t.status==='done' && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
       </div>
       <div class="actions">
         <button class="btn ghost small" data-add-sub="${t.id}">+ Подзадача</button>
@@ -2368,14 +2573,20 @@ function wireTaskActions(el, personal){
       if(cb.checked){
         const comment = await requestCompletionComment(task ? task.title : '');
         if(comment===null){ cb.checked=false; return; }
-        const updated = tasksFor(personal).map(t=>t.id===id?withStatus(t,'done',comment):t);
+        const fresh = await refreshTasksFromServer(personal);
+        const before = fresh || tasksFor(personal);
+        const updated = before.map(t=>t.id===id?withStatus(t,'done',comment):t);
         setTasksFor(personal, updated);
-        await persistTasksFor(personal);
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
         await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
         render();
       } else {
-        setTasksFor(personal, tasksFor(personal).map(t=>t.id===id?withStatus(t,'progress'):t));
-        await persistTasksFor(personal);
+        const fresh = await refreshTasksFromServer(personal);
+        const before = fresh || tasksFor(personal);
+        setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(); return; }
         render();
       }
     };
@@ -2413,7 +2624,7 @@ function renderPersonalTasks(el){
   renderTaskBoard(el.querySelector('#persBoard'), true);
 }
 
-function openTaskModal(id, personal, presetParentId){
+function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   const source = tasksFor(personal);
   const existing = id ? source.find(t=>t.id===id) : null;
   const parentId = existing ? (existing.parentId||null) : (presetParentId||null);
@@ -2432,7 +2643,7 @@ function openTaskModal(id, personal, presetParentId){
       <div class="modal">
         <h3>${existing?'Изменить задачу':(parentId?'Новая подзадача':'Новая задача')}${personal?' · личная':''}</h3>
         ${parentId?`<div class="note">Подзадача для: <strong>${escapeHtml(parentTask?parentTask.title:'')}</strong></div>`:''}
-        <div class="field"><label>Название *</label><input id="t_title" value="${existing?escapeHtml(existing.title):''}"></div>
+        <div class="field"><label>Название *</label><input id="t_title" value="${existing?escapeHtml(existing.title):escapeHtml(presetTitle||'')}"></div>
         <div class="field"><label>Описание *</label><textarea id="t_desc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
         ${!parentId?`
         <div class="field"><label>Проект</label>
@@ -2455,16 +2666,15 @@ function openTaskModal(id, personal, presetParentId){
               }).join('')}
             </select>
           </div>
-          ${!personal?`
-          <div class="field"><label>Исполнитель *</label>
+          <div class="field"><label>Исполнитель${!personal?' *':''}</label>
             <select id="t_assignee">
               <option value="">— выберите —</option>
-              ${state.employees.map(e=>{
+              ${state.employees.filter(e=>!personal || e.role==='Руководитель' || e.role==='Ассистент').map(e=>{
                 const isSelected = existing ? existing.assigneeId===e.id : (initialIsPurchases && assistantEmp && e.id===assistantEmp.id);
                 return `<option value="${e.id}" ${isSelected?'selected':''}>${escapeHtml(e.name)}</option>`;
               }).join('')}
             </select>
-          </div>`:''}
+          </div>
         </div>
         <div class="field-row">
           <div class="field"><label>Дата постановки *</label><input type="date" id="t_createdDate" value="${existing?existing.createdDate||todayISO():todayISO()}"></div>
@@ -2583,7 +2793,7 @@ function openTaskModal(id, personal, presetParentId){
       wrap.innerHTML = `<span class="subtitle" style="margin:0;">🔒 Доступно только Руководителю и Ассистенту</span>`;
       return;
     }
-    const source = cat==='personal' ? state.personalEvents : state.events;
+    const source = cat==='personal' ? state.personalEvents : state.events.filter(canSeeEvent);
     const evs = source.filter(ev=>ev.category===cat).sort((a,b)=>a.date.localeCompare(b.date));
     const currentVal = document.getElementById('t_event').value;
     wrap.innerHTML = evs.length
@@ -2631,7 +2841,7 @@ function openTaskModal(id, personal, presetParentId){
     const title = document.getElementById('t_title').value.trim();
     const description = document.getElementById('t_desc').value.trim();
     const creatorId = document.getElementById('t_creator').value;
-    const assigneeEl = !personal ? document.getElementById('t_assignee') : null;
+    const assigneeEl = document.getElementById('t_assignee');
     const assigneeId = assigneeEl ? assigneeEl.value : null;
     const createdDate = document.getElementById('t_createdDate').value;
     const deadline = document.getElementById('t_deadline').value;
@@ -2678,7 +2888,7 @@ function openTaskModal(id, personal, presetParentId){
       description,
       projectId,
       parentId: parentId||null,
-      assigneeId: personal? null : assigneeId,
+      assigneeId: assigneeId || null,
       creatorId,
       createdDate,
       deadline,
@@ -2706,6 +2916,7 @@ function openTaskModal(id, personal, presetParentId){
       await persistTasksFor(personal);
       closeModal(); render();
       toast(`Добавлено задач: ${newTasks.length}`);
+      if(onDone) onDone();
       return;
     }
 
@@ -2740,12 +2951,14 @@ function openTaskModal(id, personal, presetParentId){
     }
     closeModal(); render();
     toast('Задача сохранена');
+    if(!existing && onDone) onDone();
   };
 }
 
 function openProjectsModal(personal){
   const modal = document.getElementById('modalRoot');
   const selKey = personal?'personal':'work';
+  const canDeleteProject = hasRole('Руководитель','Ассистент');
   function body(){
     const projects = projectsFor(personal);
     return `
@@ -2758,7 +2971,7 @@ function openProjectsModal(personal){
                 <div class="main"><div class="title">${escapeHtml(p.name)}</div></div>
                 <div class="actions">
                   <button class="btn ghost small" data-rename-proj="${p.id}">✎</button>
-                  <button class="btn danger small" data-del-proj="${p.id}">✕</button>
+                  <button class="btn danger small" data-del-proj="${p.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять проекты может только Руководитель или Ассистент'}">✕</button>
                 </div>
               </div>
             `).join('') || `<p class="subtitle" style="margin:0;">Проектов пока нет</p>`}
@@ -2769,6 +2982,23 @@ function openProjectsModal(personal){
             <button class="btn" id="addProj">Добавить</button>
           </div>
           ${!personal?`
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:20px 0 8px;">Быстрые идеи</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Короткие заметки без дедлайна и исполнителя — просто чтобы не забыть. Нажмите «Назначить», когда идея созреет, и она превратится в обычную задачу.</p>
+          <div class="item-list" style="margin-bottom:12px;">
+            ${state.quickIdeasWork.map(qi=>`
+              <div class="item">
+                <div class="main"><div class="title">${escapeHtml(qi.text)}</div></div>
+                <div class="actions">
+                  <button class="btn ghost small" data-assign-idea="${qi.id}">Назначить</button>
+                  <button class="btn danger small" data-del-quickidea="${qi.id}">✕</button>
+                </div>
+              </div>
+            `).join('') || `<p class="subtitle" style="margin:0;">Идей пока нет — запишите первую</p>`}
+          </div>
+          <div class="field-row">
+            <input id="quickidea_text" placeholder="Например: Обновить прайс на мастер-классы" style="flex:1;">
+            <button class="btn ghost small" id="addQuickIdeaBtn">+ Добавить</button>
+          </div>
           <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:20px 0 8px;">Банк идей-проектов</h4>
           <p class="subtitle" style="margin:0 0 10px;">Копилка идей на будущее — своих типовых проектов с набором задач. Выберите идею, чтобы превратить её в проект.</p>
           <div class="item-list" style="margin-bottom:12px;">
@@ -2813,6 +3043,7 @@ function openProjectsModal(personal){
       modal.innerHTML = body(); wire(); render();
     });
     modal.querySelectorAll('[data-del-proj]').forEach(b=>b.onclick=async ()=>{
+      if(!canDeleteProject){ toast('Удалять проекты может только Руководитель или Ассистент'); return; }
       if(!(await showConfirm('Удалить проект? Задачи останутся, но будут перемещены в «Без проекта».'))) return;
       const pid = b.dataset.delProj;
       const doomedProj = projectsFor(personal).find(p=>p.id===pid);
@@ -2843,6 +3074,29 @@ function openProjectsModal(personal){
         if(!(await showConfirm(`Создать проект «${idea.name}»${taskCount?` с ${taskCount} задачами`:''}?`, 'Создать'))) return;
         await applyIdeaToProject(idea);
         closeModal(); render();
+      });
+      const addQuickIdeaBtn = document.getElementById('addQuickIdeaBtn');
+      if(addQuickIdeaBtn) addQuickIdeaBtn.onclick=async ()=>{
+        const text = document.getElementById('quickidea_text').value.trim();
+        if(!text){ toast('Введите текст идеи'); return; }
+        state.quickIdeasWork = state.quickIdeasWork.concat([{id:uid(), text}]);
+        await saveQuickIdeas();
+        modal.innerHTML = body(); wire();
+      };
+      modal.querySelectorAll('[data-del-quickidea]').forEach(b=>b.onclick=async ()=>{
+        if(!(await showConfirm('Удалить идею?'))) return;
+        state.quickIdeasWork = state.quickIdeasWork.filter(q=>q.id!==b.dataset.delQuickidea);
+        await saveQuickIdeas();
+        modal.innerHTML = body(); wire();
+      });
+      modal.querySelectorAll('[data-assign-idea]').forEach(b=>b.onclick=()=>{
+        const qid = b.dataset.assignIdea;
+        const idea = state.quickIdeasWork.find(q=>q.id===qid);
+        if(!idea) return;
+        openTaskModal(null, false, null, idea.text, async ()=>{
+          state.quickIdeasWork = state.quickIdeasWork.filter(q=>q.id!==qid);
+          await saveQuickIdeas();
+        });
       });
     }
   }
@@ -3182,10 +3436,12 @@ function renderFunds(root){
   root.querySelectorAll('[data-del-fund]').forEach(b=>b.onclick=async ()=>{
     if(!(await showConfirm('Удалить запись?'))) return;
     const fscope = b.dataset.fundScope;
-    const doomed = fundsFor(fscope).find(f=>f.id===b.dataset.delFund);
+    const before = fundsFor(fscope);
+    const doomed = before.find(f=>f.id===b.dataset.delFund);
     if(doomed) await moveToTrash(fscope==='personal', 'fund', doomed);
-    setFundsFor(fscope, fundsFor(fscope).filter(f=>f.id!==b.dataset.delFund));
-    await persistFundsFor(fscope);
+    setFundsFor(fscope, before.filter(f=>f.id!==b.dataset.delFund));
+    const ok = await persistFundsFor(fscope);
+    if(!ok){ setFundsFor(fscope, before); saveFailedToast(); return; }
     render();
   });
 }
@@ -3242,9 +3498,11 @@ function openFundModal(id, scope){
       comment: document.getElementById('fn_comment').value.trim(),
       createdAt: existing?existing.createdAt:Date.now(),
     };
-    if(existing) setFundsFor(scope, fundsFor(scope).map(f=>f.id===existing.id?data:f));
-    else setFundsFor(scope, fundsFor(scope).concat([data]));
-    await persistFundsFor(scope);
+    const before = fundsFor(scope);
+    if(existing) setFundsFor(scope, before.map(f=>f.id===existing.id?data:f));
+    else setFundsFor(scope, before.concat([data]));
+    const ok = await persistFundsFor(scope);
+    if(!ok){ setFundsFor(scope, before); saveFailedToast(); return; }
     closeModal(); render();
     toast('Запись сохранена');
   };
@@ -3270,8 +3528,7 @@ function performGlobalSearch(query){
     .concat(personalAccessAllowed() ? state.personalTasks.map(t=>({...t, __personal:true})) : []);
   const tasks = allTasks.filter(t=> match(t.title) || match(t.description) || match(t.purchaseStore)).slice(0,8);
 
-  const allEvents = state.events.map(e=>({...e, __personal:false}))
-    .concat(personalAccessAllowed() ? state.personalEvents.map(e=>({...e, __personal:true})) : []);
+  const allEvents = allVisibleEvents().map(e=>({...e, __personal: isPersonalEvent(e.id)}));
   const events = allEvents.filter(e=> match(e.title) || match(e.notes) || match(e.location)).slice(0,8);
 
   const allFunds = hasRole('Руководитель','Ассистент')
@@ -3586,8 +3843,10 @@ function openStaffModal(){
       const name = document.getElementById('emp_name').value.trim();
       if(!name){ toast('Введите имя'); return; }
       const role = document.getElementById('emp_role').value.trim();
-      state.employees.push({id:uid(), name, role});
-      await saveEmployees();
+      const before = state.employees;
+      state.employees = before.concat([{id:uid(), name, role}]);
+      const ok = await saveEmployees();
+      if(!ok){ state.employees = before; saveFailedToast(); return; }
       modal.innerHTML = body(); wire(); render();
     };
     modal.querySelectorAll('[data-view-tasks]').forEach(b=>b.onclick=()=>{
@@ -3603,10 +3862,12 @@ function openStaffModal(){
     });
     modal.querySelectorAll('[data-del-emp]').forEach(b=>b.onclick=async ()=>{
       if(!(await showConfirm('Удалить сотрудника? Задачи и события останутся, но без привязки к нему. Можно будет вернуть через корзину (🗄️).'))) return;
-      const doomedEmp = state.employees.find(e=>e.id===b.dataset.delEmp);
+      const before = state.employees;
+      const doomedEmp = before.find(e=>e.id===b.dataset.delEmp);
       if(doomedEmp) await moveToTrash(false, 'employee', doomedEmp);
-      state.employees = state.employees.filter(e=>e.id!==b.dataset.delEmp);
-      await saveEmployees();
+      state.employees = before.filter(e=>e.id!==b.dataset.delEmp);
+      const ok = await saveEmployees();
+      if(!ok){ state.employees = before; saveFailedToast(); return; }
       modal.innerHTML = body(); wire(); render();
     });
   }

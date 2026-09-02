@@ -257,6 +257,22 @@
   }
   @keyframes saving-spin{ to{ transform:rotate(360deg); } }
 
+  .drag-handle{
+    cursor:grab;color:var(--ink-soft);font-size:16px;line-height:1;
+    padding:4px 2px;touch-action:none;user-select:none;align-self:flex-start;margin-top:2px;
+  }
+  .drag-handle:active{cursor:grabbing;}
+  .item.dragging{opacity:.45;}
+  .item.drag-over-top{border-top:3px solid var(--indigo);}
+  .item.drag-over-bottom{border-bottom:3px solid var(--indigo);}
+
+  .overdue-reason-box{
+    margin-top:8px;padding:10px 12px;border-radius:8px;
+    background:rgba(178,58,42,0.08);border:1px solid rgba(178,58,42,0.25);
+  }
+  .overdue-reason-label{font-size:12.5px;font-weight:600;color:var(--brick);margin-bottom:5px;}
+  .overdue-reason-box textarea{width:100%;font-family:inherit;font-size:13px;}
+
   /* Modal */
   .overlay{
     position:fixed;inset:0;background:rgba(32,30,25,0.45);display:flex;align-items:center;justify-content:center;
@@ -697,7 +713,12 @@ const state = {
   calYear:new Date().getFullYear(),
   calMonth:new Date().getMonth(),
   taskSubtab:'work',
-  taskFilterEmployee:'all',
+  archiveSubtab:'work',
+  taskBoardShowDone:false,
+  reportStart:null,
+  reportEnd:null,
+  reportGroupBy:'employee',
+  taskFilterEmployee:null,
   taskFilterStatus:'all',
   selectedProject:{work:'all', personal:'all'},
   projectsWork:[],
@@ -731,6 +752,7 @@ const TABS = [
   {id:'tasks', label:'Задачи'},
   {id:'calendar', label:'Календарь'},
   {id:'funds', label:'Финансы'},
+  {id:'archive', label:'Архив'},
 ];
 const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', personal:'Личные дела Карины'};
 const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', personal:'var(--plum)'};
@@ -1221,6 +1243,22 @@ async function savePersonalData(){
 
 /* ---------------- project/task helpers (work vs personal) ---------------- */
 function projectsFor(personal){ return personal ? state.personalProjects : state.projectsWork; }
+// Проект считается завершённым, когда в нём есть хотя бы одна задача и ВСЕ его задачи выполнены.
+// Ничего не хранится отдельно — это всегда вычисляется заново по актуальному списку задач,
+// поэтому снятие галочки с любой задачи мгновенно возвращает проект из архива обратно в активные.
+function projectTasksFor(personal, projectId){
+  return tasksFor(personal).filter(t=>t.projectId===projectId);
+}
+function isProjectCompleted(personal, projectId){
+  const tasks = projectTasksFor(personal, projectId);
+  return tasks.length>0 && tasks.every(t=>t.status==='done');
+}
+function activeProjectsFor(personal){
+  return projectsFor(personal).filter(p=>!isProjectCompleted(personal,p.id));
+}
+function completedProjectsFor(personal){
+  return projectsFor(personal).filter(p=>isProjectCompleted(personal,p.id));
+}
 function tasksFor(personal){ return personal ? state.personalTasks : state.tasksWork; }
 async function migrateLegacyPersonalFunds(){
   const legacy = state.fundsEntries.filter(f=>f.scope==='personal');
@@ -1421,6 +1459,40 @@ function withStatus(t, newStatus, comment){
 }
 function saveFailedToast(){
   toast('⚠️ Не удалось сохранить — проверьте подключение к интернету и попробуйте ещё раз');
+}
+function wireOverdueReasonInputs(el){
+  el.querySelectorAll('[data-save-overdue-reason]').forEach(btn=>{
+    btn.onclick = async (e)=>{
+      e.stopPropagation();
+      const id = btn.dataset.saveOverdueReason;
+      const personal = state.personalTasks.some(pt=>pt.id===id);
+      const input = el.querySelector(`[data-overdue-reason-input="${id}"]`);
+      const text = input ? input.value.trim() : '';
+      if(!text){ toast('Опишите причину задержки'); return; }
+      const before = tasksFor(personal);
+      const updated = before.map(t=>t.id===id?{...t, overdueReason:text}:t);
+      setTasksFor(personal, updated);
+      const ok = await persistTasksFor(personal);
+      if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+      render();
+    };
+  });
+  el.querySelectorAll('[data-edit-overdue-reason]').forEach(btn=>{
+    btn.onclick = (e)=>{
+      e.stopPropagation();
+      const id = btn.dataset.editOverdueReason;
+      const personal = state.personalTasks.some(pt=>pt.id===id);
+      const task = tasksFor(personal).find(t=>t.id===id);
+      const box = btn.closest('.overdue-reason-box');
+      if(!box || !task) return;
+      box.innerHTML = `
+        <div class="overdue-reason-label">⚠️ Причина задержки</div>
+        <textarea rows="2" data-overdue-reason-input="${id}">${escapeHtml(task.overdueReason||'')}</textarea>
+        <button type="button" class="btn small" data-save-overdue-reason="${id}" style="margin-top:6px;">Сохранить причину</button>
+      `;
+      wireOverdueReasonInputs(box);
+    };
+  });
 }
 // Перед изменением статуса задачи подтягиваем самую свежую версию списка с сервера —
 // это уменьшает риск затереть изменение, которое кто-то успел сохранить с другого устройства
@@ -1765,6 +1837,7 @@ function render(){
       renderFunds(root);
     }
   }
+  else if(state.tab==='archive') renderArchiveTab(root);
   renderBellBadge();
   renderWhoAmIBtn();
 }
@@ -1775,7 +1848,7 @@ function renderOverview(root){
   // По умолчанию каждый видит только свои задачи. Руководитель/Ассистент могут выбрать чужой обзор или "Все".
   let viewingId = canChooseWhoToView ? (state.overviewFilterEmployee || state.currentUserId) : state.currentUserId;
   const viewCompanyWide = canChooseWhoToView && viewingId === 'all';
-  const {overdueTasks, dueTodayTasks, todayEvents, dueSoonTasks} = computeReminders(viewCompanyWide ? null : viewingId);
+  const {overdueTasks, dueTodayTasks, todayEvents} = computeReminders(viewCompanyWide ? null : viewingId);
   const workBalance = state.fundsEntries.reduce((s,f)=> s + (f.type==='issue'?Number(f.amount):-Number(f.amount)), 0);
   const personalBalance = state.personalFundsEntries.reduce((s,f)=> s + (f.type==='issue'?Number(f.amount):-Number(f.amount)), 0);
   const meEmp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
@@ -1792,6 +1865,7 @@ function renderOverview(root){
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="meta"><span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}</div>
       </div>
+      ${overdue && t.status!=='done' ? `<div style="width:100%;">${renderOverdueReasonBlock(t, personal)}</div>` : ''}
     </div>`;
   }
   function eventRow(e){
@@ -1828,21 +1902,23 @@ function renderOverview(root){
       <h2 class="section-title" style="font-size:16px;">${tasksLabel}</h2>
       <div class="item-list" style="margin-bottom:24px;">
         ${(() => {
-          const activeList = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
-            .filter(t=> t.status!=='done' && (viewCompanyWide || t.assigneeId===viewingId))
-            .sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999')).slice(0,8);
-          return activeList.length ? activeList.map(taskRow).join('') : `<p class="subtitle" style="margin:0;">Открытых задач нет 🎉</p>`;
+          const allOpen = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
+            .filter(t=> t.status!=='done' && (viewCompanyWide || t.assigneeId===viewingId));
+          const today = todayISO();
+          const overdueList = allOpen.filter(t=>t.deadline && t.deadline<today).sort((a,b)=>a.deadline.localeCompare(b.deadline));
+          const todayList = allOpen.filter(t=>t.deadline===today);
+          const upcomingList = allOpen.filter(t=>t.deadline && t.deadline>today).sort((a,b)=>a.deadline.localeCompare(b.deadline));
+          const noDeadlineList = allOpen.filter(t=>!t.deadline);
+          const groupLabel = (label)=>`<div class="subtitle" style="margin:14px 0 6px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">${label}</div>`;
+          let html = '';
+          if(overdueList.length) html += groupLabel(`⚠️ Просрочено (${overdueList.length})`) + overdueList.map(taskRow).join('');
+          if(todayList.length) html += groupLabel(`Сегодня (${todayList.length})`) + todayList.map(taskRow).join('');
+          if(upcomingList.length) html += groupLabel(`Предстоящие (${upcomingList.length})`) + upcomingList.map(taskRow).join('');
+          if(noDeadlineList.length) html += groupLabel(`Без дедлайна (${noDeadlineList.length})`) + noDeadlineList.map(taskRow).join('');
+          return html || `<p class="subtitle" style="margin:0;">Открытых задач нет 🎉</p>`;
         })()}
       </div>
     ` : `<div class="note" style="margin-bottom:24px;">Нажмите «🙋 Кто я?» в шапке, чтобы видеть здесь свои задачи.</div>`}
-    <h2 class="section-title" style="font-size:16px;">Просроченные задачи</h2>
-    <div class="item-list" style="margin-bottom:24px;">
-      ${overdueTasks.length ? overdueTasks.slice(0,8).map(taskRow).join('') : `<p class="subtitle" style="margin:0;">Просроченных задач нет 🎉</p>`}
-    </div>
-    <h2 class="section-title" style="font-size:16px;">Дедлайн через 1–3 дня</h2>
-    <div class="item-list" style="margin-bottom:24px;">
-      ${dueSoonTasks.length ? dueSoonTasks.slice(0,8).map(taskRow).join('') : `<p class="subtitle" style="margin:0;">В ближайшие дни дедлайнов нет</p>`}
-    </div>
     <h2 class="section-title" style="font-size:16px;">Сегодня в календаре</h2>
     <div class="item-list">
       ${todayEvents.length ? todayEvents.map(eventRow).join('') : `<p class="subtitle" style="margin:0;">На сегодня событий не запланировано</p>`}
@@ -1853,6 +1929,7 @@ function renderOverview(root){
     state.overviewFilterEmployee = whoSelect.value;
     render();
   };
+  wireOverdueReasonInputs(root);
   root.querySelectorAll('[data-ov-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
     cb.onchange = async ()=>{
@@ -2011,7 +2088,7 @@ function openDayModal(iso){
   state.dayModalIso = iso;
   const evts = allVisibleEvents().filter(e=>e.date===iso).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
   const dayTasks = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[]).filter(t=>t.deadline===iso);
-  const activeTasks = dayTasks.filter(t=>t.status!=='done');
+  const activeTasks = dayTasks.filter(t=>t.status!=='done').sort((a,b)=> (b.seriesId?1:0) - (a.seriesId?1:0));
   const doneTasks = dayTasks.filter(t=>t.status==='done');
   const isPersonalTaskFn = (id)=> state.personalTasks.some(pt=>pt.id===id);
   const modal = document.getElementById('modalRoot');
@@ -2034,7 +2111,8 @@ function openDayModal(iso){
                 </div>
                 ${e.format==='offline' && e.location?`<div class="desc">📍 ${escapeHtml(e.location)}</div>`:''}
                 ${e.format==='online' && e.link?`<div class="desc">🔗 <a href="${escapeHtml(e.link)}" target="_blank" rel="noopener" style="color:var(--indigo);">${escapeHtml(e.link)}</a></div>`:''}
-                ${e.notes?`<div class="desc">${escapeHtml(e.notes)}</div>`:''}
+                ${e.extraLink?`<div class="desc">📎 <a href="${escapeHtml(e.extraLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;">Доп. ссылка</a></div>`:''}
+                ${e.notes?`<div class="desc">${linkifyEscaped(e.notes)}</div>`:''}
               </div>
               <div class="actions">
                 <button class="btn ghost small" data-edit="${e.id}">Изм.</button>
@@ -2104,6 +2182,7 @@ function openDayModal(iso){
 
 function wireDayTaskActions(el, iso){
   wireEventLinks(el);
+  wireOverdueReasonInputs(el);
   const isPersonalTask = (id)=> state.personalTasks.some(pt=>pt.id===id);
   el.querySelectorAll('[data-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
@@ -2196,9 +2275,10 @@ function openEventModal(id, presetDate){
           <input id="f_location" value="${existing?escapeHtml(existing.location||''):''}" placeholder="Например: Мастерская">
         </div>
         <div class="field" id="f_link_wrap" style="${initialFormat==='offline'?'display:none;':''}">
-          <label>Ссылка</label>
+          <label>Ссылка на созвон</label>
           <input id="f_link" value="${existing?escapeHtml(existing.link||''):''}" placeholder="https://...">
         </div>
+        <div class="field"><label>Дополнительная ссылка (необязательно)</label><input id="f_extra_link" type="text" value="${existing?escapeHtml(existing.extraLink||''):''}" placeholder="Например: резюме кандидата, отчёт, документ"></div>
         <div class="field"><label>Участники (можно выбрать несколько)</label>
           <div class="emp-checklist" id="f_emp_list">
             ${state.employees.map(e=>`
@@ -2318,6 +2398,11 @@ function openEventModal(id, presetDate){
       format,
       location: format==='offline' ? document.getElementById('f_location').value.trim() : '',
       link: format==='online' ? document.getElementById('f_link').value.trim() : '',
+      extraLink: (()=>{
+        const raw = document.getElementById('f_extra_link').value.trim();
+        if(!raw) return '';
+        return /^https?:\/\//i.test(raw) ? raw : 'https://'+raw;
+      })(),
       employeeIds: emp,
       manualNames: hasMgrHost ? document.getElementById('f_manual_names').value.trim() : '',
       notes: document.getElementById('f_notes').value.trim(),
@@ -2401,13 +2486,14 @@ function renderTasks(root){
       </div>
       <div style="display:flex;gap:8px;">
         <button class="btn ghost" id="checklistsBtn" style="${state.taskSubtab!=='work'?'display:none;':''}">📋 Чек-листы</button>
-        <button class="btn" id="addTaskBtn" style="${state.taskSubtab==='analytics'?'display:none;':''}">+ Задача</button>
+        <button class="btn" id="addTaskBtn" style="${state.taskSubtab==='analytics'||state.taskSubtab==='report'?'display:none;':''}">+ Задача</button>
       </div>
     </div>
     <div class="subtabs">
       <button class="subtab-btn ${state.taskSubtab==='work'?'active':''}" data-st="work">Рабочие</button>
       <button class="subtab-btn ${state.taskSubtab==='personal'?'active':''}" data-st="personal">🔒 Личные</button>
       <button class="subtab-btn ${state.taskSubtab==='analytics'?'active':''}" data-st="analytics">📊 Аналитика</button>
+      <button class="subtab-btn ${state.taskSubtab==='report'?'active':''}" data-st="report">📄 Отчёт</button>
     </div>
     <div id="taskBody"></div>
   `;
@@ -2420,6 +2506,7 @@ function renderTasks(root){
   if(checklistsBtn) checklistsBtn.onclick=()=>openChecklistsModal();
   if(state.taskSubtab==='work') renderTaskBoard(root.querySelector('#taskBody'), false);
   else if(state.taskSubtab==='analytics') renderTaskAnalytics(root.querySelector('#taskBody'));
+  else if(state.taskSubtab==='report') renderTaskReport(root.querySelector('#taskBody'));
   else renderPersonalTasks(root.querySelector('#taskBody'));
 }
 
@@ -2432,6 +2519,26 @@ function linkedEventBadge(t){
   }
   return `<span data-goto-event="${ev.date}" style="cursor:pointer;text-decoration:underline;color:var(--indigo);">🔗 ${escapeHtml(ev.title)} · ${fmtDate(ev.date)}</span>`;
 }
+function renderOverdueReasonBlock(t, personal){
+  const isAssignee = !!(state.currentUserId && state.currentUserId===t.assigneeId);
+  if(t.overdueReason){
+    return `<div class="overdue-reason-box" onclick="event.stopPropagation()">
+      <div class="overdue-reason-label">⚠️ Причина задержки${isAssignee?'':` (от ${escapeHtml(empName(t.assigneeId))})`}:</div>
+      <div>${linkifyEscaped(t.overdueReason)}</div>
+      ${isAssignee?`<button type="button" class="btn ghost small" data-edit-overdue-reason="${t.id}" style="margin-top:6px;">Изменить</button>`:''}
+    </div>`;
+  }
+  if(isAssignee){
+    return `<div class="overdue-reason-box" onclick="event.stopPropagation()">
+      <div class="overdue-reason-label">⚠️ Задача просрочена — укажите причину задержки (обязательно)</div>
+      <textarea rows="2" data-overdue-reason-input="${t.id}" placeholder="Например: ждём материалы от поставщика"></textarea>
+      <button type="button" class="btn small" data-save-overdue-reason="${t.id}" style="margin-top:6px;">Сохранить причину</button>
+    </div>`;
+  }
+  return `<div class="overdue-reason-box" onclick="event.stopPropagation()">
+    <div class="overdue-reason-label">⚠️ Задача просрочена — ожидается причина задержки от ${t.assigneeId?escapeHtml(empName(t.assigneeId)):'исполнителя (не назначен)'}</div>
+  </div>`;
+}
 function taskItemHtml(t, personal, opts){
   opts = opts || {};
   const depth = opts.depth||0;
@@ -2440,7 +2547,8 @@ function taskItemHtml(t, personal, opts){
   const overdue = t.deadline && t.deadline < todayISO() && t.status!=='done';
   const canComplete = canCompleteTask(t, personal);
   return `
-    <div class="item ${t.status==='done'?'is-done':''}" style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
+    <div class="item ${t.status==='done'?'is-done':''}" data-task-row="${t.id}" data-depth="${depth}" style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
+      ${depth===0?`<span class="drag-handle" data-drag-handle="${t.id}" title="Перетащить, чтобы изменить порядок">⠿</span>`:''}
       <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-done="${t.id}" ${t.status==='done'?'checked':''} title="${canComplete?'Отметить выполненной':whyCantComplete(t)}">
       <div class="main">
         <div class="title">
@@ -2461,10 +2569,12 @@ function taskItemHtml(t, personal, opts){
           ${t.purchaseStore?`<span>🏬 ${escapeHtml(t.purchaseStore)}</span>`:''}
           ${t.purchaseAmount?`<span>💰 ${fmtMoney(t.purchaseAmount)}</span>`:''}
           ${t.purchaseExpenseId?`<span style="color:var(--teal);">💳 расход добавлен</span>`:''}
+          ${t.link?`<span>🔗 <a href="${escapeHtml(t.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка</a></span>`:''}
           ${linkedEventBadge(t)}
         </div>
-        ${t.description?`<div class="desc">${escapeHtml(t.description)}</div>`:''}
+        ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
         ${t.status==='done' && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${overdue ? renderOverdueReasonBlock(t, personal) : ''}
       </div>
       <div class="actions">
         <button class="btn ghost small" data-add-sub="${t.id}">+ Подзадача</button>
@@ -2476,15 +2586,20 @@ function taskItemHtml(t, personal, opts){
 
 function renderTaskBoard(el, personal){
   const selKey = personal?'personal':'work';
-  const projects = projectsFor(personal);
-  const selected = state.selectedProject[selKey];
+  const projects = activeProjectsFor(personal);
+  let selected = state.selectedProject[selKey];
+  // Если выбранный проект только что стал завершённым (все задачи сделаны) и уехал в архив — сбрасываем на "Все"
+  if(selected!=='all' && selected!=='none' && !projects.some(p=>p.id===selected)){
+    selected = 'all';
+    state.selectedProject[selKey] = 'all';
+  }
 
   el.innerHTML = `
     <div class="cat-filters" id="projRow"></div>
     <div class="filters">
       ${!personal?`<select id="filtEmp">
-        <option value="all">Все сотрудники</option>
-        ${state.employees.map(e=>`<option value="${e.id}" ${state.taskFilterEmployee===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}
+        <option value="all" ${state.taskFilterEmployee==='all'?'selected':''}>Все сотрудники</option>
+        ${state.employees.map(e=>`<option value="${e.id}" ${state.taskFilterEmployee===e.id?'selected':''}>${e.id===state.currentUserId?'🙋 ':''}${escapeHtml(e.name)}</option>`).join('')}
       </select>`:''}
       <select id="filtStatus">
         <option value="all" ${state.taskFilterStatus==='all'?'selected':''}>Любой статус</option>
@@ -2520,7 +2635,7 @@ function renderTaskBoard(el, personal){
 
   const byId = {}; list.forEach(t=>byId[t.id]=t);
   const roots = list.filter(t=> !t.parentId || !byId[t.parentId]);
-  roots.sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+  roots.sort((a,b)=> ((a.sortOrder||0) - (b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999'));
 
   function renderNode(t, depth){
     const children = list.filter(c=>c.parentId===t.id).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
@@ -2532,10 +2647,27 @@ function renderTaskBoard(el, personal){
     return html + children.map(c=>renderNode(c, depth+1)).join('');
   }
 
+  // Когда показаны все статусы разом, выполненные задачи (внутри ещё активного проекта) сворачиваем
+  // по умолчанию — чтобы рабочая доска не превращалась в полотно текста из готового вперемешку с активным.
+  // Если явно выбран фильтр "Готово" — показываем как обычно, без сворачивания.
+  const splitDoneByDefault = state.taskFilterStatus==='all';
+  const activeRoots = splitDoneByDefault ? roots.filter(t=>t.status!=='done') : roots;
+  const doneRoots = splitDoneByDefault ? roots.filter(t=>t.status==='done') : [];
+
   const listEl = el.querySelector('#taskList');
-  listEl.innerHTML = roots.length ? roots.map(t=>renderNode(t,0)).join('') :
-    `<div class="empty-state"><div class="big">Пока нет задач</div><p>${projects.length?'Добавьте задачу в этот проект':'Добавьте первую задачу'}</p></div>`;
+  const activeHtml = activeRoots.length ? activeRoots.map(t=>renderNode(t,0)).join('') :
+    (doneRoots.length ? '' : `<div class="empty-state"><div class="big">Пока нет задач</div><p>${projects.length?'Добавьте задачу в этот проект':'Добавьте первую задачу'}</p></div>`);
+  const doneToggleHtml = doneRoots.length ? `
+    <button type="button" class="btn ghost small" id="toggleDoneRoots" style="margin:10px 0;">
+      ${state.taskBoardShowDone ? '▾' : '▸'} Выполнено (${doneRoots.length})
+    </button>
+    ${state.taskBoardShowDone ? doneRoots.map(t=>renderNode(t,0)).join('') : ''}
+  ` : '';
+  listEl.innerHTML = activeHtml + doneToggleHtml;
+  const toggleBtn = document.getElementById('toggleDoneRoots');
+  if(toggleBtn) toggleBtn.onclick = ()=>{ state.taskBoardShowDone = !state.taskBoardShowDone; render(); };
   wireTaskActions(listEl, personal);
+  wireTaskDragReorder(listEl, personal, roots.map(t=>t.id));
 }
 
 function wireEventLinks(el){
@@ -2551,6 +2683,7 @@ function wireEventLinks(el){
 }
 function wireTaskActions(el, personal){
   wireEventLinks(el);
+  wireOverdueReasonInputs(el);
   el.querySelectorAll('[data-toggle-children]').forEach(btn=>{
     btn.onclick=(e)=>{
       e.stopPropagation();
@@ -2607,6 +2740,76 @@ function wireTaskActions(el, personal){
   });
 }
 
+// Перетаскивание задач верхнего уровня мышью/пальцем — задаёт ручной порядок (sortOrder).
+// Подзадачи не перетаскиваются — они остаются привязаны к своему родителю.
+function wireTaskDragReorder(listEl, personal, rootIdsInOrder){
+  let dragId = null;
+  let dragEl = null;
+  let targetId = null;
+  let targetPos = null; // 'top' | 'bottom'
+
+  function clearIndicators(){
+    listEl.querySelectorAll('.drag-over-top,.drag-over-bottom').forEach(x=>{
+      x.classList.remove('drag-over-top','drag-over-bottom');
+    });
+  }
+
+  listEl.querySelectorAll('[data-drag-handle]').forEach(handle=>{
+    handle.onpointerdown = (e)=>{
+      if(e.button !== undefined && e.button !== 0) return;
+      dragId = handle.dataset.dragHandle;
+      dragEl = listEl.querySelector(`[data-task-row="${dragId}"][data-depth="0"]`);
+      if(!dragEl) return;
+      e.preventDefault();
+      dragEl.classList.add('dragging');
+      targetId = null; targetPos = null;
+
+      const onMove = (ev)=>{
+        const rootEls = Array.from(listEl.querySelectorAll('[data-depth="0"]')).filter(x=>x!==dragEl);
+        let found = null, foundPos = null;
+        for(const rEl of rootEls){
+          const box = rEl.getBoundingClientRect();
+          if(ev.clientY >= box.top && ev.clientY <= box.bottom){
+            found = rEl.dataset.taskRow;
+            foundPos = (ev.clientY - box.top) < box.height/2 ? 'top' : 'bottom';
+            break;
+          }
+        }
+        clearIndicators();
+        targetId = found; targetPos = foundPos;
+        if(found){
+          const el2 = listEl.querySelector(`[data-task-row="${found}"][data-depth="0"]`);
+          if(el2) el2.classList.add(foundPos==='top' ? 'drag-over-top' : 'drag-over-bottom');
+        }
+      };
+
+      const onUp = async ()=>{
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        dragEl.classList.remove('dragging');
+        clearIndicators();
+        if(targetId && targetId!==dragId){
+          let order = rootIdsInOrder.filter(id=>id!==dragId);
+          const idx = order.indexOf(targetId);
+          const insertAt = targetPos==='top' ? idx : idx+1;
+          order.splice(insertAt, 0, dragId);
+          const before = tasksFor(personal);
+          const orderMap = {}; order.forEach((id,i)=>{ orderMap[id]=(i+1)*10; });
+          const updated = before.map(t=> orderMap[t.id]!==undefined ? {...t, sortOrder: orderMap[t.id]} : t);
+          setTasksFor(personal, updated);
+          const ok = await persistTasksFor(personal);
+          if(!ok){ setTasksFor(personal, before); saveFailedToast(); }
+          render();
+        }
+        dragId = null; dragEl = null; targetId = null; targetPos = null;
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+  });
+}
+
 function renderPersonalTasks(el){
   if(!hasRole('Руководитель','Ассистент')){
     el.innerHTML = accessDeniedScreen('Личные задачи доступны только Руководителю и Ассистенту.');
@@ -2629,12 +2832,19 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   const existing = id ? source.find(t=>t.id===id) : null;
   const parentId = existing ? (existing.parentId||null) : (presetParentId||null);
   const parentTask = parentId ? source.find(x=>x.id===parentId) : null;
-  const projects = projectsFor(personal);
+  const allProjects = projectsFor(personal);
   const selKey = personal?'personal':'work';
-  const purchasesProject = projects.find(p=>isPurchasesProjectName(p.name));
+  const purchasesProject = allProjects.find(p=>isPurchasesProjectName(p.name));
+  // В выпадающем списке — только активные (не завершённые) проекты. Но если редактируем задачу
+  // из уже завершённого (архивного) проекта — его название всё равно показываем, чтобы не потерять значение.
+  const activeProjects = activeProjectsFor(personal);
+  const currentProject = existing && existing.projectId ? allProjects.find(p=>p.id===existing.projectId) : null;
+  const projects = (currentProject && !activeProjects.some(p=>p.id===currentProject.id))
+    ? activeProjects.concat([currentProject])
+    : activeProjects;
   const initialProjectId = parentId
     ? (parentTask ? parentTask.projectId : null)
-    : (existing ? (existing.projectId||null) : (projects.some(p=>p.id===state.selectedProject[selKey]) ? state.selectedProject[selKey] : null));
+    : (existing ? (existing.projectId||null) : (allProjects.some(p=>p.id===state.selectedProject[selKey]) ? state.selectedProject[selKey] : null));
   const initialIsPurchases = !!(purchasesProject && initialProjectId===purchasesProject.id);
   const assistantEmp = state.employees.find(e=>e.role==='Ассистент');
   const modal = document.getElementById('modalRoot');
@@ -2645,6 +2855,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
         ${parentId?`<div class="note">Подзадача для: <strong>${escapeHtml(parentTask?parentTask.title:'')}</strong></div>`:''}
         <div class="field"><label>Название *</label><input id="t_title" value="${existing?escapeHtml(existing.title):escapeHtml(presetTitle||'')}"></div>
         <div class="field"><label>Описание *</label><textarea id="t_desc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
+        <div class="field"><label>Ссылка (необязательно)</label><input id="t_link" type="text" placeholder="https://..." value="${existing?escapeHtml(existing.link||''):''}"></div>
         ${!parentId?`
         <div class="field"><label>Проект</label>
           <select id="t_project">
@@ -2840,6 +3051,8 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   document.getElementById('saveTask').onclick=async ()=>{
     const title = document.getElementById('t_title').value.trim();
     const description = document.getElementById('t_desc').value.trim();
+    const linkRaw = document.getElementById('t_link').value.trim();
+    const link = linkRaw ? (/^https?:\/\//i.test(linkRaw) ? linkRaw : 'https://'+linkRaw) : '';
     const creatorId = document.getElementById('t_creator').value;
     const assigneeEl = document.getElementById('t_assignee');
     const assigneeId = assigneeEl ? assigneeEl.value : null;
@@ -2866,6 +3079,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       flagInvalid('t_deadline');
       return;
     }
+    if(parentId && parentTask && parentTask.deadline && deadline < parentTask.deadline){
+      toast(`Дедлайн подзадачи не может быть раньше дедлайна задачи (до ${fmtDate(parentTask.deadline)})`);
+      flagInvalid('t_deadline');
+      return;
+    }
+    if(!parentId && existing){
+      const childTasks = tasksFor(personal).filter(c=>c.parentId===existing.id);
+      const violatingChild = childTasks.find(c=>c.deadline && c.deadline < deadline);
+      if(violatingChild){
+        toast(`Дедлайн задачи не может быть позже дедлайна подзадачи «${violatingChild.title}» (до ${fmtDate(violatingChild.deadline)})`);
+        flagInvalid('t_deadline');
+        return;
+      }
+    }
     if(statusVal==='done' && (!existing || existing.status!=='done')){
       const effectiveAssignee = personal ? null : assigneeId;
       const wouldBeTask = {assigneeId: effectiveAssignee};
@@ -2886,6 +3113,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       id: existing?existing.id:uid(),
       title,
       description,
+      link,
       projectId,
       parentId: parentId||null,
       assigneeId: assigneeId || null,
@@ -2901,6 +3129,8 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       purchaseStore: document.getElementById('t_purchase_store').value.trim(),
       purchaseExpenseId: existing ? (existing.purchaseExpenseId||null) : null,
       seriesId: existing ? (existing.seriesId||null) : null,
+      // Если дедлайн перенесён — старая причина задержки больше не актуальна, потребуется новая при следующей просрочке.
+      overdueReason: (existing && existing.deadline===deadline) ? (existing.overdueReason||'') : '',
     };
 
     if(!existing && repeatEl && repeatEl.value!=='none'){
@@ -3363,6 +3593,205 @@ function renderTaskAnalytics(el){
   `;
 }
 
+/* ================= REPORT (отчёт о выполненных задачах) ================= */
+function computeReportTasks(){
+  return state.tasksWork.filter(t=>
+    t.status==='done' && t.completedAt &&
+    t.completedAt.slice(0,10) >= state.reportStart && t.completedAt.slice(0,10) <= state.reportEnd
+  );
+}
+function reportTaskWasLate(t){
+  return !!(t.deadline && t.completedAt && t.completedAt.slice(0,10) > t.deadline);
+}
+function renderTaskReport(el){
+  const today = todayISO();
+  if(!state.reportStart){
+    const d = new Date();
+    state.reportStart = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+  }
+  if(!state.reportEnd) state.reportEnd = today;
+
+  const doneTasks = computeReportTasks();
+  const lateTasks = doneTasks.filter(reportTaskWasLate);
+  const durations = doneTasks.filter(t=>t.createdDate).map(t=>Math.max(0,(new Date(t.completedAt)-new Date(t.createdDate))/86400000));
+  const avgDays = durations.length ? (durations.reduce((a,b)=>a+b,0)/durations.length) : null;
+
+  function rowHtml(t){
+    const late = reportTaskWasLate(t);
+    return `<div class="item">
+      <div class="main">
+        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="meta">
+          ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
+          ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
+          <span>Срок: ${t.deadline?fmtDate(t.deadline):'—'}</span>
+          <span>Закрыто: ${fmtDate(t.completedAt)}</span>
+          ${late?`<span style="color:var(--brick);font-weight:600;">просрочено</span>`:''}
+        </div>
+        ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${late && t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
+        ${t.link?`<div class="desc">🔗 <a href="${escapeHtml(t.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;">Ссылка</a></div>`:''}
+      </div>
+    </div>`;
+  }
+  function groupBlock(label, tasks){
+    return `
+      ${label!==null?`<h3 class="section-title" style="font-size:14.5px;margin:18px 0 8px;">${escapeHtml(label)} <span class="subtitle" style="font-size:12px;">(${tasks.length})</span></h3>`:''}
+      <div class="item-list" style="margin-bottom:10px;">${tasks.map(rowHtml).join('')}</div>
+    `;
+  }
+
+  let bodyHtml;
+  if(!doneTasks.length){
+    bodyHtml = `<div class="empty-state"><div class="big">За этот период ничего не завершено</div><p>Попробуйте выбрать другой период</p></div>`;
+  } else if(state.reportGroupBy==='employee'){
+    const byEmp = {};
+    doneTasks.forEach(t=>{ const key=t.assigneeId||'none'; (byEmp[key]=byEmp[key]||[]).push(t); });
+    const groups = Object.entries(byEmp).map(([empId,tasks])=>({
+      label: empId==='none' ? 'Без исполнителя' : empName(empId),
+      tasks: tasks.slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||'')),
+    })).sort((a,b)=>b.tasks.length-a.tasks.length);
+    bodyHtml = groups.map(g=>groupBlock(g.label, g.tasks)).join('');
+  } else if(state.reportGroupBy==='project'){
+    const byProj = {};
+    doneTasks.forEach(t=>{ const key=t.projectId||'none'; (byProj[key]=byProj[key]||[]).push(t); });
+    const groups = Object.entries(byProj).map(([pid,tasks])=>({
+      label: pid==='none' ? 'Без проекта' : projectName(false,pid),
+      tasks: tasks.slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||'')),
+    })).sort((a,b)=>b.tasks.length-a.tasks.length);
+    bodyHtml = groups.map(g=>groupBlock(g.label, g.tasks)).join('');
+  } else {
+    const sorted = doneTasks.slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||''));
+    bodyHtml = groupBlock(null, sorted);
+  }
+
+  el.innerHTML = `
+    <div class="field-row" style="align-items:flex-end;">
+      <div class="field"><label>С какой даты</label><input type="date" id="rep_start" value="${state.reportStart}"></div>
+      <div class="field"><label>По какую дату</label><input type="date" id="rep_end" value="${state.reportEnd}"></div>
+      <button class="btn ghost" id="rep_download">⬇️ Скачать отчёт (CSV)</button>
+    </div>
+    <div class="cat-filters" style="margin-bottom:16px;">
+      <button class="cat-chip off" data-rep-period="week">Эта неделя</button>
+      <button class="cat-chip off" data-rep-period="month">Этот месяц</button>
+      <button class="cat-chip off" data-rep-period="lastmonth">Прошлый месяц</button>
+    </div>
+    <div class="cat-filters" style="margin-bottom:16px;">
+      <button class="cat-chip ${state.reportGroupBy==='employee'?'':'off'}" data-rep-group="employee">По сотруднику</button>
+      <button class="cat-chip ${state.reportGroupBy==='project'?'':'off'}" data-rep-group="project">По проекту</button>
+      <button class="cat-chip ${state.reportGroupBy==='date'?'':'off'}" data-rep-group="date">По датам</button>
+    </div>
+    <div class="ledger-summary" style="margin-bottom:20px;">
+      <div class="sum-card"><div class="label">Завершено</div><div class="val mono" style="color:var(--indigo);">${doneTasks.length}</div></div>
+      <div class="sum-card spent"><div class="label">С опозданием</div><div class="val mono">${lateTasks.length}</div></div>
+      <div class="sum-card issued"><div class="label">Средний срок</div><div class="val mono">${avgDays!==null?avgDays.toFixed(1)+' дн.':'—'}</div></div>
+    </div>
+    ${bodyHtml}
+    <p class="subtitle" style="margin-top:14px;">Личные задачи в отчёт не входят. «Просрочено» — задача закрыта позже указанного в ней срока.</p>
+  `;
+
+  document.getElementById('rep_start').onchange = (e)=>{ state.reportStart = e.target.value; render(); };
+  document.getElementById('rep_end').onchange = (e)=>{ state.reportEnd = e.target.value; render(); };
+  document.getElementById('rep_download').onclick = ()=>exportTaskReportCSV();
+  el.querySelectorAll('[data-rep-period]').forEach(b=>b.onclick=()=>{
+    const now = new Date();
+    if(b.dataset.repPeriod==='week'){
+      const day = (now.getDay()+6)%7;
+      const monday = new Date(now); monday.setDate(now.getDate()-day);
+      state.reportStart = monday.toISOString().slice(0,10);
+      state.reportEnd = todayISO();
+    } else if(b.dataset.repPeriod==='month'){
+      state.reportStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+      state.reportEnd = todayISO();
+    } else if(b.dataset.repPeriod==='lastmonth'){
+      const firstOfThis = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastOfPrev = new Date(firstOfThis - 86400000);
+      const firstOfPrev = new Date(lastOfPrev.getFullYear(), lastOfPrev.getMonth(), 1);
+      state.reportStart = firstOfPrev.toISOString().slice(0,10);
+      state.reportEnd = lastOfPrev.toISOString().slice(0,10);
+    }
+    render();
+  });
+  el.querySelectorAll('[data-rep-group]').forEach(b=>b.onclick=()=>{
+    state.reportGroupBy = b.dataset.repGroup;
+    render();
+  });
+}
+function exportTaskReportCSV(){
+  const doneTasks = computeReportTasks().slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||''));
+  const header = ['Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка'];
+  const lines = [header.map(csvEscape).join(';')];
+  doneTasks.forEach(t=>{
+    lines.push([
+      t.title,
+      t.projectId?projectName(false,t.projectId):'',
+      t.assigneeId?empName(t.assigneeId):'',
+      t.creatorId?empName(t.creatorId):'',
+      t.deadline?fmtDate(t.deadline):'',
+      t.completedAt?fmtDate(t.completedAt):'',
+      reportTaskWasLate(t)?'Да':'Нет',
+      t.overdueReason||'',
+      t.completionComment||'',
+      t.link||'',
+    ].map(csvEscape).join(';'));
+  });
+  const csv = '\uFEFF' + lines.join('\r\n');
+  downloadTextFile(`otchet-zadachi-${state.reportStart}--${state.reportEnd}.csv`, 'text/csv;charset=utf-8', csv);
+}
+
+/* ================= ARCHIVE ================= */
+function renderArchiveTab(root){
+  const canSeePersonal = personalAccessAllowed();
+  if(state.archiveSubtab==='personal' && !canSeePersonal) state.archiveSubtab = 'work';
+  const personal = state.archiveSubtab==='personal';
+
+  const completedProjects = completedProjectsFor(personal);
+  // Отдельно выполненные задачи: без проекта, либо в проекте, который ещё не завершён целиком
+  const standaloneDone = tasksFor(personal).filter(t=>
+    t.status==='done' && !t.parentId &&
+    (!t.projectId || !isProjectCompleted(personal, t.projectId))
+  ).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+
+  root.innerHTML = `
+    <div class="row-between">
+      <div>
+        <h2 class="section-title">Архив</h2>
+        <p class="subtitle">Проекты, где выполнены все задачи, и отдельные выполненные задачи</p>
+      </div>
+    </div>
+    ${canSeePersonal?`
+      <div class="cat-filters" style="margin-bottom:16px;">
+        <button class="cat-chip ${personal?'off':''}" data-arc-sub="work"><span class="dot" style="background:var(--indigo);"></span>Рабочие</button>
+        <button class="cat-chip ${personal?'':'off'}" data-arc-sub="personal"><span class="dot" style="background:var(--plum);"></span>Личные</button>
+      </div>
+    `:''}
+    <h3 class="section-title" style="font-size:15px;">📁 Завершённые проекты</h3>
+    <div style="margin-bottom:24px;">
+      ${completedProjects.length ? completedProjects.map(p=>{
+        const tasks = projectTasksFor(personal, p.id).filter(t=>!t.parentId).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+        return `
+          <div class="note" style="margin-bottom:14px;">
+            <strong>${escapeHtml(p.name)}</strong> <span class="subtitle">— все задачи (${tasks.length}) выполнены</span>
+          </div>
+          <div class="item-list" style="margin-bottom:18px;">
+            ${tasks.map(t=>taskItemHtml(t, personal, {depth:0})).join('')}
+          </div>
+        `;
+      }).join('') : `<p class="subtitle" style="margin:0 0 18px;">Пока нет завершённых проектов — как только все задачи в проекте будут отмечены выполненными, он появится здесь автоматически.</p>`}
+    </div>
+    <h3 class="section-title" style="font-size:15px;">✅ Отдельные выполненные задачи</h3>
+    <div class="item-list">
+      ${standaloneDone.length ? standaloneDone.map(t=>taskItemHtml(t, personal, {depth:0})).join('') : `<p class="subtitle" style="margin:0;">Здесь появятся выполненные задачи, которые не входят в полностью завершённый проект</p>`}
+    </div>
+  `;
+  root.querySelectorAll('[data-arc-sub]').forEach(b=>b.onclick=()=>{
+    state.archiveSubtab = b.dataset.arcSub;
+    render();
+  });
+  const listEls = root.querySelectorAll('.item-list');
+  listEls.forEach(listEl=>wireTaskActions(listEl, personal));
+}
+
 /* ================= FUNDS ================= */
 function renderFunds(root){
   const scope = state.fundsScope;
@@ -3712,7 +4141,7 @@ function openDataModal(){
           <p class="subtitle" style="margin:0 0 10px;">Выполненные задачи и прошедшие события старше полугода переезжают сюда автоматически, чтобы не загромождать основные списки. Хранятся без ограничения по времени.</p>
           <p class="subtitle" style="margin:0 0 8px;font-weight:600;">Задачи (${state.archiveTasks.length})</p>
           <div class="item-list" style="margin-bottom:14px;">
-            ${state.archiveTasks.length ? state.archiveTasks.slice().sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||'')).map(t=>`
+            ${state.archiveTasks.length ? state.archiveTasks.slice().sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999')).map(t=>`
               <div class="item">
                 <div class="main"><div class="title">${escapeHtml(t.title)}</div><div class="meta"><span>выполнено ${t.completedAt?fmtDate(t.completedAt):'—'}</span></div></div>
                 <div class="actions"><button class="btn ghost small" data-restore-archive-task="${t.id}">Вернуть</button></div>
@@ -3733,7 +4162,7 @@ function openDataModal(){
           ${!personalAccessAllowed() ? `<p class="subtitle" style="margin:0;">Доступно только Руководителю и Ассистенту.</p>` : `
           <p class="subtitle" style="margin:0 0 8px;font-weight:600;">Задачи (${state.personalArchiveTasks.length})</p>
           <div class="item-list" style="margin-bottom:14px;">
-            ${state.personalArchiveTasks.length ? state.personalArchiveTasks.slice().sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||'')).map(t=>`
+            ${state.personalArchiveTasks.length ? state.personalArchiveTasks.slice().sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999')).map(t=>`
               <div class="item">
                 <div class="main"><div class="title">${escapeHtml(t.title)}</div><div class="meta"><span>выполнено ${t.completedAt?fmtDate(t.completedAt):'—'}</span></div></div>
                 <div class="actions"><button class="btn ghost small" data-restore-personal-archive-task="${t.id}">Вернуть</button></div>
@@ -3920,6 +4349,7 @@ window.addEventListener('resize', ()=>{
 /* ---------------- init ---------------- */
 async function startApp(){
   await loadAll();
+  if(!state.taskFilterEmployee && state.currentUserId) state.taskFilterEmployee = state.currentUserId;
   render();
   if(state.browserNotify && 'Notification' in window && Notification.permission==='granted'){
     checkNotificationsTick();

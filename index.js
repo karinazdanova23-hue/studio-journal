@@ -273,7 +273,7 @@ app.get('*', (req, res) => {
 
   // Сеем список ролей по умолчанию при самом первом запуске, чтобы было кого выбрать при входе
   if (!store.kv['roster:employees']) {
-    const DEFAULT_ROLES = ['Руководитель', 'Ассистент', 'Маркетолог', 'Старший администратор', 'Менеджер', 'Хостес'];
+    const DEFAULT_ROLES = ['Руководитель', 'Ассистент', 'Маркетолог', 'Старший администратор', 'Менеджер', 'Администратор 1 смена', 'Администратор 2 смена'];
     const employees = DEFAULT_ROLES.map((role, i) => ({ id: `emp-seed-${i}-${Date.now()}`, name: role, role }));
     store.kv['roster:employees'] = JSON.stringify(employees);
     await persist();

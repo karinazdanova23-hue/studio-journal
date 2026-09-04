@@ -177,6 +177,7 @@
   .item.is-done{opacity:.72;}
   .badge{font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap;}
   .badge.progress{background:var(--ochre-bg);color:var(--ochre);}
+  .badge.review{background:rgba(51,80,125,0.12);color:var(--indigo);}
   .badge.done{background:var(--teal-bg);color:var(--teal);}
   .badge.prio-high{background:var(--brick-bg);color:var(--brick);}
   .badge.prio-med{background:var(--ochre-bg);color:var(--ochre);}
@@ -756,7 +757,7 @@ const TABS = [
 ];
 const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', personal:'Личные дела Карины'};
 const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', personal:'var(--plum)'};
-const STATUSES = {progress:'В работе', done:'Готово'};
+const STATUSES = {progress:'В работе', review:'На проверке', done:'Готово'};
 const PRIORITIES = {low:'Низкий', med:'Средний', high:'Высокий'};
 
 function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -1457,6 +1458,44 @@ function withStatus(t, newStatus, comment){
   if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:''};
   return {...t, status:newStatus};
 }
+// Исполнитель отмечает "сделано" -> задача уходит не сразу в "Готово", а на проверку постановщику.
+function withStatusReview(t, comment){
+  return {...t, status:'review', completionComment: comment||t.completionComment||'', reworkNote:''};
+}
+function canReviewTask(t, personal){
+  if(personal) return true;
+  if(!t || !t.creatorId) return true;
+  return !!state.currentUserId && state.currentUserId === t.creatorId;
+}
+function whyCantReview(t){
+  if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
+  return `Принять или вернуть на доработку может только тот, кто поставил задачу — ${empName(t.creatorId)}.`;
+}
+async function approveTask(personal, id){
+  const before = tasksFor(personal);
+  const target = before.find(t=>t.id===id);
+  if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
+  const updated = before.map(t=>t.id===id?{...t, status:'done', completedAt:todayISO(), reworkNote:''}:t);
+  setTasksFor(personal, updated);
+  const ok = await persistTasksFor(personal);
+  if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+  await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
+  toast('Задача принята и закрыта');
+  render();
+}
+async function reworkTask(personal, id){
+  const before = tasksFor(personal);
+  const target = before.find(t=>t.id===id);
+  if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
+  const note = await showPrompt('Что нужно доработать? (можно оставить пустым)', '');
+  if(note===null) return;
+  const updated = before.map(t=>t.id===id?{...t, status:'progress', completedAt:null, reworkNote: note || 'Постановщик вернул задачу на доработку'}:t);
+  setTasksFor(personal, updated);
+  const ok = await persistTasksFor(personal);
+  if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+  toast('Задача возвращена на доработку');
+  render();
+}
 function saveFailedToast(){
   toast('⚠️ Не удалось сохранить — проверьте подключение к интернету и попробуйте ещё раз');
 }
@@ -1491,6 +1530,24 @@ function wireOverdueReasonInputs(el){
         <button type="button" class="btn small" data-save-overdue-reason="${id}" style="margin-top:6px;">Сохранить причину</button>
       `;
       wireOverdueReasonInputs(box);
+    };
+  });
+}
+function wireReviewActions(el){
+  el.querySelectorAll('[data-approve-task]').forEach(btn=>{
+    btn.onclick = async (e)=>{
+      e.stopPropagation();
+      const id = btn.dataset.approveTask;
+      const personal = state.personalTasks.some(pt=>pt.id===id);
+      await approveTask(personal, id);
+    };
+  });
+  el.querySelectorAll('[data-rework-task]').forEach(btn=>{
+    btn.onclick = async (e)=>{
+      e.stopPropagation();
+      const id = btn.dataset.reworkTask;
+      const personal = state.personalTasks.some(pt=>pt.id===id);
+      await reworkTask(personal, id);
     };
   });
 }
@@ -1566,13 +1623,13 @@ function computeReminders(filterAssigneeId){
   const today = todayISO();
   let allTasks = state.tasksWork.concat(personalAccessAllowed() ? state.personalTasks : []);
   if(filterAssigneeId){ allTasks = allTasks.filter(t=>t.assigneeId===filterAssigneeId); }
-  const overdueTasks = allTasks.filter(t=>t.deadline && t.deadline<today && t.status!=='done');
-  const dueTodayTasks = allTasks.filter(t=>t.deadline===today && t.status!=='done');
+  const overdueTasks = allTasks.filter(t=>t.deadline && t.deadline<today && t.status==='progress');
+  const dueTodayTasks = allTasks.filter(t=>t.deadline===today && t.status==='progress');
   const todayEvents = allVisibleEvents().filter(e=>e.date===today).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
   const soon = new Date(); soon.setDate(soon.getDate()+3);
   const soonISO = soon.toISOString().slice(0,10);
   const upcomingEvents = allVisibleEvents().filter(e=>e.date>today && e.date<=soonISO).sort((a,b)=>a.date.localeCompare(b.date));
-  const dueSoonTasks = allTasks.filter(t=>t.deadline && t.deadline>today && t.deadline<=soonISO && t.status!=='done').sort((a,b)=>a.deadline.localeCompare(b.deadline));
+  const dueSoonTasks = allTasks.filter(t=>t.deadline && t.deadline>today && t.deadline<=soonISO && t.status==='progress').sort((a,b)=>a.deadline.localeCompare(b.deadline));
   return {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks};
 }
 function renderBellBadge(){
@@ -1717,7 +1774,7 @@ function renderReminderPanel(){
   if(!state.reminderPanelOpen) return;
   const {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks} = computeReminders();
   const myTasks = state.currentUserId
-    ? state.tasksWork.filter(t=>t.assigneeId===state.currentUserId && t.status!=='done').sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'))
+    ? state.tasksWork.filter(t=>t.assigneeId===state.currentUserId && t.status==='progress').sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'))
     : [];
   const panel = document.createElement('div');
   panel.className='reminder-panel';
@@ -1854,6 +1911,9 @@ function renderOverview(root){
   const meEmp = state.currentUserId ? state.employees.find(e=>e.id===state.currentUserId) : null;
   const viewingEmp = viewingId ? state.employees.find(e=>e.id===viewingId) : null;
   const tasksLabel = viewCompanyWide ? 'Все задачи (компания)' : (viewingId===state.currentUserId ? '🙋 Мои задачи' : `Задачи: ${viewingEmp?escapeHtml(viewingEmp.name):''}`);
+  const reviewQueue = state.currentUserId ? state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
+    .filter(t=>t.status==='review' && t.creatorId===state.currentUserId)
+    .sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||'')) : [];
 
   function taskRow(t){
     const overdue = t.deadline && t.deadline<todayISO();
@@ -1865,7 +1925,23 @@ function renderOverview(root){
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="meta"><span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}</div>
       </div>
-      ${overdue && t.status!=='done' ? `<div style="width:100%;">${renderOverdueReasonBlock(t, personal)}</div>` : ''}
+      ${overdue && t.status==='progress' ? `<div style="width:100%;">${renderOverdueReasonBlock(t, personal)}</div>` : ''}
+    </div>`;
+  }
+  function reviewRow(t){
+    return `<div class="item">
+      <div class="main" style="cursor:pointer;" data-ov-task="${t.id}">
+        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="meta">
+          ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
+          <span>Сдано: ${t.completedAt?fmtDate(t.completedAt):'—'}</span>
+        </div>
+        ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+      </div>
+      <div class="actions">
+        <button type="button" class="btn small" data-approve-task="${t.id}">✅ Принять</button>
+        <button type="button" class="btn ghost small" data-rework-task="${t.id}">↩️ На доработку</button>
+      </div>
     </div>`;
   }
   function eventRow(e){
@@ -1893,17 +1969,25 @@ function renderOverview(root){
       <div class="sum-card spent"><div class="label">Просрочено задач</div><div class="val mono">${overdueTasks.length}</div></div>
       <div class="sum-card issued"><div class="label">Задач на сегодня</div><div class="val mono">${dueTodayTasks.length}</div></div>
       <div class="sum-card"><div class="label">Событий сегодня</div><div class="val mono" style="color:var(--indigo);">${todayEvents.length}</div></div>
+      ${reviewQueue.length ? `<div class="sum-card"><div class="label">🔍 Нужно проверить</div><div class="val mono" style="color:var(--ochre);">${reviewQueue.length}</div></div>` : ''}
       ${hasRole('Руководитель','Ассистент') ? `
         <div class="sum-card balance"><div class="label">Остаток (рабочие)</div><div class="val mono">${fmtMoney(workBalance)}</div></div>
         <div class="sum-card balance"><div class="label">Остаток (личные)</div><div class="val mono">${fmtMoney(personalBalance)}</div></div>
       ` : ''}
     </div>
+    ${reviewQueue.length ? `
+      <h2 class="section-title" style="font-size:16px;">🔍 Нужно проверить (${reviewQueue.length})</h2>
+      <p class="subtitle" style="margin-top:-6px;">Исполнители отметили эти задачи сделанными — проверьте и примите, либо верните на доработку</p>
+      <div class="item-list" style="margin-bottom:24px;">
+        ${reviewQueue.map(reviewRow).join('')}
+      </div>
+    ` : ''}
     ${state.currentUserId ? `
       <h2 class="section-title" style="font-size:16px;">${tasksLabel}</h2>
       <div class="item-list" style="margin-bottom:24px;">
         ${(() => {
           const allOpen = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
-            .filter(t=> t.status!=='done' && (viewCompanyWide || t.assigneeId===viewingId));
+            .filter(t=> t.status==='progress' && (viewCompanyWide || t.assigneeId===viewingId));
           const today = todayISO();
           const overdueList = allOpen.filter(t=>t.deadline && t.deadline<today).sort((a,b)=>a.deadline.localeCompare(b.deadline));
           const todayList = allOpen.filter(t=>t.deadline===today);
@@ -1930,6 +2014,7 @@ function renderOverview(root){
     render();
   };
   wireOverdueReasonInputs(root);
+  wireReviewActions(root);
   root.querySelectorAll('[data-ov-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
     cb.onchange = async ()=>{
@@ -1941,11 +2026,10 @@ function renderOverview(root){
         if(comment===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatus(t,'done',comment):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,comment):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
-        await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
         render();
       } else {
         const fresh = await refreshTasksFromServer(personal);
@@ -2183,6 +2267,7 @@ function openDayModal(iso){
 function wireDayTaskActions(el, iso){
   wireEventLinks(el);
   wireOverdueReasonInputs(el);
+  wireReviewActions(el);
   const isPersonalTask = (id)=> state.personalTasks.some(pt=>pt.id===id);
   el.querySelectorAll('[data-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
@@ -2200,11 +2285,10 @@ function wireDayTaskActions(el, iso){
         if(comment===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatus(t,'done',comment):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,comment):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
-        await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
         render();
         closeModal(); openDayModal(iso);
       } else {
@@ -2544,12 +2628,15 @@ function taskItemHtml(t, personal, opts){
   const depth = opts.depth||0;
   const childCount = opts.childCount||0;
   const collapsed = !!opts.collapsed;
-  const overdue = t.deadline && t.deadline < todayISO() && t.status!=='done';
+  const overdue = t.deadline && t.deadline < todayISO() && t.status==='progress';
   const canComplete = canCompleteTask(t, personal);
+  const isChecked = t.status==='review' || t.status==='done';
+  const checkInteractive = t.status==='done' ? false : canComplete;
+  const checkTitle = t.status==='done' ? 'Задача принята постановщиком' : (canComplete ? (t.status==='review' ? 'Отменить и вернуть в работу' : 'Отметить выполненной') : whyCantComplete(t));
   return `
     <div class="item ${t.status==='done'?'is-done':''}" data-task-row="${t.id}" data-depth="${depth}" style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
       ${depth===0?`<span class="drag-handle" data-drag-handle="${t.id}" title="Перетащить, чтобы изменить порядок">⠿</span>`:''}
-      <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-done="${t.id}" ${t.status==='done'?'checked':''} title="${canComplete?'Отметить выполненной':whyCantComplete(t)}">
+      <input type="checkbox" class="task-check${checkInteractive?'':' task-check-locked'}" data-done="${t.id}" ${isChecked?'checked':''} ${checkInteractive?'':'disabled'} title="${checkTitle}">
       <div class="main">
         <div class="title">
           ${childCount>0?`<button type="button" class="task-toggle" data-toggle-children="${t.id}" title="${collapsed?'Показать':'Скрыть'} подзадачи">${collapsed?'▸':'▾'}</button>`:''}
@@ -2557,7 +2644,7 @@ function taskItemHtml(t, personal, opts){
           ${childCount>0?`<span class="subtitle" style="font-size:11px;">(${childCount})</span>`:''}
         </div>
         <div class="meta">
-          <span class="badge ${t.status==='done'?'done':'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
+          <span class="badge ${t.status||'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]}</span>
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(personal,t.projectId))}</span>`:''}
           ${opts.orphanParentName?`<span>⤷ подзадача: ${escapeHtml(opts.orphanParentName)}</span>`:''}
@@ -2573,7 +2660,18 @@ function taskItemHtml(t, personal, opts){
           ${linkedEventBadge(t)}
         </div>
         ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
-        ${t.status==='done' && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${(t.status==='review'||t.status==='done') && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${t.status==='progress' && t.reworkNote?`<div class="desc" style="color:var(--brick);">↩️ Возвращено на доработку: ${linkifyEscaped(t.reworkNote)}</div>`:''}
+        ${t.status==='review' ? (canReviewTask(t,personal)
+          ? `<div class="review-box">
+              <div class="review-label">🔍 Проверьте и решите, что делать с задачей</div>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="btn small" data-approve-task="${t.id}">✅ Принять</button>
+                <button type="button" class="btn ghost small" data-rework-task="${t.id}">↩️ На доработку</button>
+              </div>
+            </div>`
+          : `<div class="review-box"><div class="review-label">🔍 Ожидает проверки — ${t.creatorId?escapeHtml(empName(t.creatorId)):'постановщик'}</div></div>`
+        ) : ''}
         ${overdue ? renderOverdueReasonBlock(t, personal) : ''}
       </div>
       <div class="actions">
@@ -2684,6 +2782,7 @@ function wireEventLinks(el){
 function wireTaskActions(el, personal){
   wireEventLinks(el);
   wireOverdueReasonInputs(el);
+  wireReviewActions(el);
   el.querySelectorAll('[data-toggle-children]').forEach(btn=>{
     btn.onclick=(e)=>{
       e.stopPropagation();
@@ -2708,11 +2807,10 @@ function wireTaskActions(el, personal){
         if(comment===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatus(t,'done',comment):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,comment):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
-        await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
         render();
       } else {
         const fresh = await refreshTasksFromServer(personal);
@@ -3079,16 +3177,16 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       flagInvalid('t_deadline');
       return;
     }
-    if(parentId && parentTask && parentTask.deadline && deadline < parentTask.deadline){
-      toast(`Дедлайн подзадачи не может быть раньше дедлайна задачи (до ${fmtDate(parentTask.deadline)})`);
+    if(parentId && parentTask && parentTask.deadline && deadline > parentTask.deadline){
+      toast(`Дедлайн подзадачи не может быть позже дедлайна задачи (до ${fmtDate(parentTask.deadline)})`);
       flagInvalid('t_deadline');
       return;
     }
     if(!parentId && existing){
       const childTasks = tasksFor(personal).filter(c=>c.parentId===existing.id);
-      const violatingChild = childTasks.find(c=>c.deadline && c.deadline < deadline);
+      const violatingChild = childTasks.find(c=>c.deadline && c.deadline > deadline);
       if(violatingChild){
-        toast(`Дедлайн задачи не может быть позже дедлайна подзадачи «${violatingChild.title}» (до ${fmtDate(violatingChild.deadline)})`);
+        toast(`Дедлайн задачи не может быть раньше дедлайна подзадачи «${violatingChild.title}» (до ${fmtDate(violatingChild.deadline)})`);
         flagInvalid('t_deadline');
         return;
       }
@@ -4011,7 +4109,7 @@ function openSearchModal(){
       html += res.tasks.map(t=>`
         <div class="item" style="cursor:pointer;" data-sr-task="${t.id}" data-sr-personal="${t.__personal?'1':'0'}">
           <div class="main"><div class="title">${t.__personal?'🔒 ':''}${escapeHtml(t.title)}</div>
-          <div class="meta"><span class="badge ${t.status==='done'?'done':'progress'}">${STATUSES[t.status]||''}</span>${t.deadline?`<span>до ${fmtDate(t.deadline)}</span>`:''}</div></div>
+          <div class="meta"><span class="badge ${t.status||'progress'}">${STATUSES[t.status]||''}</span>${t.deadline?`<span>до ${fmtDate(t.deadline)}</span>`:''}</div></div>
         </div>`).join('');
       html += `</div>`;
     }

@@ -1108,7 +1108,7 @@ async function loadAll(){
     sGet('personal:archiveEvents', true),
     sGet('settings:personalMigrated', true),
   ]);
-  const DEFAULT_ROLES = ['Руководитель','Ассистент','Маркетолог','Старший администратор','Менеджер','Хостес'];
+  const DEFAULT_ROLES = ['Руководитель','Ассистент','Маркетолог','Старший администратор','Менеджер','Администратор 1 смена','Администратор 2 смена'];
   if(!emp){
     state.employees = DEFAULT_ROLES.map(role=>({id:uid(), name:role, role}));
     await sSet('roster:employees', JSON.stringify(state.employees), true);
@@ -4247,6 +4247,7 @@ function openStaffModal(){
                 </div>
                 <div class="actions">
                   <button class="btn ghost small" data-view-tasks="${e.id}">Задачи</button>
+                  <button class="btn ghost small" data-edit-emp="${e.id}">✎ Изменить</button>
                   <button class="btn ghost small" data-pw-emp="${e.id}">${pwStatus[e.id]?'🔒 Сменить пароль':'🔒 Задать пароль'}</button>
                   <button class="btn danger small" data-del-emp="${e.id}">✕</button>
                 </div>
@@ -4286,6 +4287,9 @@ function openStaffModal(){
       state.selectedProject.work='all';
       render();
     });
+    modal.querySelectorAll('[data-edit-emp]').forEach(b=>b.onclick=()=>{
+      openEditEmployeeModal(b.dataset.editEmp, ()=>{ modal.innerHTML = body(); wire(); render(); });
+    });
     modal.querySelectorAll('[data-pw-emp]').forEach(b=>b.onclick=()=>{
       openEmployeePasswordModal(b.dataset.pwEmp, ()=>{ refreshAndRender(); }, pwStatus[b.dataset.pwEmp]);
     });
@@ -4313,6 +4317,40 @@ function openStaffModal(){
     modal.innerHTML = body(); wire();
   });
   wire();
+}
+function openEditEmployeeModal(empId, onDone){
+  const emp = state.employees.find(e=>e.id===empId);
+  if(!emp) return;
+  const ov = document.createElement('div');
+  ov.className='overlay'; ov.style.zIndex=200;
+  ov.innerHTML = `
+    <div class="modal" style="max-width:380px;">
+      <h3>Изменить сотрудника</h3>
+      <div class="field"><label>Имя</label><input id="edit_emp_name" value="${escapeHtml(emp.name)}"></div>
+      <div class="field"><label>Роль</label><input id="edit_emp_role" value="${escapeHtml(emp.role||'')}"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="editEmpCancel">Отмена</button>
+        <button class="btn" id="editEmpSave">Сохранить</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const nameInput = ov.querySelector('#edit_emp_name');
+  setTimeout(()=>{ nameInput.focus(); nameInput.select(); }, 0);
+  const finish = ()=>ov.remove();
+  ov.querySelector('#editEmpCancel').onclick = finish;
+  ov.onclick = (e)=>{ if(e.target===ov) finish(); };
+  ov.querySelector('#editEmpSave').onclick = async ()=>{
+    const name = nameInput.value.trim();
+    if(!name){ toast('Введите имя'); return; }
+    const role = ov.querySelector('#edit_emp_role').value.trim();
+    const before = state.employees;
+    state.employees = before.map(e=>e.id===empId?{...e, name, role}:e);
+    const ok = await saveEmployees();
+    if(!ok){ state.employees = before; saveFailedToast(); return; }
+    toast('Сотрудник обновлён');
+    finish();
+    if(onDone) onDone();
+  };
 }
 
 /* ---------------- modal helpers ---------------- */

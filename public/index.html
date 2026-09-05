@@ -1458,8 +1458,13 @@ function withStatus(t, newStatus, comment){
   if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:''};
   return {...t, status:newStatus};
 }
-// Исполнитель отмечает "сделано" -> задача уходит не сразу в "Готово", а на проверку постановщику.
+// Исполнитель отмечает "сделано" -> обычно уходит не сразу в "Готово", а на проверку постановщику.
+// Исключение: если человек поставил задачу сам себе (постановщик = исполнитель), проверять
+// самого себя бессмысленно — задача сразу становится "Готово".
 function withStatusReview(t, comment){
+  if(t.creatorId && t.assigneeId && t.creatorId===t.assigneeId){
+    return withStatus(t, 'done', comment);
+  }
   return {...t, status:'review', completionComment: comment||t.completionComment||'', reworkNote:''};
 }
 function canReviewTask(t, personal){
@@ -1971,8 +1976,7 @@ function renderOverview(root){
       <div class="sum-card"><div class="label">Событий сегодня</div><div class="val mono" style="color:var(--indigo);">${todayEvents.length}</div></div>
       ${reviewQueue.length ? `<div class="sum-card"><div class="label">🔍 Нужно проверить</div><div class="val mono" style="color:var(--ochre);">${reviewQueue.length}</div></div>` : ''}
       ${hasRole('Руководитель','Ассистент') ? `
-        <div class="sum-card balance"><div class="label">Остаток (рабочие)</div><div class="val mono">${fmtMoney(workBalance)}</div></div>
-        <div class="sum-card balance"><div class="label">Остаток (личные)</div><div class="val mono">${fmtMoney(personalBalance)}</div></div>
+        <div class="sum-card balance"><div class="label">Общий остаток</div><div class="val mono">${fmtMoney(workBalance + personalBalance)}</div></div>
       ` : ''}
     </div>
     ${reviewQueue.length ? `

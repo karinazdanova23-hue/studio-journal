@@ -25,6 +25,8 @@
     --plum-bg:#EEE7F3;
     --sky:#2E8B9E;
     --sky-bg:#E1F0F2;
+    --rose:#C15C7C;
+    --rose-bg:#F6E4EA;
     --shadow: 0 1px 2px rgba(42,40,34,0.06), 0 8px 24px rgba(42,40,34,0.06);
   }
   *{box-sizing:border-box;}
@@ -727,7 +729,7 @@ const state = {
   checklistsWork:[],
   quickIdeasWork:[],
   personalProjects:[],
-  calFilters: {event:true, planning:true, meeting:true, vacation:true, personal:true},
+  calFilters: {event:true, planning:true, meeting:true, vacation:true, birthday:true, personal:true},
   calEmployeeFilters: {},
   browserNotify:false,
   notifiedEventKeys:new Set(),
@@ -755,8 +757,8 @@ const TABS = [
   {id:'funds', label:'Финансы'},
   {id:'archive', label:'Архив'},
 ];
-const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', personal:'Личные дела Карины'};
-const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', personal:'var(--plum)'};
+const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', birthday:'Дни рождения', personal:'Личные дела Карины'};
+const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', birthday:'var(--rose)', personal:'var(--plum)'};
 const STATUSES = {progress:'В работе', review:'На проверке', done:'Готово'};
 const PRIORITIES = {low:'Низкий', med:'Средний', high:'Высокий'};
 
@@ -1283,6 +1285,8 @@ async function persistEventsFor(personal){ return personal ? await savePersonalD
 function canSeeEvent(e){
   // Отпуска — видны всем (информационно, не требует участия).
   if(e.category==='vacation') return true;
+  // Дни рождения — тоже видны всем, чтобы никто не забыл поздравить.
+  if(e.category==='birthday') return true;
   // Личные дела Карины — уже отдельно защищены (personalAccessAllowed), доступ не по участникам.
   if(e.category==='personal') return true;
   // Руководитель может включить полное расписание — видит все планёрки/встречи/события.
@@ -2329,6 +2333,8 @@ function openEventModal(id, presetDate){
   const existingPersonal = id ? isPersonalEvent(id) : false;
   const existing = id ? (existingPersonal ? state.personalEvents : state.events).find(e=>e.id===id) : null;
   const initialFormat = existing ? (existing.format||'offline') : 'offline';
+  const initialCategory = existing ? (existing.category||'event') : 'event';
+  const isAllDayCategory = (cat)=> cat==='vacation' || cat==='birthday';
   const initialEmpIds = existing && existing.employeeIds ? existing.employeeIds : [];
   const initialHasManagerHostess = initialEmpIds.some(eid=>{
     const e = state.employees.find(x=>x.id===eid);
@@ -2342,6 +2348,8 @@ function openEventModal(id, presetDate){
         <div class="field"><label>Название</label><input id="f_title" value="${existing?escapeHtml(existing.title):''}" placeholder="Например: Совещание с мастерами"></div>
         <div class="field-row">
           <div class="field"><label>Дата</label><input type="date" id="f_date" value="${existing?existing.date:(presetDate||todayISO())}"></div>
+        </div>
+        <div class="field-row" id="f_time_wrap" style="${isAllDayCategory(initialCategory)?'display:none;':''}">
           <div class="field"><label>Начало</label><input type="time" id="f_start" value="${existing?existing.startTime||'':''}"></div>
           <div class="field"><label>Окончание</label><input type="time" id="f_end" value="${existing?existing.endTime||'':''}"></div>
         </div>
@@ -2416,6 +2424,9 @@ function openEventModal(id, presetDate){
     document.getElementById('f_location_wrap').style.display = isOnline?'none':'';
     document.getElementById('f_link_wrap').style.display = isOnline?'':'none';
   };
+  document.getElementById('f_cat').onchange=(e)=>{
+    document.getElementById('f_time_wrap').style.display = isAllDayCategory(e.target.value)?'none':'';
+  };
   const empListEl = document.getElementById('f_emp_list');
   const getSelectedEmpIds = ()=> Array.from(empListEl.querySelectorAll('[data-emp-cb]:checked')).map(cb=>cb.value);
   const refreshManualWrap = ()=>{
@@ -2480,8 +2491,8 @@ function openEventModal(id, presetDate){
       id: existing?existing.id:uid(),
       title,
       date: document.getElementById('f_date').value || todayISO(),
-      startTime: document.getElementById('f_start').value,
-      endTime: document.getElementById('f_end').value,
+      startTime: isAllDayCategory(category) ? '' : document.getElementById('f_start').value,
+      endTime: isAllDayCategory(category) ? '' : document.getElementById('f_end').value,
       category,
       format,
       location: format==='offline' ? document.getElementById('f_location').value.trim() : '',

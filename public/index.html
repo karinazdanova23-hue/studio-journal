@@ -725,6 +725,7 @@ const state = {
   taskFilterStatus:'all',
   selectedProject:{work:'all', personal:'all'},
   projectsWork:[],
+  blocksWork:[],
   ideaBankWork:[],
   checklistsWork:[],
   quickIdeasWork:[],
@@ -908,7 +909,10 @@ async function exportAllData(){
     events: state.events,
     tasksWork: state.tasksWork,
     projectsWork: state.projectsWork,
+    blocksWork: state.blocksWork,
     ideaBankWork: state.ideaBankWork,
+    checklistsWork: state.checklistsWork,
+    quickIdeasWork: state.quickIdeasWork,
     fundsEntries: state.fundsEntries,
     trash: state.trash,
     personalTasks: state.personalTasks,
@@ -933,7 +937,10 @@ async function importAllData(payload){
   state.events = payload.events || [];
   state.tasksWork = payload.tasksWork || [];
   state.projectsWork = payload.projectsWork || [];
+  state.blocksWork = payload.blocksWork || [];
   state.ideaBankWork = payload.ideaBankWork || [];
+  state.checklistsWork = payload.checklistsWork || [];
+  state.quickIdeasWork = payload.quickIdeasWork || [];
   state.fundsEntries = payload.fundsEntries || [];
   state.trash = payload.trash || [];
   state.personalTasks = payload.personalTasks || [];
@@ -945,7 +952,10 @@ async function importAllData(payload){
   await saveEvents();
   await saveTasksWork();
   await saveProjectsWork();
+  await saveBlocksWork();
   await saveIdeaBank();
+  await saveChecklists();
+  await saveQuickIdeas();
   await saveFunds();
   await saveTrash();
   await savePersonalData();
@@ -1086,7 +1096,7 @@ function generateRecurrenceDates(startISO, repeatType, weekdaySet, untilISO, max
 
 /* ---------------- load ---------------- */
 async function loadAll(){
-  const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, ideaBank, checklistsRaw, quickIdeasRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = await Promise.all([
+  const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, blocksWorkRaw, ideaBank, checklistsRaw, quickIdeasRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = await Promise.all([
     sGet('roster:employees', true),
     sGet('calendar:events', true),
     sGet('tasks:work', true),
@@ -1095,6 +1105,7 @@ async function loadAll(){
     sGet('settings:browserNotify', false),
     sGet('settings:notifySummaryDate', false),
     sGet('tasks:projects', true),
+    sGet('tasks:blocks', true),
     sGet('tasks:ideabank', true),
     sGet('tasks:checklists', true),
     sGet('tasks:quickideas', true),
@@ -1143,6 +1154,7 @@ async function loadAll(){
   state.browserNotify = notifySetting === 'on';
   state.lastSummaryDate = summaryDate || null;
   state.projectsWork = projWork ? JSON.parse(projWork) : [];
+  state.blocksWork = blocksWorkRaw ? JSON.parse(blocksWorkRaw) : [];
   {
     const pIdx = state.projectsWork.findIndex(p=>isPurchasesProjectName(p.name));
     if(pIdx===-1){
@@ -1228,7 +1240,8 @@ async function restoreArchiveEvent(eventId){
 async function saveEmployees(){ return await sSet('roster:employees', JSON.stringify(state.employees), true); }
 async function saveEvents(){ return await sSet('calendar:events', JSON.stringify(state.events), true); }
 async function saveTasksWork(){ return await sSet('tasks:work', JSON.stringify(state.tasksWork), true); }
-async function saveProjectsWork(){ await sSet('tasks:projects', JSON.stringify(state.projectsWork), true); }
+async function saveProjectsWork(){ return await sSet('tasks:projects', JSON.stringify(state.projectsWork), true); }
+async function saveBlocksWork(){ return await sSet('tasks:blocks', JSON.stringify(state.blocksWork), true); }
 async function saveFunds(){ return await sSet('funds:ledger', JSON.stringify(state.fundsEntries), true); }
 
 async function savePersonalData(){
@@ -1261,6 +1274,29 @@ function activeProjectsFor(personal){
 }
 function completedProjectsFor(personal){
   return projectsFor(personal).filter(p=>isProjectCompleted(personal,p.id));
+}
+/* ---------------- blocks (уровень выше проектов; только для рабочих) ---------------- */
+function projectsInBlock(blockId){
+  return state.projectsWork.filter(p=>p.blockId===blockId);
+}
+// Проекты без блока — просто blockId нет или он не совпадает ни с одним существующим блоком.
+function projectsWithoutBlock(){
+  const blockIds = new Set(state.blocksWork.map(b=>b.id));
+  return state.projectsWork.filter(p=>!p.blockId || !blockIds.has(p.blockId));
+}
+function isBlockCompleted(blockId){
+  const projects = projectsInBlock(blockId);
+  return projects.length>0 && projects.every(p=>isProjectCompleted(false, p.id));
+}
+function activeBlocksFor(){
+  return state.blocksWork.filter(b=>!isBlockCompleted(b.id));
+}
+function completedBlocksFor(){
+  return state.blocksWork.filter(b=>isBlockCompleted(b.id));
+}
+function blockName(blockId){
+  const b = state.blocksWork.find(x=>x.id===blockId);
+  return b ? b.name : '—';
 }
 function tasksFor(personal){ return personal ? state.personalTasks : state.tasksWork; }
 async function migrateLegacyPersonalFunds(){
@@ -1419,7 +1455,7 @@ async function persistFundsFor(scope){ return scope==='personal' ? await savePer
 function setTasksFor(personal, arr){ if(personal) state.personalTasks = arr; else state.tasksWork = arr; }
 function setProjectsFor(personal, arr){ if(personal) state.personalProjects = arr; else state.projectsWork = arr; }
 async function persistTasksFor(personal){ return personal ? await savePersonalData() : await saveTasksWork(); }
-async function persistProjectsFor(personal){ if(personal) await savePersonalData(); else await saveProjectsWork(); }
+async function persistProjectsFor(personal){ return personal ? await savePersonalData() : await saveProjectsWork(); }
 function projectName(personal, id){
   if(!id) return 'Без проекта';
   const p = projectsFor(personal).find(x=>x.id===id);
@@ -2701,8 +2737,11 @@ function renderTaskBoard(el, personal){
   const selKey = personal?'personal':'work';
   const projects = activeProjectsFor(personal);
   let selected = state.selectedProject[selKey];
-  // Если выбранный проект только что стал завершённым (все задачи сделаны) и уехал в архив — сбрасываем на "Все"
-  if(selected!=='all' && selected!=='none' && !projects.some(p=>p.id===selected)){
+  // Если выбранный проект (или блок) только что стал завершённым и уехал в архив — сбрасываем на "Все"
+  if(selected && typeof selected==='string' && selected.startsWith('block:')){
+    const bid = selected.slice(6);
+    if(!activeBlocksFor().some(b=>b.id===bid)){ selected='all'; state.selectedProject[selKey]='all'; }
+  } else if(selected!=='all' && selected!=='none' && !projects.some(p=>p.id===selected)){
     selected = 'all';
     state.selectedProject[selKey] = 'all';
   }
@@ -2723,10 +2762,25 @@ function renderTaskBoard(el, personal){
   `;
 
   const projRow = el.querySelector('#projRow');
+  function projChip(p){
+    return `<button class="cat-chip ${selected===p.id?'':'off'}" data-proj="${p.id}"><span class="dot" style="background:var(--indigo);"></span>${escapeHtml(p.name)}</button>`;
+  }
+  const projChipsHtml = personal ? projects.map(projChip).join('') : (() => {
+    let html = '';
+    activeBlocksFor().forEach(b=>{
+      const blockProjects = projects.filter(p=>p.blockId===b.id);
+      if(!blockProjects.length) return;
+      html += `<button class="cat-chip ${selected==='block:'+b.id?'':'off'}" data-proj="block:${b.id}" style="border-style:dashed;font-weight:700;"><span class="dot" style="background:var(--brick);"></span>📦 ${escapeHtml(b.name)}</button>`;
+      html += blockProjects.map(projChip).join('');
+    });
+    const noBlockProjects = projects.filter(p=>!p.blockId || !state.blocksWork.some(b=>b.id===p.blockId));
+    html += noBlockProjects.map(projChip).join('');
+    return html;
+  })();
   projRow.innerHTML = `
     <button class="cat-chip ${selected==='all'?'':'off'}" data-proj="all"><span class="dot" style="background:var(--ink-soft);"></span>Все</button>
     <button class="cat-chip ${selected==='none'?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>
-    ${projects.map(p=>`<button class="cat-chip ${selected===p.id?'':'off'}" data-proj="${p.id}"><span class="dot" style="background:var(--indigo);"></span>${escapeHtml(p.name)}</button>`).join('')}
+    ${projChipsHtml}
     <button class="btn ghost small" id="manageProjBtn">+ Проект</button>
   `;
   projRow.querySelectorAll('[data-proj]').forEach(chip=>{
@@ -2744,6 +2798,10 @@ function renderTaskBoard(el, personal){
   if(!personal && state.taskFilterEmployee!=='all') list = list.filter(t=>t.assigneeId===state.taskFilterEmployee);
   if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
   if(selected==='none') list = list.filter(t=>!t.projectId);
+  else if(typeof selected==='string' && selected.startsWith('block:')){
+    const projectIdsInBlock = projectsInBlock(selected.slice(6)).map(p=>p.id);
+    list = list.filter(t=>projectIdsInBlock.includes(t.projectId));
+  }
   else if(selected!=='all') list = list.filter(t=>t.projectId===selected);
 
   const byId = {}; list.forEach(t=>byId[t.id]=t);
@@ -3304,20 +3362,64 @@ function openProjectsModal(personal){
   const canDeleteProject = hasRole('Руководитель','Ассистент');
   function body(){
     const projects = projectsFor(personal);
+    const blockSection = personal ? '' : `
+      <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Блоки</h4>
+      <p class="subtitle" style="margin:0 0 10px;">Уровень выше проектов — удобно для крупных направлений (например, «Финансы», «Персонал»), в которые входит сразу несколько проектов.</p>
+      <div class="item-list" style="margin-bottom:12px;">
+        ${state.blocksWork.map(b=>`
+          <div class="item">
+            <div class="main"><div class="title">${escapeHtml(b.name)}</div><div class="meta"><span>${projectsInBlock(b.id).length} проект(ов)</span></div></div>
+            <div class="actions">
+              <button class="btn ghost small" data-rename-block="${b.id}">✎</button>
+              <button class="btn danger small" data-del-block="${b.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять блоки может только Руководитель или Ассистент'}">✕</button>
+            </div>
+          </div>
+        `).join('') || `<p class="subtitle" style="margin:0;">Блоков пока нет</p>`}
+      </div>
+      <div class="field-row" style="margin-bottom:20px;">
+        <input id="block_name" placeholder="Например: Финансы" style="flex:1;">
+        <button class="btn ghost small" id="addBlockBtn">+ Добавить блок</button>
+      </div>
+    `;
+    function projectRow(p){
+      return `
+        <div class="item">
+          <div class="main"><div class="title">${escapeHtml(p.name)}</div></div>
+          ${!personal ? `
+            <select data-proj-block="${p.id}" style="width:auto;max-width:160px;">
+              <option value="">Без блока</option>
+              ${state.blocksWork.map(b=>`<option value="${b.id}" ${p.blockId===b.id?'selected':''}>${escapeHtml(b.name)}</option>`).join('')}
+            </select>
+          ` : ''}
+          <div class="actions">
+            <button class="btn ghost small" data-rename-proj="${p.id}">✎</button>
+            <button class="btn danger small" data-del-proj="${p.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять проекты может только Руководитель или Ассистент'}">✕</button>
+          </div>
+        </div>
+      `;
+    }
+    const projectsListHtml = personal ? projects.map(projectRow).join('') || `<p class="subtitle" style="margin:0;">Проектов пока нет</p>` : (() => {
+      let html = '';
+      state.blocksWork.forEach(b=>{
+        const inBlock = projectsInBlock(b.id);
+        if(!inBlock.length) return;
+        html += `<div class="subtitle" style="font-weight:700;margin:10px 0 4px;">${escapeHtml(b.name)}</div>`;
+        html += inBlock.map(projectRow).join('');
+      });
+      const noBlock = projectsWithoutBlock();
+      if(noBlock.length){
+        if(state.blocksWork.length) html += `<div class="subtitle" style="font-weight:700;margin:10px 0 4px;">Без блока</div>`;
+        html += noBlock.map(projectRow).join('');
+      }
+      return html || `<p class="subtitle" style="margin:0;">Проектов пока нет</p>`;
+    })();
     return `
       <div class="overlay" id="ov">
         <div class="modal">
           <h3>Проекты${personal?' (личные)':''}</h3>
+          ${blockSection}
           <div class="item-list" style="margin-bottom:16px;">
-            ${projects.map(p=>`
-              <div class="item">
-                <div class="main"><div class="title">${escapeHtml(p.name)}</div></div>
-                <div class="actions">
-                  <button class="btn ghost small" data-rename-proj="${p.id}">✎</button>
-                  <button class="btn danger small" data-del-proj="${p.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять проекты может только Руководитель или Ассистент'}">✕</button>
-                </div>
-              </div>
-            `).join('') || `<p class="subtitle" style="margin:0;">Проектов пока нет</p>`}
+            ${projectsListHtml}
           </div>
           <div class="field"><label>Название нового проекта</label><input id="proj_name" placeholder="Например: Запуск нового курса"></div>
           <div class="modal-actions">
@@ -3375,6 +3477,49 @@ function openProjectsModal(personal){
       await persistProjectsFor(personal);
       modal.innerHTML = body(); wire(); render();
     };
+    const addBlockBtn = document.getElementById('addBlockBtn');
+    if(addBlockBtn) addBlockBtn.onclick=async ()=>{
+      const name = document.getElementById('block_name').value.trim();
+      if(!name){ toast('Введите название блока'); return; }
+      const before = state.blocksWork;
+      state.blocksWork = before.concat([{id:uid(), name}]);
+      const ok = await saveBlocksWork();
+      if(!ok){ state.blocksWork = before; saveFailedToast(); return; }
+      modal.innerHTML = body(); wire(); render();
+    };
+    modal.querySelectorAll('[data-rename-block]').forEach(b=>b.onclick=async ()=>{
+      const bid = b.dataset.renameBlock;
+      const current = state.blocksWork.find(x=>x.id===bid);
+      const newName = await showPrompt('Название блока', current?current.name:'');
+      if(newName===null || !newName) return;
+      const before = state.blocksWork;
+      state.blocksWork = before.map(x=>x.id===bid?{...x,name:newName}:x);
+      const ok = await saveBlocksWork();
+      if(!ok){ state.blocksWork = before; saveFailedToast(); return; }
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-del-block]').forEach(b=>b.onclick=async ()=>{
+      if(!canDeleteProject){ toast('Удалять блоки может только Руководитель или Ассистент'); return; }
+      if(!(await showConfirm('Удалить блок? Проекты внутри останутся, но станут «без блока».'))) return;
+      const bid = b.dataset.delBlock;
+      const beforeBlocks = state.blocksWork;
+      const beforeProjects = state.projectsWork;
+      state.blocksWork = beforeBlocks.filter(x=>x.id!==bid);
+      state.projectsWork = beforeProjects.map(p=>p.blockId===bid?{...p,blockId:null}:p);
+      const ok1 = await saveBlocksWork();
+      const ok2 = await saveProjectsWork();
+      if(!ok1 || !ok2){ state.blocksWork = beforeBlocks; state.projectsWork = beforeProjects; saveFailedToast(); return; }
+      modal.innerHTML = body(); wire(); render();
+    });
+    modal.querySelectorAll('[data-proj-block]').forEach(sel=>sel.onchange=async ()=>{
+      const pid = sel.dataset.projBlock;
+      const newBlockId = sel.value || null;
+      const before = state.projectsWork;
+      state.projectsWork = before.map(p=>p.id===pid?{...p,blockId:newBlockId}:p);
+      const ok = await saveProjectsWork();
+      if(!ok){ state.projectsWork = before; saveFailedToast(); sel.value = before.find(p=>p.id===pid).blockId || ''; return; }
+      render();
+    });
     modal.querySelectorAll('[data-rename-proj]').forEach(b=>b.onclick=async ()=>{
       const pid = b.dataset.renameProj;
       const current = projectsFor(personal).find(p=>p.id===pid);
@@ -3858,7 +4003,8 @@ function renderArchiveTab(root){
   if(state.archiveSubtab==='personal' && !canSeePersonal) state.archiveSubtab = 'work';
   const personal = state.archiveSubtab==='personal';
 
-  const completedProjects = completedProjectsFor(personal);
+  const completedBlockIds = personal ? [] : completedBlocksFor().map(b=>b.id);
+  const completedProjects = completedProjectsFor(personal).filter(p=> personal || !completedBlockIds.includes(p.blockId));
   // Отдельно выполненные задачи: без проекта, либо в проекте, который ещё не завершён целиком
   const standaloneDone = tasksFor(personal).filter(t=>
     t.status==='done' && !t.parentId &&
@@ -3869,7 +4015,7 @@ function renderArchiveTab(root){
     <div class="row-between">
       <div>
         <h2 class="section-title">Архив</h2>
-        <p class="subtitle">Проекты, где выполнены все задачи, и отдельные выполненные задачи</p>
+        <p class="subtitle">Блоки и проекты, где выполнены все задачи, и отдельные выполненные задачи</p>
       </div>
     </div>
     ${canSeePersonal?`
@@ -3878,6 +4024,30 @@ function renderArchiveTab(root){
         <button class="cat-chip ${personal?'':'off'}" data-arc-sub="personal"><span class="dot" style="background:var(--plum);"></span>Личные</button>
       </div>
     `:''}
+    ${!personal && completedBlocksFor().length ? `
+      <h3 class="section-title" style="font-size:15px;">📦 Завершённые блоки</h3>
+      <div style="margin-bottom:24px;">
+        ${completedBlocksFor().map(b=>{
+          const blockProjects = projectsInBlock(b.id);
+          return `
+            <div class="note" style="margin-bottom:10px;background:rgba(178,58,42,0.06);">
+              <strong>${escapeHtml(b.name)}</strong> <span class="subtitle">— все проекты (${blockProjects.length}) завершены</span>
+            </div>
+            ${blockProjects.map(p=>{
+              const tasks = projectTasksFor(false, p.id).filter(t=>!t.parentId).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+              return `
+                <div class="note" style="margin:0 0 8px 20px;">
+                  <strong>${escapeHtml(p.name)}</strong> <span class="subtitle">— (${tasks.length} задач)</span>
+                </div>
+                <div class="item-list" style="margin:0 0 14px 20px;">
+                  ${tasks.map(t=>taskItemHtml(t, false, {depth:0})).join('')}
+                </div>
+              `;
+            }).join('')}
+          `;
+        }).join('')}
+      </div>
+    ` : ''}
     <h3 class="section-title" style="font-size:15px;">📁 Завершённые проекты</h3>
     <div style="margin-bottom:24px;">
       ${completedProjects.length ? completedProjects.map(p=>{

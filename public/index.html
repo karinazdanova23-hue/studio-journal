@@ -1848,7 +1848,7 @@ function renderReminderPanel(){
       <span>Уведомления браузера${!state.browserNotify?' (пока выключены)':''}</span>
       <label class="switch"><input type="checkbox" id="notifyToggle" ${state.browserNotify?'checked':''}><span class="slider"></span></label>
     </div>
-    <div class="note" style="margin-top:10px;">Работает, пока эта вкладка открыта в браузере. Если вкладка или браузер закрыты — уведомления не приходят, это ограничение приложения без сервера.</div>
+    <div class="note" style="margin-top:10px;">Также присылает уведомление, если вам поставили новую задачу, добавили новое событие с вашим участием, или до начала события с вашим участием остался 1 час. Работает, пока эта вкладка открыта в браузере. Если вкладка или браузер закрыты — уведомления не приходят, это ограничение приложения без сервера.</div>
   `;
   document.body.appendChild(panel);
   panel.querySelectorAll('[data-open-task]').forEach(r=>r.onclick=()=>{
@@ -1891,14 +1891,15 @@ function checkNotificationsTick(){
   if(!state.browserNotify || !('Notification' in window) || Notification.permission!=='granted') return;
   const today = todayISO();
   const nowMin = nowHHMM();
-  state.events.filter(e=>e.date===today && e.startTime).forEach(e=>{
+  // За 1 час до начала — только события, где текущий пользователь указан участником
+  state.events.filter(e=> e.date===today && e.startTime && e.employeeIds && e.employeeIds.includes(state.currentUserId)).forEach(e=>{
     const key = e.id+'|'+e.date;
     if(state.notifiedEventKeys.has(key)) return;
     const [eh,em] = e.startTime.split(':').map(Number);
     const [nh,nm] = nowMin.split(':').map(Number);
     const diff = (eh*60+em) - (nh*60+nm);
-    if(diff>=0 && diff<=5){
-      new Notification('Скоро: '+e.title, {body:(e.startTime||'')+' · '+(CATEGORIES[e.category]||'')});
+    if(diff>=0 && diff<=60){
+      new Notification('Через час: '+e.title, {body:(e.startTime||'')+' · '+(CATEGORIES[e.category]||'')});
       state.notifiedEventKeys.add(key);
     }
   });
@@ -1908,6 +1909,59 @@ function checkNotificationsTick(){
     state.lastSummaryDate = today;
     sSet('settings:notifySummaryDate', today, false);
   }
+}
+// Раз в минуту незаметно проверяет сервер на новые задачи, назначенные текущему пользователю
+// (не им самим поставленные), и присылает браузерное уведомление. Использует ту же настройку
+// "Уведомления браузера", что и остальные напоминания.
+async function checkNewTasksTick(){
+  if(!state.browserNotify || !('Notification' in window) || Notification.permission!=='granted' || !state.currentUserId) return;
+  const raw = await sGet('tasks:work', true);
+  if(raw===null) return;
+  let fresh;
+  try{ fresh = JSON.parse(raw); }catch(e){ return; }
+  if(!state.knownTaskIds){
+    state.knownTaskIds = new Set(fresh.map(t=>t.id));
+    return;
+  }
+  const newAssignedToMe = fresh.filter(t=>
+    !state.knownTaskIds.has(t.id) && t.assigneeId===state.currentUserId && t.creatorId!==state.currentUserId
+  );
+  state.knownTaskIds = new Set(fresh.map(t=>t.id));
+  if(!newAssignedToMe.length) return;
+  newAssignedToMe.forEach(t=>{
+    new Notification('Новая задача: '+t.title, {
+      body: `Поставил: ${empName(t.creatorId)}${t.deadline?' · до '+fmtDate(t.deadline):''}`
+    });
+  });
+  state.tasksWork = fresh;
+  // Не дёргаем экран, если человек сейчас что-то заполняет в открытом окне — просто обновляем данные тихо
+  const modalOpen = document.getElementById('modalRoot') && document.getElementById('modalRoot').innerHTML.trim() !== '';
+  if(!modalOpen) render();
+}
+// Раз в минуту незаметно проверяет сервер на новые события, где текущий пользователь указан участником.
+async function checkNewEventsTick(){
+  if(!state.browserNotify || !('Notification' in window) || Notification.permission!=='granted' || !state.currentUserId) return;
+  const raw = await sGet('calendar:events', true);
+  if(raw===null) return;
+  let fresh;
+  try{ fresh = JSON.parse(raw); }catch(e){ return; }
+  if(!state.knownEventIds){
+    state.knownEventIds = new Set(fresh.map(e=>e.id));
+    return;
+  }
+  const newForMe = fresh.filter(e=>
+    !state.knownEventIds.has(e.id) && e.employeeIds && e.employeeIds.includes(state.currentUserId)
+  );
+  state.knownEventIds = new Set(fresh.map(e=>e.id));
+  if(!newForMe.length) return;
+  newForMe.forEach(e=>{
+    new Notification('Новое событие: '+e.title, {
+      body: `${fmtDate(e.date)}${e.startTime?' · '+e.startTime:''} · ${CATEGORIES[e.category]||''}`
+    });
+  });
+  state.events = fresh;
+  const modalOpen = document.getElementById('modalRoot') && document.getElementById('modalRoot').innerHTML.trim() !== '';
+  if(!modalOpen) render();
 }
 
 function render(){
@@ -4682,6 +4736,8 @@ window.addEventListener('resize', ()=>{
 async function startApp(){
   await loadAll();
   if(!state.taskFilterEmployee && state.currentUserId) state.taskFilterEmployee = state.currentUserId;
+  state.knownTaskIds = new Set(state.tasksWork.map(t=>t.id));
+  state.knownEventIds = new Set(state.events.map(e=>e.id));
   render();
   if(state.browserNotify && 'Notification' in window && Notification.permission==='granted'){
     checkNotificationsTick();
@@ -4689,6 +4745,8 @@ async function startApp(){
   if(!state.notifyIntervalSet){
     state.notifyIntervalSet = true;
     setInterval(checkNotificationsTick, 60000);
+    setInterval(checkNewTasksTick, 60000);
+    setInterval(checkNewEventsTick, 60000);
   }
 }
 (async function init(){

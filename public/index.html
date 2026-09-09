@@ -188,6 +188,10 @@
   .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
   .filters select{width:auto;min-width:150px;}
   .cat-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;}
+  .cat-filters.block-row{
+    background:var(--rose-bg);border:1px solid var(--rose);border-radius:10px;
+    padding:10px 12px;margin-bottom:12px;align-items:center;
+  }
   .cat-chip{
     display:flex;align-items:center;gap:7px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12.5px;
     padding:6px 13px;border-radius:20px;border:1px solid var(--paper-line);background:#fff;color:var(--ink);
@@ -2747,6 +2751,7 @@ function renderTaskBoard(el, personal){
   }
 
   el.innerHTML = `
+    <div class="cat-filters" id="blockRow" style="display:none;"></div>
     <div class="cat-filters" id="projRow"></div>
     <div class="filters">
       ${!personal?`<select id="filtEmp">
@@ -2762,27 +2767,31 @@ function renderTaskBoard(el, personal){
   `;
 
   const projRow = el.querySelector('#projRow');
+  const blockRow = el.querySelector('#blockRow');
   function projChip(p){
     return `<button class="cat-chip ${selected===p.id?'':'off'}" data-proj="${p.id}"><span class="dot" style="background:var(--indigo);"></span>${escapeHtml(p.name)}</button>`;
   }
-  const projChipsHtml = personal ? projects.map(projChip).join('') : (() => {
-    let html = '';
-    activeBlocksFor().forEach(b=>{
-      const blockProjects = projects.filter(p=>p.blockId===b.id);
-      if(!blockProjects.length) return;
-      html += `<button class="cat-chip ${selected==='block:'+b.id?'':'off'}" data-proj="block:${b.id}" style="border-style:dashed;font-weight:700;"><span class="dot" style="background:var(--brick);"></span>📦 ${escapeHtml(b.name)}</button>`;
-      html += blockProjects.map(projChip).join('');
-    });
-    const noBlockProjects = projects.filter(p=>!p.blockId || !state.blocksWork.some(b=>b.id===p.blockId));
-    html += noBlockProjects.map(projChip).join('');
-    return html;
-  })();
+  if(!personal && activeBlocksFor().length){
+    blockRow.style.display = '';
+    blockRow.className = 'cat-filters block-row';
+    blockRow.innerHTML = `
+      <span class="subtitle" style="margin:0 2px 0 0;font-weight:700;color:var(--rose);">📦 Блоки:</span>
+      ${activeBlocksFor().map(b=>`<button class="cat-chip ${selected==='block:'+b.id?'':'off'}" data-proj="block:${b.id}" style="border-color:var(--rose);"><span class="dot" style="background:var(--rose);"></span>${escapeHtml(b.name)}</button>`).join('')}
+    `;
+  } else {
+    blockRow.style.display = 'none';
+    blockRow.innerHTML = '';
+  }
+  const projChipsHtml = projects.map(projChip).join('');
   projRow.innerHTML = `
     <button class="cat-chip ${selected==='all'?'':'off'}" data-proj="all"><span class="dot" style="background:var(--ink-soft);"></span>Все</button>
     <button class="cat-chip ${selected==='none'?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>
     ${projChipsHtml}
     <button class="btn ghost small" id="manageProjBtn">+ Проект</button>
   `;
+  blockRow.querySelectorAll('[data-proj]').forEach(chip=>{
+    chip.onclick=()=>{ state.selectedProject[selKey]=chip.dataset.proj; render(); };
+  });
   projRow.querySelectorAll('[data-proj]').forEach(chip=>{
     chip.onclick=()=>{ state.selectedProject[selKey]=chip.dataset.proj; render(); };
   });
@@ -3363,22 +3372,24 @@ function openProjectsModal(personal){
   function body(){
     const projects = projectsFor(personal);
     const blockSection = personal ? '' : `
-      <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Блоки</h4>
-      <p class="subtitle" style="margin:0 0 10px;">Уровень выше проектов — удобно для крупных направлений (например, «Финансы», «Персонал»), в которые входит сразу несколько проектов.</p>
-      <div class="item-list" style="margin-bottom:12px;">
-        ${state.blocksWork.map(b=>`
-          <div class="item">
-            <div class="main"><div class="title">${escapeHtml(b.name)}</div><div class="meta"><span>${projectsInBlock(b.id).length} проект(ов)</span></div></div>
-            <div class="actions">
-              <button class="btn ghost small" data-rename-block="${b.id}">✎</button>
-              <button class="btn danger small" data-del-block="${b.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять блоки может только Руководитель или Ассистент'}">✕</button>
+      <div style="background:var(--rose-bg);border:1px solid var(--rose);border-radius:10px;padding:14px 16px;margin-bottom:20px;">
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--rose);margin:0 0 8px;">📦 Блоки — уровень выше проектов</h4>
+        <p class="subtitle" style="margin:0 0 10px;">Удобно для крупных направлений (например, «Финансы», «Персонал»), в которые входит сразу несколько проектов.</p>
+        <div class="item-list" style="margin-bottom:12px;">
+          ${state.blocksWork.map(b=>`
+            <div class="item" style="background:var(--card);">
+              <div class="main"><div class="title">${escapeHtml(b.name)}</div><div class="meta"><span>${projectsInBlock(b.id).length} проект(ов)</span></div></div>
+              <div class="actions">
+                <button class="btn ghost small" data-rename-block="${b.id}">✎</button>
+                <button class="btn danger small" data-del-block="${b.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять блоки может только Руководитель или Ассистент'}">✕</button>
+              </div>
             </div>
-          </div>
-        `).join('') || `<p class="subtitle" style="margin:0;">Блоков пока нет</p>`}
-      </div>
-      <div class="field-row" style="margin-bottom:20px;">
-        <input id="block_name" placeholder="Например: Финансы" style="flex:1;">
-        <button class="btn ghost small" id="addBlockBtn">+ Добавить блок</button>
+          `).join('') || `<p class="subtitle" style="margin:0;">Блоков пока нет</p>`}
+        </div>
+        <div class="field-row" style="margin:0;">
+          <input id="block_name" placeholder="Например: Финансы" style="flex:1;">
+          <button class="btn ghost small" id="addBlockBtn">+ Добавить блок</button>
+        </div>
       </div>
     `;
     function projectRow(p){
@@ -3403,7 +3414,7 @@ function openProjectsModal(personal){
       state.blocksWork.forEach(b=>{
         const inBlock = projectsInBlock(b.id);
         if(!inBlock.length) return;
-        html += `<div class="subtitle" style="font-weight:700;margin:10px 0 4px;">${escapeHtml(b.name)}</div>`;
+        html += `<div class="subtitle" style="font-weight:700;margin:10px 0 4px;color:var(--rose);">📦 ${escapeHtml(b.name)}</div>`;
         html += inBlock.map(projectRow).join('');
       });
       const noBlock = projectsWithoutBlock();
@@ -4030,8 +4041,8 @@ function renderArchiveTab(root){
         ${completedBlocksFor().map(b=>{
           const blockProjects = projectsInBlock(b.id);
           return `
-            <div class="note" style="margin-bottom:10px;background:rgba(178,58,42,0.06);">
-              <strong>${escapeHtml(b.name)}</strong> <span class="subtitle">— все проекты (${blockProjects.length}) завершены</span>
+            <div class="note" style="margin-bottom:10px;background:var(--rose-bg);border-color:var(--rose);">
+              <strong>📦 ${escapeHtml(b.name)}</strong> <span class="subtitle">— все проекты (${blockProjects.length}) завершены</span>
             </div>
             ${blockProjects.map(p=>{
               const tasks = projectTasksFor(false, p.id).filter(t=>!t.parentId).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));

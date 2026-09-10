@@ -567,6 +567,7 @@ function requestCompletionComment(taskTitle){
         <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 12px;line-height:1.5;">Задача «${escapeHtml(taskTitle)}» отмечается выполненной. Опишите коротко, что было сделано — это обязательно.</p>
         <textarea id="ccInput" rows="3" placeholder="Например: договорился с поставщиком, забрал материалы"></textarea>
         <div class="err-msg" id="ccErr" style="margin-top:6px;"></div>
+        <div class="field" style="margin-top:10px;"><label>Ссылка на результат (необязательно)</label><input id="ccLink" type="text" placeholder="https://..."></div>
         <div class="modal-actions">
           <button class="btn ghost" id="ccCancel">Отмена</button>
           <button class="btn" id="ccOk">Отметить выполненной</button>
@@ -580,7 +581,9 @@ function requestCompletionComment(taskTitle){
     ov.querySelector('#ccOk').onclick=()=>{
       const val = input.value.trim();
       if(!val){ ov.querySelector('#ccErr').textContent='Напишите, что сделано'; return; }
-      finish(val);
+      const linkRaw = ov.querySelector('#ccLink').value.trim();
+      const link = linkRaw ? (/^https?:\/\//i.test(linkRaw) ? linkRaw : 'https://'+linkRaw) : '';
+      finish({comment: val, link});
     };
     ov.onclick=(e)=>{ if(e.target===ov) finish(null); };
   });
@@ -770,13 +773,13 @@ const PRIORITIES = {low:'Низкий', med:'Средний', high:'Высоки
 function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 
 /* ---------------- idea bank (Банк идей-проектов) ---------------- */
-async function saveIdeaBank(){ await sSet('tasks:ideabank', JSON.stringify(state.ideaBankWork), true); }
+async function saveIdeaBank(){ return await sSet('tasks:ideabank', JSON.stringify(state.ideaBankWork), true); }
 
 /* ---------------- trash (soft delete, 30 days) ---------------- */
-async function saveTrash(){ await sSet('trash:items', JSON.stringify(state.trash), true); }
+async function saveTrash(){ return await sSet('trash:items', JSON.stringify(state.trash), true); }
 function trashFor(personal){ return personal ? state.personalTrash : state.trash; }
 function setTrashFor(personal, arr){ if(personal) state.personalTrash = arr; else state.trash = arr; }
-async function persistTrashFor(personal){ if(personal) await savePersonalData(); else await saveTrash(); }
+async function persistTrashFor(personal){ return personal ? await savePersonalData() : await saveTrash(); }
 async function moveToTrash(personal, type, data){
   const entry = {trashId: uid(), type, data, deletedAt: Date.now()};
   setTrashFor(personal, trashFor(personal).concat([entry]));
@@ -1011,8 +1014,8 @@ async function applyIdeaToProject(idea){
     ? `Добавлен проект «${idea.name}»${newTasks.length?` с ${newTasks.length} задачами`:''} — идея убрана из банка`
     : `В проект «${idea.name}» добавлено задач: ${newTasks.length} — идея убрана из банка`);
 }
-async function saveChecklists(){ await sSet('tasks:checklists', JSON.stringify(state.checklistsWork), true); }
-async function saveQuickIdeas(){ await sSet('tasks:quickideas', JSON.stringify(state.quickIdeasWork), true); }
+async function saveChecklists(){ return await sSet('tasks:checklists', JSON.stringify(state.checklistsWork), true); }
+async function saveQuickIdeas(){ return await sSet('tasks:quickideas', JSON.stringify(state.quickIdeasWork), true); }
 async function applyChecklistToTasks(checklist){
   const leader = state.employees.find(e=>e.role==='Руководитель');
   const today = todayISO();
@@ -1497,19 +1500,19 @@ function whyCantComplete(t){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
   return `Отметить выполненной может только исполнитель — ${empName(t.assigneeId)}.`;
 }
-function withStatus(t, newStatus, comment){
-  if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), completionComment: comment||t.completionComment||''};
-  if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:''};
+function withStatus(t, newStatus, comment, completionLink){
+  if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||'')};
+  if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:'', completionLink:''};
   return {...t, status:newStatus};
 }
 // Исполнитель отмечает "сделано" -> обычно уходит не сразу в "Готово", а на проверку постановщику.
 // Исключение: если человек поставил задачу сам себе (постановщик = исполнитель), проверять
 // самого себя бессмысленно — задача сразу становится "Готово".
-function withStatusReview(t, comment){
+function withStatusReview(t, comment, completionLink){
   if(t.creatorId && t.assigneeId && t.creatorId===t.assigneeId){
-    return withStatus(t, 'done', comment);
+    return withStatus(t, 'done', comment, completionLink);
   }
-  return {...t, status:'review', completionComment: comment||t.completionComment||'', reworkNote:''};
+  return {...t, status:'review', completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), reworkNote:''};
 }
 function canReviewTask(t, personal){
   if(personal) return true;
@@ -2040,6 +2043,7 @@ function renderOverview(root){
           <span>Сдано: ${t.completedAt?fmtDate(t.completedAt):'—'}</span>
         </div>
         ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
       </div>
       <div class="actions">
         <button type="button" class="btn small" data-approve-task="${t.id}">✅ Принять</button>
@@ -2124,11 +2128,11 @@ function renderOverview(root){
       const personal = cb.dataset.ovDonePersonal==='1';
       const task = tasksFor(personal).find(t=>t.id===id);
       if(cb.checked){
-        const comment = await requestCompletionComment(task ? task.title : '');
-        if(comment===null){ cb.checked=false; return; }
+        const result = await requestCompletionComment(task ? task.title : '');
+        if(result===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,comment):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
@@ -2383,11 +2387,11 @@ function wireDayTaskActions(el, iso){
         return;
       }
       if(cb.checked){
-        const comment = await requestCompletionComment(task ? task.title : '');
-        if(comment===null){ cb.checked=false; return; }
+        const result = await requestCompletionComment(task ? task.title : '');
+        if(result===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,comment):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
@@ -2678,6 +2682,7 @@ function renderTasks(root){
         <p class="subtitle">Проекты, задачи и подзадачи — рабочие и личные под паролем</p>
       </div>
       <div style="display:flex;gap:8px;">
+        <button class="btn ghost" id="ideasBtn" style="${state.taskSubtab!=='work'?'display:none;':''}">💡 Идеи</button>
         <button class="btn ghost" id="checklistsBtn" style="${state.taskSubtab!=='work'?'display:none;':''}">📋 Чек-листы</button>
         <button class="btn" id="addTaskBtn" style="${state.taskSubtab==='analytics'||state.taskSubtab==='report'?'display:none;':''}">+ Задача</button>
       </div>
@@ -2697,6 +2702,8 @@ function renderTasks(root){
   };
   const checklistsBtn = document.getElementById('checklistsBtn');
   if(checklistsBtn) checklistsBtn.onclick=()=>openChecklistsModal();
+  const ideasBtn = document.getElementById('ideasBtn');
+  if(ideasBtn) ideasBtn.onclick=()=>openQuickIdeasModal();
   if(state.taskSubtab==='work') renderTaskBoard(root.querySelector('#taskBody'), false);
   else if(state.taskSubtab==='analytics') renderTaskAnalytics(root.querySelector('#taskBody'));
   else if(state.taskSubtab==='report') renderTaskReport(root.querySelector('#taskBody'));
@@ -2770,6 +2777,7 @@ function taskItemHtml(t, personal, opts){
         </div>
         ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
         ${(t.status==='review'||t.status==='done') && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
         ${t.status==='progress' && t.reworkNote?`<div class="desc" style="color:var(--brick);">↩️ Возвращено на доработку: ${linkifyEscaped(t.reworkNote)}</div>`:''}
         ${t.status==='review' ? (canReviewTask(t,personal)
           ? `<div class="review-box">
@@ -2939,11 +2947,11 @@ function wireTaskActions(el, personal){
         return;
       }
       if(cb.checked){
-        const comment = await requestCompletionComment(task ? task.title : '');
-        if(comment===null){ cb.checked=false; return; }
+        const result = await requestCompletionComment(task ? task.title : '');
+        if(result===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,comment):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
@@ -3392,7 +3400,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       } else {
         setTasksFor(personal, tasksFor(personal).map(t=>{
           if(t.seriesId===existing.seriesId){
-            return {...data, id:t.id, deadline:t.deadline, status:t.status, completedAt:t.completedAt, completionComment:t.completionComment, createdDate:t.createdDate, parentId:t.parentId, seriesId:t.seriesId, purchaseExpenseId:t.purchaseExpenseId};
+            return {...data, id:t.id, deadline:t.deadline, status:t.status, completedAt:t.completedAt, completionComment:t.completionComment, completionLink:t.completionLink, createdDate:t.createdDate, parentId:t.parentId, seriesId:t.seriesId, purchaseExpenseId:t.purchaseExpenseId};
           }
           return t;
         }));
@@ -3492,23 +3500,6 @@ function openProjectsModal(personal){
             <button class="btn" id="addProj">Добавить</button>
           </div>
           ${!personal?`
-          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:20px 0 8px;">Быстрые идеи</h4>
-          <p class="subtitle" style="margin:0 0 10px;">Короткие заметки без дедлайна и исполнителя — просто чтобы не забыть. Нажмите «Назначить», когда идея созреет, и она превратится в обычную задачу.</p>
-          <div class="item-list" style="margin-bottom:12px;">
-            ${state.quickIdeasWork.map(qi=>`
-              <div class="item">
-                <div class="main"><div class="title">${escapeHtml(qi.text)}</div></div>
-                <div class="actions">
-                  <button class="btn ghost small" data-assign-idea="${qi.id}">Назначить</button>
-                  <button class="btn danger small" data-del-quickidea="${qi.id}">✕</button>
-                </div>
-              </div>
-            `).join('') || `<p class="subtitle" style="margin:0;">Идей пока нет — запишите первую</p>`}
-          </div>
-          <div class="field-row">
-            <input id="quickidea_text" placeholder="Например: Обновить прайс на мастер-классы" style="flex:1;">
-            <button class="btn ghost small" id="addQuickIdeaBtn">+ Добавить</button>
-          </div>
           <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:20px 0 8px;">Банк идей-проектов</h4>
           <p class="subtitle" style="margin:0 0 10px;">Копилка идей на будущее — своих типовых проектов с набором задач. Выберите идею, чтобы превратить её в проект.</p>
           <div class="item-list" style="margin-bottom:12px;">
@@ -3628,29 +3619,6 @@ function openProjectsModal(personal){
         await applyIdeaToProject(idea);
         closeModal(); render();
       });
-      const addQuickIdeaBtn = document.getElementById('addQuickIdeaBtn');
-      if(addQuickIdeaBtn) addQuickIdeaBtn.onclick=async ()=>{
-        const text = document.getElementById('quickidea_text').value.trim();
-        if(!text){ toast('Введите текст идеи'); return; }
-        state.quickIdeasWork = state.quickIdeasWork.concat([{id:uid(), text}]);
-        await saveQuickIdeas();
-        modal.innerHTML = body(); wire();
-      };
-      modal.querySelectorAll('[data-del-quickidea]').forEach(b=>b.onclick=async ()=>{
-        if(!(await showConfirm('Удалить идею?'))) return;
-        state.quickIdeasWork = state.quickIdeasWork.filter(q=>q.id!==b.dataset.delQuickidea);
-        await saveQuickIdeas();
-        modal.innerHTML = body(); wire();
-      });
-      modal.querySelectorAll('[data-assign-idea]').forEach(b=>b.onclick=()=>{
-        const qid = b.dataset.assignIdea;
-        const idea = state.quickIdeasWork.find(q=>q.id===qid);
-        if(!idea) return;
-        openTaskModal(null, false, null, idea.text, async ()=>{
-          state.quickIdeasWork = state.quickIdeasWork.filter(q=>q.id!==qid);
-          await saveQuickIdeas();
-        });
-      });
     }
   }
   wire();
@@ -3717,6 +3685,70 @@ function openIdeaModal(ideaId, onDone){
 }
 
 /* ================= CHECKLISTS ================= */
+function openQuickIdeasModal(){
+  const modal = document.getElementById('modalRoot');
+  function body(){
+    return `
+      <div class="overlay" id="ov">
+        <div class="modal">
+          <h3>💡 Быстрые идеи</h3>
+          <p class="subtitle" style="margin:0 0 14px;">Короткие заметки без дедлайна и исполнителя — просто чтобы не забыть. Нажмите «Назначить», когда идея созреет, и она превратится в обычную задачу.</p>
+          <div class="item-list" style="margin-bottom:14px;">
+            ${state.quickIdeasWork.map(qi=>`
+              <div class="item">
+                <div class="main"><div class="title">${escapeHtml(qi.text)}</div></div>
+                <div class="actions">
+                  <button class="btn ghost small" data-assign-idea="${qi.id}">Назначить</button>
+                  <button class="btn danger small" data-del-quickidea="${qi.id}">✕</button>
+                </div>
+              </div>
+            `).join('') || `<p class="subtitle" style="margin:0;">Идей пока нет — запишите первую</p>`}
+          </div>
+          <div class="field-row">
+            <input id="quickidea_text" placeholder="Например: Обновить прайс на мастер-классы" style="flex:1;">
+            <button class="btn ghost small" id="addQuickIdeaBtn">+ Добавить</button>
+          </div>
+          <div class="modal-actions">
+            <button class="btn ghost" id="closeQuickIdeas">Закрыть</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  modal.innerHTML = body();
+  function wire(){
+    document.getElementById('closeQuickIdeas').onclick = closeModal;
+    document.getElementById('ov').onclick = (ev)=>{ if(ev.target.id==='ov') closeModal(); };
+    document.getElementById('addQuickIdeaBtn').onclick = async ()=>{
+      const text = document.getElementById('quickidea_text').value.trim();
+      if(!text){ toast('Введите текст идеи'); return; }
+      const before = state.quickIdeasWork;
+      state.quickIdeasWork = before.concat([{id:uid(), text}]);
+      const ok = await saveQuickIdeas();
+      if(!ok){ state.quickIdeasWork = before; saveFailedToast(); return; }
+      modal.innerHTML = body(); wire();
+    };
+    modal.querySelectorAll('[data-del-quickidea]').forEach(b=>b.onclick=async ()=>{
+      if(!(await showConfirm('Удалить идею?'))) return;
+      const before = state.quickIdeasWork;
+      state.quickIdeasWork = before.filter(q=>q.id!==b.dataset.delQuickidea);
+      const ok = await saveQuickIdeas();
+      if(!ok){ state.quickIdeasWork = before; saveFailedToast(); return; }
+      modal.innerHTML = body(); wire();
+    });
+    modal.querySelectorAll('[data-assign-idea]').forEach(b=>b.onclick=()=>{
+      const qid = b.dataset.assignIdea;
+      const idea = state.quickIdeasWork.find(q=>q.id===qid);
+      if(!idea) return;
+      openTaskModal(null, false, null, idea.text, async ()=>{
+        const before = state.quickIdeasWork;
+        state.quickIdeasWork = before.filter(q=>q.id!==qid);
+        const ok = await saveQuickIdeas();
+        if(!ok){ state.quickIdeasWork = before; saveFailedToast(); }
+      });
+    });
+  }
+  wire();
+}
 function openChecklistsModal(){
   const modal = document.getElementById('modalRoot');
   function body(){
@@ -3864,6 +3896,14 @@ function renderTaskAnalytics(el){
   projectRows.sort((a,b)=>b.pct-a.pct);
   function barColor(pct){ return pct>=70?'var(--teal)':pct>=30?'var(--ochre)':'var(--brick)'; }
 
+  const blockRows = state.blocksWork.map(b=>{
+    const projIds = projectsInBlock(b.id).map(p=>p.id);
+    const tasks = state.tasksWork.filter(t=>projIds.includes(t.projectId));
+    const done = tasks.filter(t=>t.status==='done').length;
+    return {name:b.name, total:tasks.length, done, pct: tasks.length ? Math.round(done/tasks.length*100) : 0};
+  }).filter(r=>r.total>0);
+  blockRows.sort((a,b)=>b.pct-a.pct);
+
   el.innerHTML = `
     <div class="ledger-summary">
       <div class="sum-card issued"><div class="label">В работе</div><div class="val mono">${totalInProgress}</div></div>
@@ -3896,6 +3936,24 @@ function renderTaskAnalytics(el){
         </tbody>
       </table>
     </div>
+    ${blockRows.length ? `
+    <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--rose);margin:22px 0 8px;">📦 Прогресс по блокам</h4>
+    <div class="an-table">
+      <table class="an-table-inner">
+        <thead><tr><th>Блок</th><th>Готово</th><th>Всего</th><th>% выполнения</th></tr></thead>
+        <tbody>
+          ${blockRows.map(r=>`
+            <tr>
+              <td class="an-name">${escapeHtml(r.name)}</td>
+              <td class="an-num" style="color:var(--teal);">${r.done}</td>
+              <td class="an-num">${r.total}</td>
+              <td><div class="an-bar-wrap"><div class="an-bar-track"><div class="an-bar-fill" style="width:${r.pct}%;background:${barColor(r.pct)};"></div></div><span class="an-num" style="font-size:11px;color:var(--ink-soft);min-width:32px;text-align:right;">${r.pct}%</span></div></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    ` : ''}
     <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:22px 0 8px;">Прогресс по проектам</h4>
     <div class="an-table">
       <table class="an-table-inner">
@@ -3952,6 +4010,7 @@ function renderTaskReport(el){
           ${late?`<span style="color:var(--brick);font-weight:600;">просрочено</span>`:''}
         </div>
         ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
         ${late && t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
         ${t.link?`<div class="desc">🔗 <a href="${escapeHtml(t.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;">Ссылка</a></div>`:''}
       </div>
@@ -4042,7 +4101,7 @@ function renderTaskReport(el){
 }
 function exportTaskReportCSV(){
   const doneTasks = computeReportTasks().slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||''));
-  const header = ['Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка'];
+  const header = ['Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка на результат','Ссылка'];
   const lines = [header.map(csvEscape).join(';')];
   doneTasks.forEach(t=>{
     lines.push([
@@ -4055,6 +4114,7 @@ function exportTaskReportCSV(){
       reportTaskWasLate(t)?'Да':'Нет',
       t.overdueReason||'',
       t.completionComment||'',
+      t.completionLink||'',
       t.link||'',
     ].map(csvEscape).join(';'));
   });

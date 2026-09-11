@@ -1852,7 +1852,7 @@ function renderReminderPanel(){
       <span>Уведомления браузера${!state.browserNotify?' (пока выключены)':''}</span>
       <label class="switch"><input type="checkbox" id="notifyToggle" ${state.browserNotify?'checked':''}><span class="slider"></span></label>
     </div>
-    <div class="note" style="margin-top:10px;">Также присылает уведомление, если вам поставили новую задачу, добавили новое событие с вашим участием, или до начала события с вашим участием остался 1 час. Работает, пока эта вкладка открыта в браузере. Если вкладка или браузер закрыты — уведомления не приходят, это ограничение приложения без сервера.</div>
+    <div class="note" style="margin-top:10px;">Также присылает уведомление: если вам поставили новую задачу; добавили новое событие с вашим участием; до начала события с вашим участием остался 1 час; а также подтверждение самому себе, когда вы поставили задачу, создали событие или отчитались по своей задаче — чтобы точно видеть, что действие сохранилось. Работает, пока эта вкладка открыта в браузере. Если вкладка или браузер закрыты — уведомления не приходят, это ограничение приложения без сервера.</div>
   `;
   document.body.appendChild(panel);
   panel.querySelectorAll('[data-open-task]').forEach(r=>r.onclick=()=>{
@@ -1891,6 +1891,13 @@ function renderReminderPanel(){
   },0);
 }
 
+// Показывает системное уведомление самому пользователю сразу после того, как ЕГО действие
+// реально сохранилось на сервере — не тост внутри приложения, а настоящее уведомление ОС,
+// которое видно даже если вкладка свёрнута, и на которое можно сослаться как на подтверждение.
+function notifySelfSaved(title, body){
+  if(!state.browserNotify || !('Notification' in window) || Notification.permission!=='granted') return;
+  new Notification(title, {body});
+}
 function checkNotificationsTick(){
   if(!state.browserNotify || !('Notification' in window) || Notification.permission!=='granted') return;
   const today = todayISO();
@@ -2137,6 +2144,7 @@ function renderOverview(root){
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
+        notifySelfSaved('✅ Отчёт по задаче сохранён', task ? task.title : '');
         render();
       } else {
         const fresh = await refreshTasksFromServer(personal);
@@ -2396,6 +2404,7 @@ function wireDayTaskActions(el, iso){
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
+        notifySelfSaved('✅ Отчёт по задаче сохранён', task ? task.title : '');
         render();
         closeModal(); openDayModal(iso);
       } else {
@@ -2619,6 +2628,7 @@ function openEventModal(id, presetDate){
       const ok = await persistEventsFor(newPersonal);
       if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
       toast(`Добавлено событий: ${dates.length}`);
+      notifySelfSaved('✅ Событие создано', data.title);
       closeModal(); render();
       return;
     } else if(existing){
@@ -2669,6 +2679,7 @@ function openEventModal(id, presetDate){
       const ok = await persistEventsFor(newPersonal);
       if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
       toast('Событие сохранено');
+      notifySelfSaved('✅ Событие создано', data.title);
     }
     closeModal(); render();
   };
@@ -2956,6 +2967,7 @@ function wireTaskActions(el, personal){
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
+        notifySelfSaved('✅ Отчёт по задаче сохранён', task ? task.title : '');
         render();
       } else {
         const fresh = await refreshTasksFromServer(personal);
@@ -3416,15 +3428,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     }
 
     const arr = tasksFor(personal);
+    const beforeTasks = arr;
     if(existing) setTasksFor(personal, arr.map(t=>t.id===existing.id?data:t));
     else setTasksFor(personal, arr.concat([data]));
-    await persistTasksFor(personal);
+    const ok = await persistTasksFor(personal);
+    if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(); return; }
     if(chosenStatus==='done' && (!existing || existing.status!=='done')){
       await maybeOfferPurchaseExpense(data, personal);
     }
     closeModal(); render();
     toast('Задача сохранена');
-    if(!existing && onDone) onDone();
+    if(!existing){
+      notifySelfSaved('✅ Задача создана', data.title);
+      if(onDone) onDone();
+    }
   };
 }
 

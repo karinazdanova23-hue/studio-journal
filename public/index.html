@@ -730,6 +730,7 @@ const state = {
   reportGroupBy:'employee',
   reportEmployee:'all',
   taskFilterEmployee:null,
+  taskViewMode:'assigned',
   taskFilterStatus:'all',
   selectedProject:{work:'all', personal:'all'},
   projectsWork:[],
@@ -2037,7 +2038,15 @@ function renderOverview(root){
       <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-ov-done="${t.id}" data-ov-done-personal="${personal?'1':'0'}" ${t.status==='done'?'checked':''} title="${canComplete?'Отметить выполненной':whyCantComplete(t)}">
       <div class="main" style="cursor:pointer;" data-ov-task="${t.id}">
         <div class="title">${escapeHtml(t.title)}</div>
-        <div class="meta"><span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}</div>
+        <div class="meta">
+          <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
+          ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}
+          ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
+          ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
+        </div>
+        ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
+        ${t.status==='progress' && t.reworkNote?`<div class="desc" style="color:var(--brick);">↩️ Возвращено на доработку: ${linkifyEscaped(t.reworkNote)}</div>`:''}
+        ${t.status==='progress' && t.reworkNote && t.completionComment?`<div class="desc" style="color:var(--ink-soft);">Предыдущий отчёт исполнителя: ${linkifyEscaped(t.completionComment)}</div>`:''}
       </div>
       ${overdue && t.status==='progress' ? `<div style="width:100%;">${renderOverdueReasonBlock(t, personal)}</div>` : ''}
     </div>`;
@@ -2050,6 +2059,7 @@ function renderOverview(root){
           ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
           <span>Сдано: ${t.completedAt?fmtDate(t.completedAt):'—'}</span>
         </div>
+        ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
         ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
         ${t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
       </div>
@@ -2827,6 +2837,12 @@ function renderTaskBoard(el, personal){
   el.innerHTML = `
     <div class="cat-filters" id="blockRow" style="display:none;"></div>
     <div class="cat-filters" id="projRow"></div>
+    ${!personal?`
+    <div class="cat-filters" style="margin-bottom:10px;">
+      <button class="cat-chip ${state.taskViewMode==='assigned'?'':'off'}" data-view-mode="assigned">🙋 Назначенные мне</button>
+      <button class="cat-chip ${state.taskViewMode==='created'?'':'off'}" data-view-mode="created">📤 Поставленные мной</button>
+    </div>
+    `:''}
     <div class="filters">
       ${!personal?`<select id="filtEmp">
         <option value="all" ${state.taskFilterEmployee==='all'?'selected':''}>Все сотрудники</option>
@@ -2837,6 +2853,7 @@ function renderTaskBoard(el, personal){
         ${Object.entries(STATUSES).map(([k,v])=>`<option value="${k}" ${state.taskFilterStatus===k?'selected':''}>${v}</option>`).join('')}
       </select>
     </div>
+    <div id="delegatedSummary"></div>
     <div class="item-list" id="taskList"></div>
   `;
 
@@ -2874,11 +2891,23 @@ function renderTaskBoard(el, personal){
   if(!personal){
     const fe = el.querySelector('#filtEmp');
     fe.onchange=(e)=>{ state.taskFilterEmployee=e.target.value; render(); };
+    el.querySelectorAll('[data-view-mode]').forEach(b=>b.onclick=()=>{
+      state.taskViewMode=b.dataset.viewMode;
+      if(b.dataset.viewMode==='created') state.taskFilterEmployee='all';
+      else state.taskFilterEmployee=state.currentUserId||'all';
+      render();
+    });
   }
   el.querySelector('#filtStatus').onchange=(e)=>{ state.taskFilterStatus=e.target.value; render(); };
 
+  const viewMode = personal ? 'assigned' : state.taskViewMode;
   let list = tasksFor(personal).slice();
-  if(!personal && state.taskFilterEmployee!=='all') list = list.filter(t=>t.assigneeId===state.taskFilterEmployee);
+  if(!personal && viewMode==='created'){
+    list = list.filter(t=>t.creatorId===state.currentUserId);
+    if(state.taskFilterEmployee!=='all') list = list.filter(t=>t.assigneeId===state.taskFilterEmployee);
+  } else if(!personal && state.taskFilterEmployee!=='all'){
+    list = list.filter(t=>t.assigneeId===state.taskFilterEmployee);
+  }
   if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
   if(selected==='none') list = list.filter(t=>!t.projectId);
   else if(typeof selected==='string' && selected.startsWith('block:')){
@@ -2886,6 +2915,26 @@ function renderTaskBoard(el, personal){
     list = list.filter(t=>projectIdsInBlock.includes(t.projectId));
   }
   else if(selected!=='all') list = list.filter(t=>t.projectId===selected);
+
+  const delegatedSummaryEl = el.querySelector('#delegatedSummary');
+  if(delegatedSummaryEl){
+    if(!personal && viewMode==='created'){
+      const rootsForSummary = list.filter(t=>!t.parentId);
+      const today = todayISO();
+      const overdueCount = rootsForSummary.filter(t=>t.status==='progress' && t.deadline && t.deadline<today).length;
+      const reviewCount = rootsForSummary.filter(t=>t.status==='review').length;
+      const activeCount = rootsForSummary.filter(t=>t.status!=='done').length;
+      delegatedSummaryEl.innerHTML = `
+        <div class="ledger-summary" style="margin-bottom:16px;">
+          <div class="sum-card"><div class="label">Поставлено (в работе)</div><div class="val mono" style="color:var(--indigo);">${activeCount}</div></div>
+          <div class="sum-card spent"><div class="label">Просрочено</div><div class="val mono">${overdueCount}</div></div>
+          <div class="sum-card issued"><div class="label">На проверке</div><div class="val mono">${reviewCount}</div></div>
+        </div>
+      `;
+    } else {
+      delegatedSummaryEl.innerHTML = '';
+    }
+  }
 
   const byId = {}; list.forEach(t=>byId[t.id]=t);
   const roots = list.filter(t=> !t.parentId || !byId[t.parentId]);

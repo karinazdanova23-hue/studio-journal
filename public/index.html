@@ -728,6 +728,7 @@ const state = {
   reportStart:null,
   reportEnd:null,
   reportGroupBy:'employee',
+  reportEmployee:'all',
   taskFilterEmployee:null,
   taskFilterStatus:'all',
   selectedProject:{work:'all', personal:'all'},
@@ -3978,7 +3979,16 @@ function renderTaskAnalytics(el){
 function computeReportTasks(){
   return state.tasksWork.filter(t=>
     t.status==='done' && t.completedAt &&
-    t.completedAt.slice(0,10) >= state.reportStart && t.completedAt.slice(0,10) <= state.reportEnd
+    t.completedAt.slice(0,10) >= state.reportStart && t.completedAt.slice(0,10) <= state.reportEnd &&
+    (state.reportEmployee==='all' || t.assigneeId===state.reportEmployee)
+  );
+}
+// Задачи, которые должны были закрыться к концу периода (дедлайн уже наступил), но всё ещё не "Готово".
+// Удобно для еженедельной планёрки — сразу видно, что не сделано.
+function computeNotDoneTasks(){
+  return state.tasksWork.filter(t=>
+    t.status!=='done' && !t.parentId && t.deadline && t.deadline<=state.reportEnd &&
+    (state.reportEmployee==='all' || t.assigneeId===state.reportEmployee)
   );
 }
 function reportTaskWasLate(t){
@@ -3993,6 +4003,7 @@ function renderTaskReport(el){
   if(!state.reportEnd) state.reportEnd = today;
 
   const doneTasks = computeReportTasks();
+  const notDoneTasks = computeNotDoneTasks();
   const lateTasks = doneTasks.filter(reportTaskWasLate);
   const durations = doneTasks.filter(t=>t.createdDate).map(t=>Math.max(0,(new Date(t.completedAt)-new Date(t.createdDate))/86400000));
   const avgDays = durations.length ? (durations.reduce((a,b)=>a+b,0)/durations.length) : null;
@@ -4016,36 +4027,57 @@ function renderTaskReport(el){
       </div>
     </div>`;
   }
-  function groupBlock(label, tasks){
+  function notDoneRowHtml(t){
+    return `<div class="item">
+      <div class="main">
+        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="meta">
+          ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
+          ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
+          <span>Срок: ${t.deadline?fmtDate(t.deadline):'—'}</span>
+          <span class="badge" style="background:${t.status==='review'?'var(--ochre-bg,#F3E9D6)':'var(--brick-bg,#F6E2E2)'};color:${t.status==='review'?'var(--ochre)':'var(--brick)'};">${STATUSES[t.status]||t.status}</span>
+        </div>
+        ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
+        ${t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
+        ${t.reworkNote?`<div class="desc" style="color:var(--brick);">↩️ На доработке: ${linkifyEscaped(t.reworkNote)}</div>`:''}
+      </div>
+    </div>`;
+  }
+  function groupBlock(label, tasks, rowFn){
+    rowFn = rowFn || rowHtml;
     return `
       ${label!==null?`<h3 class="section-title" style="font-size:14.5px;margin:18px 0 8px;">${escapeHtml(label)} <span class="subtitle" style="font-size:12px;">(${tasks.length})</span></h3>`:''}
-      <div class="item-list" style="margin-bottom:10px;">${tasks.map(rowHtml).join('')}</div>
+      <div class="item-list" style="margin-bottom:10px;">${tasks.map(rowFn).join('')}</div>
     `;
   }
-
-  let bodyHtml;
-  if(!doneTasks.length){
-    bodyHtml = `<div class="empty-state"><div class="big">За этот период ничего не завершено</div><p>Попробуйте выбрать другой период</p></div>`;
-  } else if(state.reportGroupBy==='employee'){
-    const byEmp = {};
-    doneTasks.forEach(t=>{ const key=t.assigneeId||'none'; (byEmp[key]=byEmp[key]||[]).push(t); });
-    const groups = Object.entries(byEmp).map(([empId,tasks])=>({
-      label: empId==='none' ? 'Без исполнителя' : empName(empId),
-      tasks: tasks.slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||'')),
-    })).sort((a,b)=>b.tasks.length-a.tasks.length);
-    bodyHtml = groups.map(g=>groupBlock(g.label, g.tasks)).join('');
-  } else if(state.reportGroupBy==='project'){
-    const byProj = {};
-    doneTasks.forEach(t=>{ const key=t.projectId||'none'; (byProj[key]=byProj[key]||[]).push(t); });
-    const groups = Object.entries(byProj).map(([pid,tasks])=>({
-      label: pid==='none' ? 'Без проекта' : projectName(false,pid),
-      tasks: tasks.slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||'')),
-    })).sort((a,b)=>b.tasks.length-a.tasks.length);
-    bodyHtml = groups.map(g=>groupBlock(g.label, g.tasks)).join('');
-  } else {
-    const sorted = doneTasks.slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||''));
-    bodyHtml = groupBlock(null, sorted);
+  function buildGroupedHtml(tasks, sortKey, rowFn){
+    if(!tasks.length) return null;
+    if(state.reportGroupBy==='employee'){
+      const byEmp = {};
+      tasks.forEach(t=>{ const key=t.assigneeId||'none'; (byEmp[key]=byEmp[key]||[]).push(t); });
+      const groups = Object.entries(byEmp).map(([empId,ts])=>({
+        label: empId==='none' ? 'Без исполнителя' : empName(empId),
+        tasks: ts.slice().sort((a,b)=>(a[sortKey]||'').localeCompare(b[sortKey]||'')),
+      })).sort((a,b)=>b.tasks.length-a.tasks.length);
+      return groups.map(g=>groupBlock(g.label, g.tasks, rowFn)).join('');
+    } else if(state.reportGroupBy==='project'){
+      const byProj = {};
+      tasks.forEach(t=>{ const key=t.projectId||'none'; (byProj[key]=byProj[key]||[]).push(t); });
+      const groups = Object.entries(byProj).map(([pid,ts])=>({
+        label: pid==='none' ? 'Без проекта' : projectName(false,pid),
+        tasks: ts.slice().sort((a,b)=>(a[sortKey]||'').localeCompare(b[sortKey]||'')),
+      })).sort((a,b)=>b.tasks.length-a.tasks.length);
+      return groups.map(g=>groupBlock(g.label, g.tasks, rowFn)).join('');
+    } else {
+      const sorted = tasks.slice().sort((a,b)=>(a[sortKey]||'').localeCompare(b[sortKey]||''));
+      return groupBlock(null, sorted, rowFn);
+    }
   }
+
+  const doneHtml = buildGroupedHtml(doneTasks, 'completedAt', rowHtml) ||
+    `<div class="empty-state"><div class="big">За этот период ничего не завершено</div><p>Попробуйте выбрать другой период</p></div>`;
+  const notDoneHtml = buildGroupedHtml(notDoneTasks, 'deadline', notDoneRowHtml) ||
+    `<p class="subtitle" style="margin:0;">Не осталось незакрытых задач с истёкшим сроком за этот период 🎉</p>`;
 
   el.innerHTML = `
     <div class="field-row" style="align-items:flex-end;">
@@ -4058,6 +4090,12 @@ function renderTaskReport(el){
       <button class="cat-chip off" data-rep-period="month">Этот месяц</button>
       <button class="cat-chip off" data-rep-period="lastmonth">Прошлый месяц</button>
     </div>
+    <div class="field-row" style="margin-bottom:16px;max-width:320px;">
+      <select id="rep_emp">
+        <option value="all" ${state.reportEmployee==='all'?'selected':''}>Все сотрудники</option>
+        ${state.employees.map(e=>`<option value="${e.id}" ${state.reportEmployee===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}
+      </select>
+    </div>
     <div class="cat-filters" style="margin-bottom:16px;">
       <button class="cat-chip ${state.reportGroupBy==='employee'?'':'off'}" data-rep-group="employee">По сотруднику</button>
       <button class="cat-chip ${state.reportGroupBy==='project'?'':'off'}" data-rep-group="project">По проекту</button>
@@ -4067,13 +4105,18 @@ function renderTaskReport(el){
       <div class="sum-card"><div class="label">Завершено</div><div class="val mono" style="color:var(--indigo);">${doneTasks.length}</div></div>
       <div class="sum-card spent"><div class="label">С опозданием</div><div class="val mono">${lateTasks.length}</div></div>
       <div class="sum-card issued"><div class="label">Средний срок</div><div class="val mono">${avgDays!==null?avgDays.toFixed(1)+' дн.':'—'}</div></div>
+      <div class="sum-card" style="background:var(--brick-bg,#F6E2E2);"><div class="label">Не выполнено</div><div class="val mono" style="color:var(--brick);">${notDoneTasks.length}</div></div>
     </div>
-    ${bodyHtml}
-    <p class="subtitle" style="margin-top:14px;">Личные задачи в отчёт не входят. «Просрочено» — задача закрыта позже указанного в ней срока.</p>
+    <h2 class="section-title" style="font-size:16px;">✅ Выполнено</h2>
+    ${doneHtml}
+    <h2 class="section-title" style="font-size:16px;margin-top:24px;">❌ Не выполнено (срок уже наступил)</h2>
+    ${notDoneHtml}
+    <p class="subtitle" style="margin-top:14px;">Личные задачи в отчёт не входят. «Просрочено» — задача закрыта позже указанного в ней срока. В «Не выполнено» попадают задачи с дедлайном на конец выбранного периода или раньше, которые ещё не в статусе «Готово».</p>
   `;
 
   document.getElementById('rep_start').onchange = (e)=>{ state.reportStart = e.target.value; render(); };
   document.getElementById('rep_end').onchange = (e)=>{ state.reportEnd = e.target.value; render(); };
+  document.getElementById('rep_emp').onchange = (e)=>{ state.reportEmployee = e.target.value; render(); };
   document.getElementById('rep_download').onclick = ()=>exportTaskReportCSV();
   el.querySelectorAll('[data-rep-period]').forEach(b=>b.onclick=()=>{
     const now = new Date();
@@ -4101,10 +4144,12 @@ function renderTaskReport(el){
 }
 function exportTaskReportCSV(){
   const doneTasks = computeReportTasks().slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||''));
-  const header = ['Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка на результат','Ссылка'];
+  const notDoneTasks = computeNotDoneTasks().slice().sort((a,b)=>(a.deadline||'').localeCompare(b.deadline||''));
+  const header = ['Статус','Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка на результат','Ссылка'];
   const lines = [header.map(csvEscape).join(';')];
   doneTasks.forEach(t=>{
     lines.push([
+      'Готово',
       t.title,
       t.projectId?projectName(false,t.projectId):'',
       t.assigneeId?empName(t.assigneeId):'',
@@ -4115,6 +4160,22 @@ function exportTaskReportCSV(){
       t.overdueReason||'',
       t.completionComment||'',
       t.completionLink||'',
+      t.link||'',
+    ].map(csvEscape).join(';'));
+  });
+  notDoneTasks.forEach(t=>{
+    lines.push([
+      'Не выполнено (' + (STATUSES[t.status]||t.status) + ')',
+      t.title,
+      t.projectId?projectName(false,t.projectId):'',
+      t.assigneeId?empName(t.assigneeId):'',
+      t.creatorId?empName(t.creatorId):'',
+      t.deadline?fmtDate(t.deadline):'',
+      '',
+      'Да',
+      t.overdueReason||t.reworkNote||'',
+      '',
+      '',
       t.link||'',
     ].map(csvEscape).join(';'));
   });

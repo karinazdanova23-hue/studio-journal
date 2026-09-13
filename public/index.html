@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Единый журнал · Свободное Пространство</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#20344F">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Единый журнал">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -731,10 +738,13 @@ const state = {
   reportEmployee:'all',
   taskFilterEmployee:null,
   taskViewMode:'assigned',
+  bulkSelectMode:false,
+  bulkSelectedIds:new Set(),
   taskFilterStatus:'all',
   selectedProject:{work:'all', personal:'all'},
   projectsWork:[],
   blocksWork:[],
+  auditLog:[],
   ideaBankWork:[],
   checklistsWork:[],
   quickIdeasWork:[],
@@ -822,6 +832,7 @@ async function performTaskDeletion(personal, targetTask){
   }
   setTasksFor(personal, all.filter(t=>!idsSet.includes(t.id)));
   await persistTasksFor(personal);
+  logAudit('task_deleted', `«${targetTask.title}»${idsSet.length>1?` (вместе с подзадачами, всего ${idsSet.length})`:''}`);
   return true;
 }
 async function restoreTrashItem(personal, trashId){
@@ -1105,7 +1116,7 @@ function generateRecurrenceDates(startISO, repeatType, weekdaySet, untilISO, max
 
 /* ---------------- load ---------------- */
 async function loadAll(){
-  const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, blocksWorkRaw, ideaBank, checklistsRaw, quickIdeasRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = await Promise.all([
+  const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, blocksWorkRaw, auditLogRaw, ideaBank, checklistsRaw, quickIdeasRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = await Promise.all([
     sGet('roster:employees', true),
     sGet('calendar:events', true),
     sGet('tasks:work', true),
@@ -1115,6 +1126,7 @@ async function loadAll(){
     sGet('settings:notifySummaryDate', false),
     sGet('tasks:projects', true),
     sGet('tasks:blocks', true),
+    sGet('audit:log', true),
     sGet('tasks:ideabank', true),
     sGet('tasks:checklists', true),
     sGet('tasks:quickideas', true),
@@ -1164,6 +1176,7 @@ async function loadAll(){
   state.lastSummaryDate = summaryDate || null;
   state.projectsWork = projWork ? JSON.parse(projWork) : [];
   state.blocksWork = blocksWorkRaw ? JSON.parse(blocksWorkRaw) : [];
+  state.auditLog = auditLogRaw ? JSON.parse(auditLogRaw) : [];
   {
     const pIdx = state.projectsWork.findIndex(p=>isPurchasesProjectName(p.name));
     if(pIdx===-1){
@@ -1251,6 +1264,28 @@ async function saveEvents(){ return await sSet('calendar:events', JSON.stringify
 async function saveTasksWork(){ return await sSet('tasks:work', JSON.stringify(state.tasksWork), true); }
 async function saveProjectsWork(){ return await sSet('tasks:projects', JSON.stringify(state.projectsWork), true); }
 async function saveBlocksWork(){ return await sSet('tasks:blocks', JSON.stringify(state.blocksWork), true); }
+async function saveAuditLog(){ return await sSet('audit:log', JSON.stringify(state.auditLog), true); }
+// Записывает значимое действие в постоянный журнал (кто что изменил).
+// Не блокирует основной поток на неудаче — если запись не удалась, просто теряем эту одну строку лога.
+const AUDIT_LOG_MAX = 500;
+const AUDIT_ACTION_LABELS = {
+  task_created: 'Поставил(а) задачу',
+  task_deleted: 'Удалил(а) задачу',
+  deadline_changed: 'Изменил(а) дедлайн',
+  project_deleted: 'Удалил(а) проект',
+  block_deleted: 'Удалил(а) блок',
+  employee_added: 'Добавил(а) сотрудника',
+  employee_deleted: 'Удалил(а) сотрудника',
+  event_deleted: 'Удалил(а) событие',
+};
+async function logAudit(action, details){
+  if(!state.currentUserId) return;
+  state.auditLog = state.auditLog.concat([{
+    id: uid(), actorId: state.currentUserId, action, details: details||'', at: new Date().toISOString()
+  }]);
+  if(state.auditLog.length > AUDIT_LOG_MAX) state.auditLog = state.auditLog.slice(state.auditLog.length - AUDIT_LOG_MAX);
+  try{ await saveAuditLog(); }catch(e){}
+}
 async function saveFunds(){ return await sSet('funds:ledger', JSON.stringify(state.fundsEntries), true); }
 
 async function savePersonalData(){
@@ -1327,6 +1362,42 @@ async function migrateLegacyPersonalEvents(){
 function eventsFor(personal){ return personal ? state.personalEvents : state.events; }
 function setEventsFor(personal, arr){ if(personal) state.personalEvents = arr; else state.events = arr; }
 async function persistEventsFor(personal){ return personal ? await savePersonalData() : await saveEvents(); }
+// Ищет конфликт дедлайна с отпуском сотрудника: попадает ли дедлайн на сам отпуск,
+// или отпуск начинается в течение недели после дедлайна (рискованно — не успеет доделать/сдать).
+// Возвращает текст предупреждения или null, если конфликта нет.
+function findVacationConflict(assigneeId, deadline){
+  if(!assigneeId || !deadline) return null;
+  const vacationDates = state.events
+    .filter(e=>e.category==='vacation' && e.employeeIds && e.employeeIds.includes(assigneeId))
+    .map(e=>e.date)
+    .filter(Boolean)
+    .sort();
+  if(!vacationDates.length) return null;
+  // Группируем подряд идущие даты в непрерывные периоды отпуска
+  const blocks = [];
+  vacationDates.forEach(d=>{
+    const last = blocks[blocks.length-1];
+    if(last){
+      const prevDate = new Date(last.end);
+      const curDate = new Date(d);
+      const diffDays = Math.round((curDate-prevDate)/86400000);
+      if(diffDays<=1){ last.end = d; return; }
+    }
+    blocks.push({start:d, end:d});
+  });
+  for(const b of blocks){
+    if(deadline>=b.start && deadline<=b.end){
+      return `Дедлайн (${fmtDate(deadline)}) попадает на отпуск сотрудника (${fmtDate(b.start)}–${fmtDate(b.end)}).`;
+    }
+    if(deadline<b.start){
+      const diffDays = Math.round((new Date(b.start)-new Date(deadline))/86400000);
+      if(diffDays<=7){
+        return `Через ${diffDays} дн. после дедлайна сотрудник уходит в отпуск (с ${fmtDate(b.start)}) — может не успеть.`;
+      }
+    }
+  }
+  return null;
+}
 function canSeeEvent(e){
   // Отпуска — видны всем (информационно, не требует участия).
   if(e.category==='vacation') return true;
@@ -1529,7 +1600,7 @@ async function approveTask(personal, id){
   const before = tasksFor(personal);
   const target = before.find(t=>t.id===id);
   if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
-  const updated = before.map(t=>t.id===id?{...t, status:'done', completedAt:todayISO(), reworkNote:''}:t);
+  const updated = before.map(t=>t.id===id?{...t, status:'done', completedAt:todayISO(), reworkNote:'', approvedAt:todayISO(), approvedBy:state.currentUserId}:t);
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
   if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
@@ -1602,6 +1673,14 @@ function wireReviewActions(el){
       const id = btn.dataset.reworkTask;
       const personal = state.personalTasks.some(pt=>pt.id===id);
       await reworkTask(personal, id);
+    };
+  });
+}
+function wireTaskComments(el){
+  el.querySelectorAll('[data-comments-task]').forEach(btn=>{
+    btn.onclick = (e)=>{
+      e.stopPropagation();
+      openTaskCommentsModal(btn.dataset.commentsTask, btn.dataset.commentsPersonal==='1');
     };
   });
 }
@@ -1975,6 +2054,35 @@ async function checkNewEventsTick(){
   const modalOpen = document.getElementById('modalRoot') && document.getElementById('modalRoot').innerHTML.trim() !== '';
   if(!modalOpen) render();
 }
+// Раз в минуту незаметно проверяет сервер: если ВАШУ задачу принял тот, кто её ставил —
+// присылает уведомление. Сам факт также остаётся видимым в Обзоре (раздел "Недавно принято"),
+// не только всплывающим уведомлением.
+async function checkTaskApprovedTick(){
+  if(!state.currentUserId) return;
+  const raw = await sGet('tasks:work', true);
+  if(raw===null) return;
+  let fresh;
+  try{ fresh = JSON.parse(raw); }catch(e){ return; }
+  if(!state.knownApprovedIds){
+    state.knownApprovedIds = new Set(fresh.filter(t=>t.approvedAt).map(t=>t.id));
+    return;
+  }
+  const newlyApproved = fresh.filter(t=>
+    t.approvedAt && !state.knownApprovedIds.has(t.id) && t.assigneeId===state.currentUserId && t.approvedBy!==state.currentUserId
+  );
+  state.knownApprovedIds = new Set(fresh.filter(t=>t.approvedAt).map(t=>t.id));
+  if(!newlyApproved.length) return;
+  if(state.browserNotify && 'Notification' in window && Notification.permission==='granted'){
+    newlyApproved.forEach(t=>{
+      new Notification('✅ Задача принята', {
+        body: `«${t.title}» — принял(а) ${empName(t.approvedBy)}`
+      });
+    });
+  }
+  state.tasksWork = fresh;
+  const modalOpen = document.getElementById('modalRoot') && document.getElementById('modalRoot').innerHTML.trim() !== '';
+  if(!modalOpen) render();
+}
 
 function render(){
   renderTabs();
@@ -2029,6 +2137,12 @@ function renderOverview(root){
   const reviewQueue = state.currentUserId ? state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
     .filter(t=>t.status==='review' && t.creatorId===state.currentUserId)
     .sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||'')) : [];
+  // Недавно принятые у меня задачи — постоянная запись (не только всплывающее уведомление),
+  // чтобы можно было вернуться и посмотреть, кто и когда принял.
+  const recentApprovedCutoff = (() => { const d=new Date(); d.setDate(d.getDate()-7); return d.toISOString().slice(0,10); })();
+  const recentlyApproved = state.currentUserId ? state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
+    .filter(t=>t.approvedAt && t.approvedAt>=recentApprovedCutoff && t.assigneeId===state.currentUserId && t.approvedBy!==state.currentUserId)
+    .sort((a,b)=>(b.approvedAt||'').localeCompare(a.approvedAt||'')) : [];
 
   function taskRow(t){
     const overdue = t.deadline && t.deadline<todayISO();
@@ -2069,6 +2183,18 @@ function renderOverview(root){
       </div>
     </div>`;
   }
+  function approvedRow(t){
+    return `<div class="item">
+      <div class="main" style="cursor:pointer;" data-ov-task="${t.id}">
+        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="meta">
+          <span>Принял(а): ${escapeHtml(empName(t.approvedBy))}</span>
+          <span>${fmtDate(t.approvedAt)}</span>
+        </div>
+        ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+      </div>
+    </div>`;
+  }
   function eventRow(e){
     return `<div class="item" style="cursor:pointer;" data-ov-day="${e.date}">
       <div class="main"><div class="title">${e.startTime?e.startTime+' · ':''}${escapeHtml(e.title)}</div>
@@ -2095,6 +2221,7 @@ function renderOverview(root){
       <div class="sum-card issued"><div class="label">Задач на сегодня</div><div class="val mono">${dueTodayTasks.length}</div></div>
       <div class="sum-card"><div class="label">Событий сегодня</div><div class="val mono" style="color:var(--indigo);">${todayEvents.length}</div></div>
       ${reviewQueue.length ? `<div class="sum-card"><div class="label">🔍 Нужно проверить</div><div class="val mono" style="color:var(--ochre);">${reviewQueue.length}</div></div>` : ''}
+      ${recentlyApproved.length ? `<div class="sum-card"><div class="label">✅ Недавно принято</div><div class="val mono" style="color:var(--teal);">${recentlyApproved.length}</div></div>` : ''}
       ${hasRole('Руководитель','Ассистент') ? `
         <div class="sum-card balance"><div class="label">Общий остаток</div><div class="val mono">${fmtMoney(workBalance + personalBalance)}</div></div>
       ` : ''}
@@ -2104,6 +2231,13 @@ function renderOverview(root){
       <p class="subtitle" style="margin-top:-6px;">Исполнители отметили эти задачи сделанными — проверьте и примите, либо верните на доработку</p>
       <div class="item-list" style="margin-bottom:24px;">
         ${reviewQueue.map(reviewRow).join('')}
+      </div>
+    ` : ''}
+    ${recentlyApproved.length ? `
+      <h2 class="section-title" style="font-size:16px;">✅ Недавно принято (${recentlyApproved.length})</h2>
+      <p class="subtitle" style="margin-top:-6px;">Ваши задачи, которые постановщик принял за последние 7 дней</p>
+      <div class="item-list" style="margin-bottom:24px;">
+        ${recentlyApproved.map(approvedRow).join('')}
       </div>
     ` : ''}
     ${state.currentUserId ? `
@@ -2368,6 +2502,7 @@ function openDayModal(iso){
       }
       const ok = await persistEventsFor(personal);
       if(!ok){ setEventsFor(personal, before); saveFailedToast(); return; }
+      logAudit('event_deleted', `«${evObj.title}»${choice==='series'?' (вся серия)':''}`);
       closeModal(); render();
     } else if(await showConfirm('Удалить событие?')){
       const before = eventsFor(personal);
@@ -2375,6 +2510,7 @@ function openDayModal(iso){
       setEventsFor(personal, before.filter(e=>e.id!==evId));
       const ok = await persistEventsFor(personal);
       if(!ok){ setEventsFor(personal, before); saveFailedToast(); return; }
+      if(evObj) logAudit('event_deleted', `«${evObj.title}»`);
       closeModal(); render();
     }
   });
@@ -2393,6 +2529,7 @@ function wireDayTaskActions(el, iso){
   wireEventLinks(el);
   wireOverdueReasonInputs(el);
   wireReviewActions(el);
+  wireTaskComments(el);
   const isPersonalTask = (id)=> state.personalTasks.some(pt=>pt.id===id);
   el.querySelectorAll('[data-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
@@ -2773,6 +2910,7 @@ function taskItemHtml(t, personal, opts){
   const checkTitle = t.status==='done' ? 'Задача принята постановщиком' : (canComplete ? (t.status==='review' ? 'Отменить и вернуть в работу' : 'Отметить выполненной') : whyCantComplete(t));
   return `
     <div class="item ${t.status==='done'?'is-done':''}" data-task-row="${t.id}" data-depth="${depth}" style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
+      ${opts.bulkSelect && depth===0?`<input type="checkbox" class="task-check" data-bulk-select="${t.id}" ${opts.bulkSelected?'checked':''} title="Выбрать для массового действия">`:''}
       ${depth===0?`<span class="drag-handle" data-drag-handle="${t.id}" title="Перетащить, чтобы изменить порядок">⠿</span>`:''}
       <input type="checkbox" class="task-check${checkInteractive?'':' task-check-locked'}" data-done="${t.id}" ${isChecked?'checked':''} ${checkInteractive?'':'disabled'} title="${checkTitle}">
       <div class="main">
@@ -2815,6 +2953,7 @@ function taskItemHtml(t, personal, opts){
       </div>
       <div class="actions">
         <button class="btn ghost small" data-add-sub="${t.id}">+ Подзадача</button>
+        <button class="btn ghost small" data-comments-task="${t.id}" data-comments-personal="${personal?'1':'0'}">💬${(t.comments&&t.comments.length)?' '+t.comments.length:''}</button>
         <button class="btn ghost small" data-edit-task="${t.id}" style="${canEditTask(t,personal)?'':'opacity:.4;'}" title="${canEditTask(t,personal)?'Изменить':whyCantEdit(t)}">Изм.</button>
         <button class="btn danger small" data-del-task="${t.id}" style="${canDeleteTask(t,personal)?'':'opacity:.4;'}" title="${canDeleteTask(t,personal)?'Удалить':whyCantDelete(t)}">✕</button>
       </div>
@@ -2854,6 +2993,7 @@ function renderTaskBoard(el, personal){
       </select>
     </div>
     <div id="delegatedSummary"></div>
+    <div id="bulkActionBar"></div>
     <div class="item-list" id="taskList"></div>
   `;
 
@@ -2879,6 +3019,7 @@ function renderTaskBoard(el, personal){
     <button class="cat-chip ${selected==='none'?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>
     ${projChipsHtml}
     <button class="btn ghost small" id="manageProjBtn">+ Проект</button>
+    ${!personal?`<button class="btn ghost small" id="bulkSelectToggle">${state.bulkSelectMode?'✕ Отменить выбор':'☑️ Выбрать несколько'}</button>`:''}
   `;
   blockRow.querySelectorAll('[data-proj]').forEach(chip=>{
     chip.onclick=()=>{ state.selectedProject[selKey]=chip.dataset.proj; render(); };
@@ -2887,6 +3028,12 @@ function renderTaskBoard(el, personal){
     chip.onclick=()=>{ state.selectedProject[selKey]=chip.dataset.proj; render(); };
   });
   projRow.querySelector('#manageProjBtn').onclick=()=>openProjectsModal(personal);
+  const bulkToggleBtn = projRow.querySelector('#bulkSelectToggle');
+  if(bulkToggleBtn) bulkToggleBtn.onclick=()=>{
+    state.bulkSelectMode = !state.bulkSelectMode;
+    state.bulkSelectedIds = new Set();
+    render();
+  };
 
   if(!personal){
     const fe = el.querySelector('#filtEmp');
@@ -2945,7 +3092,7 @@ function renderTaskBoard(el, personal){
     const allTasks = tasksFor(personal);
     const orphanParent = (t.parentId && !byId[t.parentId]) ? allTasks.find(x=>x.id===t.parentId) : null;
     const collapsed = state.collapsedTaskIds.has(t.id);
-    const html = taskItemHtml(t, personal, {depth, orphanParentName: orphanParent?orphanParent.title:null, childCount: children.length, collapsed});
+    const html = taskItemHtml(t, personal, {depth, orphanParentName: orphanParent?orphanParent.title:null, childCount: children.length, collapsed, bulkSelect: state.bulkSelectMode && !personal, bulkSelected: state.bulkSelectedIds.has(t.id)});
     if(collapsed || !children.length) return html;
     return html + children.map(c=>renderNode(c, depth+1)).join('');
   }
@@ -2971,6 +3118,99 @@ function renderTaskBoard(el, personal){
   if(toggleBtn) toggleBtn.onclick = ()=>{ state.taskBoardShowDone = !state.taskBoardShowDone; render(); };
   wireTaskActions(listEl, personal);
   wireTaskDragReorder(listEl, personal, roots.map(t=>t.id));
+
+  const bulkBarEl = el.querySelector('#bulkActionBar');
+  if(bulkBarEl){
+    if(state.bulkSelectMode && !personal){
+      const selectedTasks = roots.filter(t=>state.bulkSelectedIds.has(t.id));
+      bulkBarEl.innerHTML = selectedTasks.length ? `
+        <div class="ledger-summary" style="margin-bottom:14px;align-items:center;">
+          <div class="sum-card"><div class="label">Выбрано задач</div><div class="val mono" style="color:var(--indigo);">${selectedTasks.length}</div></div>
+          <select id="bulkMoveProject" style="width:auto;">
+            <option value="">Переместить в проект…</option>
+            <option value="__none__">Без проекта</option>
+            ${projectsFor(false).map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+          <select id="bulkReassign" style="width:auto;">
+            <option value="">Сменить исполнителя…</option>
+            ${state.employees.map(e=>`<option value="${e.id}">${escapeHtml(e.name)}</option>`).join('')}
+          </select>
+          <button class="btn danger small" id="bulkDelete">Удалить выбранные</button>
+        </div>
+      ` : `<p class="subtitle" style="margin:0 0 14px;">Отметьте задачи галочкой слева, чтобы применить действие сразу к нескольким</p>`;
+      listEl.querySelectorAll('[data-bulk-select]').forEach(cb=>{
+        cb.onclick = e=>e.stopPropagation();
+        cb.onchange = ()=>{
+          const id = cb.dataset.bulkSelect;
+          if(cb.checked) state.bulkSelectedIds.add(id); else state.bulkSelectedIds.delete(id);
+          render();
+        };
+      });
+      const moveSel = bulkBarEl.querySelector('#bulkMoveProject');
+      if(moveSel) moveSel.onchange = async ()=>{
+        const val = moveSel.value;
+        if(!val) return;
+        const newProjectId = val==='__none__' ? null : val;
+        const editable = selectedTasks.filter(t=>canEditTask(t, false));
+        const skipped = selectedTasks.length - editable.length;
+        if(!editable.length){ toast('Ни одну из выбранных задач нельзя изменить — вы не постановщик'); return; }
+        const before = state.tasksWork;
+        state.tasksWork = before.map(t=>editable.some(e=>e.id===t.id)?{...t,projectId:newProjectId}:t);
+        const ok = await saveTasksWork();
+        if(!ok){ state.tasksWork = before; saveFailedToast(); return; }
+        logAudit('bulk_move_project', `${editable.length} задач(и) → ${newProjectId?projectName(false,newProjectId):'без проекта'}`);
+        toast(`Перемещено: ${editable.length}${skipped?`, пропущено (не вы постановщик): ${skipped}`:''}`);
+        state.bulkSelectedIds = new Set();
+        render();
+      };
+      const reassignSel = bulkBarEl.querySelector('#bulkReassign');
+      if(reassignSel) reassignSel.onchange = async ()=>{
+        const val = reassignSel.value;
+        if(!val) return;
+        const editable = selectedTasks.filter(t=>canEditTask(t, false));
+        const skipped = selectedTasks.length - editable.length;
+        if(!editable.length){ toast('Ни одну из выбранных задач нельзя изменить — вы не постановщик'); return; }
+        const before = state.tasksWork;
+        state.tasksWork = before.map(t=>editable.some(e=>e.id===t.id)?{...t,assigneeId:val}:t);
+        const ok = await saveTasksWork();
+        if(!ok){ state.tasksWork = before; saveFailedToast(); return; }
+        logAudit('bulk_reassign', `${editable.length} задач(и) → ${empName(val)}`);
+        toast(`Переназначено: ${editable.length}${skipped?`, пропущено (не вы постановщик): ${skipped}`:''}`);
+        state.bulkSelectedIds = new Set();
+        render();
+      };
+      const delBtn = bulkBarEl.querySelector('#bulkDelete');
+      if(delBtn) delBtn.onclick = async ()=>{
+        const deletable = selectedTasks.filter(t=>canDeleteTask(t, false));
+        const skipped = selectedTasks.length - deletable.length;
+        if(!deletable.length){ toast('Ни одну из выбранных задач нельзя удалить — вы не постановщик'); return; }
+        if(!(await showConfirm(`Удалить ${deletable.length} задач(и)? Это затронет и их подзадачи.`, 'Удалить'))) return;
+        const all = tasksFor(false);
+        function idsToDelete(rootId){
+          let ids=[rootId];
+          all.filter(t=>t.parentId===rootId).forEach(c=>{ ids = ids.concat(idsToDelete(c.id)); });
+          return ids;
+        }
+        let idsSet = [];
+        deletable.forEach(t=>{ idsSet = idsSet.concat(idsToDelete(t.id)); });
+        idsSet = [...new Set(idsSet)];
+        for(const tid of idsSet){
+          const doomed = all.find(x=>x.id===tid);
+          if(doomed) await moveToTrash(false, 'task', doomed);
+        }
+        const before = state.tasksWork;
+        setTasksFor(false, all.filter(t=>!idsSet.includes(t.id)));
+        const ok = await persistTasksFor(false);
+        if(!ok){ setTasksFor(false, before); saveFailedToast(); return; }
+        logAudit('bulk_delete', `${deletable.length} задач(и) удалено`);
+        toast(`Удалено: ${deletable.length}${skipped?`, пропущено (не вы постановщик): ${skipped}`:''}`);
+        state.bulkSelectedIds = new Set();
+        render();
+      };
+    } else {
+      bulkBarEl.innerHTML = '';
+    }
+  }
 }
 
 function wireEventLinks(el){
@@ -2988,6 +3228,7 @@ function wireTaskActions(el, personal){
   wireEventLinks(el);
   wireOverdueReasonInputs(el);
   wireReviewActions(el);
+  wireTaskComments(el);
   el.querySelectorAll('[data-toggle-children]').forEach(btn=>{
     btn.onclick=(e)=>{
       e.stopPropagation();
@@ -3406,6 +3647,14 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       }
     }
 
+    if(assigneeId){
+      const vacationWarning = findVacationConflict(assigneeId, deadline);
+      if(vacationWarning){
+        const proceed = await showConfirm(`⚠️ ${vacationWarning} Всё равно поставить задачу с этим сроком?`, 'Всё равно поставить');
+        if(!proceed) return;
+      }
+    }
+
     const projectId = parentId
       ? (parentTask ? parentTask.projectId : (existing?existing.projectId||null:null))
       : (document.getElementById('t_project').value || null);
@@ -3482,6 +3731,11 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     else setTasksFor(personal, arr.concat([data]));
     const ok = await persistTasksFor(personal);
     if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(); return; }
+    if(!existing){
+      logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}`);
+    } else if(existing.deadline !== data.deadline){
+      logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDate(existing.deadline):'—'} → ${data.deadline?fmtDate(data.deadline):'—'}`);
+    }
     if(chosenStatus==='done' && (!existing || existing.status!=='done')){
       await maybeOfferPurchaseExpense(data, personal);
     }
@@ -3625,6 +3879,7 @@ function openProjectsModal(personal){
       if(!canDeleteProject){ toast('Удалять блоки может только Руководитель или Ассистент'); return; }
       if(!(await showConfirm('Удалить блок? Проекты внутри останутся, но станут «без блока».'))) return;
       const bid = b.dataset.delBlock;
+      const doomedBlock = state.blocksWork.find(x=>x.id===bid);
       const beforeBlocks = state.blocksWork;
       const beforeProjects = state.projectsWork;
       state.blocksWork = beforeBlocks.filter(x=>x.id!==bid);
@@ -3632,6 +3887,7 @@ function openProjectsModal(personal){
       const ok1 = await saveBlocksWork();
       const ok2 = await saveProjectsWork();
       if(!ok1 || !ok2){ state.blocksWork = beforeBlocks; state.projectsWork = beforeProjects; saveFailedToast(); return; }
+      if(doomedBlock) logAudit('block_deleted', `«${doomedBlock.name}»`);
       modal.innerHTML = body(); wire(); render();
     });
     modal.querySelectorAll('[data-proj-block]').forEach(sel=>sel.onchange=async ()=>{
@@ -3663,6 +3919,7 @@ function openProjectsModal(personal){
       setTasksFor(personal, tasksFor(personal).map(t=>t.projectId===pid?{...t,projectId:null}:t));
       await persistProjectsFor(personal);
       if(!personal) await saveTasksWork();
+      if(doomedProj) logAudit('project_deleted', `«${doomedProj.name}»`);
       if(state.selectedProject[selKey]===pid) state.selectedProject[selKey]='all';
       modal.innerHTML = body(); wire(); render();
     });
@@ -3813,6 +4070,56 @@ function openQuickIdeasModal(){
         if(!ok){ state.quickIdeasWork = before; saveFailedToast(); }
       });
     });
+  }
+  wire();
+}
+function openTaskCommentsModal(taskId, personal){
+  const modal = document.getElementById('modalRoot');
+  function body(){
+    const t = tasksFor(personal).find(x=>x.id===taskId);
+    if(!t) return `<div class="overlay" id="ov"><div class="modal"><p class="subtitle">Задача не найдена (возможно, удалена)</p><div class="modal-actions"><button class="btn ghost" id="closeComments">Закрыть</button></div></div></div>`;
+    const comments = (t.comments||[]).slice().sort((a,b)=>a.at.localeCompare(b.at));
+    return `
+      <div class="overlay" id="ov">
+        <div class="modal" style="max-width:460px;">
+          <h3>💬 Обсуждение</h3>
+          <p class="subtitle" style="margin:0 0 14px;">«${escapeHtml(t.title)}»</p>
+          <div class="item-list" style="margin-bottom:14px;max-height:320px;overflow-y:auto;">
+            ${comments.length ? comments.map(c=>`
+              <div class="item">
+                <div class="main">
+                  <div class="meta"><strong>${escapeHtml(empName(c.authorId))}</strong><span>${new Date(c.at).toLocaleString('ru-RU')}</span></div>
+                  <div class="desc">${linkifyEscaped(c.text)}</div>
+                </div>
+              </div>
+            `).join('') : `<p class="subtitle" style="margin:0;">Пока нет ни одного комментария</p>`}
+          </div>
+          <div class="field"><textarea id="comment_text" rows="2" placeholder="Написать комментарий..."></textarea></div>
+          <div class="modal-actions">
+            <button class="btn ghost" id="closeComments">Закрыть</button>
+            <button class="btn" id="addComment">Отправить</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  modal.innerHTML = body();
+  function wire(){
+    const closeBtn = document.getElementById('closeComments');
+    if(closeBtn) closeBtn.onclick = closeModal;
+    document.getElementById('ov').onclick = (ev)=>{ if(ev.target.id==='ov') closeModal(); };
+    const addBtn = document.getElementById('addComment');
+    if(addBtn) addBtn.onclick = async ()=>{
+      const text = document.getElementById('comment_text').value.trim();
+      if(!text){ toast('Напишите комментарий'); return; }
+      if(!state.currentUserId){ toast('Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.'); return; }
+      const before = tasksFor(personal);
+      const newComment = {id:uid(), authorId:state.currentUserId, text, at:new Date().toISOString()};
+      const updated = before.map(x=>x.id===taskId?{...x, comments:(x.comments||[]).concat([newComment])}:x);
+      setTasksFor(personal, updated);
+      const ok = await persistTasksFor(personal);
+      if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+      modal.innerHTML = body(); wire(); render();
+    };
   }
   wire();
 }
@@ -4621,9 +4928,20 @@ function openSearchModal(){
 
 function openDataModal(){
   const modal = document.getElementById('modalRoot');
+  let autoBackups = null; // null = ещё грузится
   function body(){
     const allTrash = state.trash.slice().sort((a,b)=>b.deletedAt-a.deletedAt);
     const personalTrashRows = personalAccessAllowed() ? state.personalTrash.slice().sort((a,b)=>b.deletedAt-a.deletedAt) : [];
+    const autoBackupsHtml = !hasRole('Руководитель','Ассистент')
+      ? `<p class="subtitle" style="margin:0;">Доступно только Руководителю и Ассистенту</p>`
+      : autoBackups===null
+        ? `<p class="subtitle" style="margin:0;">Загрузка…</p>`
+        : (autoBackups.length ? autoBackups.map(b=>`
+            <div class="item">
+              <div class="main"><div class="title">${fmtDate(b.date)}</div><div class="meta"><span>${b.takenAt?new Date(b.takenAt).toLocaleString('ru-RU'):''}</span></div></div>
+              <div class="actions"><button class="btn ghost small" data-download-autobackup="${b.key}">⬇️ Скачать</button></div>
+            </div>
+          `).join('') : `<p class="subtitle" style="margin:0;">Бэкапов пока нет — первый появится в течение суток после запуска</p>`);
     return `
       <div class="overlay" id="ov">
         <div class="modal" style="max-width:520px;">
@@ -4639,6 +4957,28 @@ function openDataModal(){
             </label>
           </div>
           <div class="note" style="margin-bottom:20px;">Восстановление из файла заменит текущие рабочие данные (задачи, проекты, календарь, финансы, сотрудников).</div>
+
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Автоматические бэкапы</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Сервер сам сохраняет полный снимок раз в сутки, независимо от того, зашёл кто-то в приложение или нет. Хранится последние 14 дней.</p>
+          <div class="item-list" style="margin-bottom:20px;">
+            ${autoBackupsHtml}
+          </div>
+
+          ${hasRole('Руководитель','Ассистент') ? `
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Журнал действий — кто что изменил</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Последние значимые изменения: постановка и удаление задач, изменение дедлайнов, удаление проектов/блоков/событий, работа с сотрудниками.</p>
+          <div class="item-list" style="margin-bottom:20px;max-height:320px;overflow-y:auto;">
+            ${state.auditLog.length ? state.auditLog.slice().reverse().slice(0,100).map(a=>`
+              <div class="item">
+                <div class="main">
+                  <div class="title">${AUDIT_ACTION_LABELS[a.action]||a.action}</div>
+                  <div class="meta"><span>${escapeHtml(empName(a.actorId))}</span><span>${new Date(a.at).toLocaleString('ru-RU')}</span></div>
+                  ${a.details?`<div class="desc">${escapeHtml(a.details)}</div>`:''}
+                </div>
+              </div>
+            `).join('') : `<p class="subtitle" style="margin:0;">Журнал пока пуст</p>`}
+          </div>
+          ` : ''}
 
           <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Корзина — рабочие данные (${allTrash.length})</h4>
           <div class="item-list" style="margin-bottom:20px;">
@@ -4761,8 +5101,23 @@ function openDataModal(){
       await restoreTrashItem(true, b.dataset.restorePersonal);
       modal.innerHTML = body(); wire(); render();
     });
+    modal.querySelectorAll('[data-download-autobackup]').forEach(b=>b.onclick=async ()=>{
+      const key = b.dataset.downloadAutobackup;
+      try{
+        const raw = await sGet(key, true);
+        if(raw===null){ toast('Не удалось скачать — попробуйте ещё раз'); return; }
+        const parsed = JSON.parse(raw);
+        downloadTextFile(`${key.replace(/:/g,'-')}.json`, 'application/json', JSON.stringify(parsed.data||parsed, null, 2));
+      }catch(e){ toast('Не удалось скачать бэкап'); }
+    });
   }
   wire();
+  if(hasRole('Руководитель','Ассистент')){
+    fetch('/api/auto-backups', {credentials:'same-origin'})
+      .then(r=>r.ok?r.json():{backups:[]})
+      .then(data=>{ autoBackups = data.backups||[]; modal.innerHTML = body(); wire(); })
+      .catch(()=>{ autoBackups = []; modal.innerHTML = body(); wire(); });
+  }
 }
 
 function openStaffModal(){
@@ -4812,6 +5167,7 @@ function openStaffModal(){
       state.employees = before.concat([{id:uid(), name, role}]);
       const ok = await saveEmployees();
       if(!ok){ state.employees = before; saveFailedToast(); return; }
+      logAudit('employee_added', `«${name}»${role?` (${role})`:''}`);
       modal.innerHTML = body(); wire(); render();
     };
     modal.querySelectorAll('[data-view-tasks]').forEach(b=>b.onclick=()=>{
@@ -4836,6 +5192,7 @@ function openStaffModal(){
       state.employees = before.filter(e=>e.id!==b.dataset.delEmp);
       const ok = await saveEmployees();
       if(!ok){ state.employees = before; saveFailedToast(); return; }
+      if(doomedEmp) logAudit('employee_deleted', `«${doomedEmp.name}»`);
       modal.innerHTML = body(); wire(); render();
     });
   }
@@ -4925,6 +5282,7 @@ async function startApp(){
   if(!state.taskFilterEmployee && state.currentUserId) state.taskFilterEmployee = state.currentUserId;
   state.knownTaskIds = new Set(state.tasksWork.map(t=>t.id));
   state.knownEventIds = new Set(state.events.map(e=>e.id));
+  state.knownApprovedIds = new Set(state.tasksWork.filter(t=>t.approvedAt).map(t=>t.id));
   render();
   if(state.browserNotify && 'Notification' in window && Notification.permission==='granted'){
     checkNotificationsTick();
@@ -4934,6 +5292,7 @@ async function startApp(){
     setInterval(checkNotificationsTick, 60000);
     setInterval(checkNewTasksTick, 60000);
     setInterval(checkNewEventsTick, 60000);
+    setInterval(checkTaskApprovedTick, 60000);
   }
 }
 (async function init(){
@@ -4944,6 +5303,9 @@ async function startApp(){
   }
   state.currentUserId = emp.id;
   await startApp();
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('/sw.js').catch(()=>{});
+  }
 })();
 </script>
 </body>

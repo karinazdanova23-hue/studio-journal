@@ -1,0 +1,15 @@
+{
+  "name": "Единый журнал — Свободное Пространство",
+  "short_name": "Единый журнал",
+  "description": "Задачи, календарь, финансы и сотрудники студии «Свободное Пространство»",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F7F4EC",
+  "theme_color": "#20344F",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

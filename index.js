@@ -70,6 +70,36 @@ async function loadStoreFromBackend() {
 
 let store = { kv: {}, credentials: {} };
 
+// ---------- автоматический бэкап по расписанию (снимок всего store.kv раз в сутки) ----------
+const AUTO_BACKUP_PREFIX = 'backup:auto:';
+const AUTO_BACKUP_RETENTION_DAYS = 14;
+function isoDate(d) { return d.toISOString().slice(0, 10); }
+async function runAutoBackup() {
+  try {
+    const today = isoDate(new Date());
+    const key = AUTO_BACKUP_PREFIX + today;
+    // Копируем весь текущий kv (кроме самих бэкапов, чтобы не вкладывать бэкапы в бэкапы)
+    const snapshot = {};
+    for (const k of Object.keys(store.kv)) {
+      if (!k.startsWith(AUTO_BACKUP_PREFIX)) snapshot[k] = store.kv[k];
+    }
+    store.kv[key] = JSON.stringify({ takenAt: new Date().toISOString(), data: snapshot });
+    // Чистим бэкапы старше срока хранения
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - AUTO_BACKUP_RETENTION_DAYS);
+    const cutoffStr = isoDate(cutoff);
+    Object.keys(store.kv).forEach(k => {
+      if (k.startsWith(AUTO_BACKUP_PREFIX)) {
+        const dateStr = k.slice(AUTO_BACKUP_PREFIX.length);
+        if (dateStr < cutoffStr) delete store.kv[k];
+      }
+    });
+    await persist();
+    console.log(`Автоматический бэкап создан: ${key}`);
+  } catch (e) {
+    console.error('Ошибка автоматического бэкапа:', e.message);
+  }
+}
+
 // Пишем по очереди (без параллельных записей), чтобы не гонять одновременные PUT
 let writeQueue = Promise.resolve();
 function persist() {
@@ -146,7 +176,7 @@ function isPrivilegedRole(role) {
 }
 // Ключи, которые может читать/писать только Руководитель/Ассистент
 function isRestrictedKey(key) {
-  return key.startsWith('funds:') || key.startsWith('personal:');
+  return key.startsWith('funds:') || key.startsWith('personal:') || key.startsWith('backup:') || key.startsWith('audit:');
 }
 // Ключ, который может ИЗМЕНЯТЬ только Руководитель/Ассистент (но читать может любой залогиненный)
 function isRosterKey(key) {
@@ -261,6 +291,23 @@ app.delete('/api/storage/:key', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- список автоматических бэкапов (только Руководитель/Ассистент) ----------
+app.get('/api/auto-backups', requireAuth, (req, res) => {
+  if (!isPrivilegedRole(req.employee.role)) {
+    return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
+  }
+  const list = Object.keys(store.kv)
+    .filter(k => k.startsWith(AUTO_BACKUP_PREFIX))
+    .map(k => {
+      const date = k.slice(AUTO_BACKUP_PREFIX.length);
+      let takenAt = null;
+      try { takenAt = JSON.parse(store.kv[k]).takenAt; } catch (e) {}
+      return { key: k, date, takenAt };
+    })
+    .sort((a, b) => b.date.localeCompare(a.date));
+  res.json({ backups: list });
+});
+
 // ---------- статика (сам интерфейс) ----------
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
@@ -284,4 +331,8 @@ app.get('*', (req, res) => {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Единый журнал: сервер запущен на порту ${PORT} (слушает 0.0.0.0)`);
   });
+
+  // Автобэкап: один раз вскоре после старта (на случай долгого простоя сервера), затем раз в сутки
+  setTimeout(runAutoBackup, 60 * 1000);
+  setInterval(runAutoBackup, 24 * 60 * 60 * 1000);
 })();

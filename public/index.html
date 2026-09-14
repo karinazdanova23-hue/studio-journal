@@ -186,6 +186,7 @@
   .item.is-done{opacity:.72;}
   .badge{font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap;}
   .badge.progress{background:var(--ochre-bg);color:var(--ochre);}
+  .badge.approval{background:var(--rose-bg);color:var(--rose);}
   .badge.review{background:rgba(51,80,125,0.12);color:var(--indigo);}
   .badge.done{background:var(--teal-bg);color:var(--teal);}
   .badge.prio-high{background:var(--brick-bg);color:var(--brick);}
@@ -779,7 +780,7 @@ const TABS = [
 ];
 const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', birthday:'Дни рождения', personal:'Личные дела Карины'};
 const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', birthday:'var(--rose)', personal:'var(--plum)'};
-const STATUSES = {progress:'В работе', review:'На проверке', done:'Готово'};
+const STATUSES = {progress:'В работе', approval:'На согласовании', review:'На проверке', done:'Готово'};
 const PRIORITIES = {low:'Низкий', med:'Средний', high:'Высокий'};
 
 function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -1328,9 +1329,18 @@ function projectsWithoutBlock(){
   const blockIds = new Set(state.blocksWork.map(b=>b.id));
   return state.projectsWork.filter(p=>!p.blockId || !blockIds.has(p.blockId));
 }
+// Все задачи блока: и те, что привязаны к нему напрямую, и те, что попадают через проект внутри блока.
+function tasksInBlock(blockId){
+  const projIds = new Set(projectsInBlock(blockId).map(p=>p.id));
+  return state.tasksWork.filter(t=> t.blockId===blockId || (t.projectId && projIds.has(t.projectId)));
+}
+// Задачи, привязанные к блоку напрямую (без проекта) — для отображения отдельным списком.
+function directTasksInBlock(blockId){
+  return state.tasksWork.filter(t=>t.blockId===blockId && !t.projectId);
+}
 function isBlockCompleted(blockId){
-  const projects = projectsInBlock(blockId);
-  return projects.length>0 && projects.every(p=>isProjectCompleted(false, p.id));
+  const tasks = tasksInBlock(blockId);
+  return tasks.length>0 && tasks.every(t=>t.status==='done');
 }
 function activeBlocksFor(){
   return state.blocksWork.filter(b=>!isBlockCompleted(b.id));
@@ -2245,7 +2255,7 @@ function renderOverview(root){
       <div class="item-list" style="margin-bottom:24px;">
         ${(() => {
           const allOpen = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
-            .filter(t=> t.status==='progress' && (viewCompanyWide || t.assigneeId===viewingId));
+            .filter(t=> (t.status==='progress'||t.status==='approval') && (viewCompanyWide || t.assigneeId===viewingId));
           const today = todayISO();
           const overdueList = allOpen.filter(t=>t.deadline && t.deadline<today).sort((a,b)=>a.deadline.localeCompare(b.deadline));
           const todayList = allOpen.filter(t=>t.deadline===today);
@@ -2923,6 +2933,7 @@ function taskItemHtml(t, personal, opts){
           <span class="badge ${t.status||'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]}</span>
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(personal,t.projectId))}</span>`:''}
+          ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${opts.orphanParentName?`<span>⤷ подзадача: ${escapeHtml(opts.orphanParentName)}</span>`:''}
           ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
           ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
@@ -3058,8 +3069,9 @@ function renderTaskBoard(el, personal){
   if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
   if(selected==='none') list = list.filter(t=>!t.projectId);
   else if(typeof selected==='string' && selected.startsWith('block:')){
-    const projectIdsInBlock = projectsInBlock(selected.slice(6)).map(p=>p.id);
-    list = list.filter(t=>projectIdsInBlock.includes(t.projectId));
+    const bid = selected.slice(6);
+    const projectIdsInBlock = new Set(projectsInBlock(bid).map(p=>p.id));
+    list = list.filter(t=>t.blockId===bid || (t.projectId && projectIdsInBlock.has(t.projectId)));
   }
   else if(selected!=='all') list = list.filter(t=>t.projectId===selected);
 
@@ -3402,11 +3414,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
         <div class="field"><label>Описание *</label><textarea id="t_desc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
         <div class="field"><label>Ссылка (необязательно)</label><input id="t_link" type="text" placeholder="https://..." value="${existing?escapeHtml(existing.link||''):''}"></div>
         ${!parentId?`
-        <div class="field"><label>Проект</label>
-          <select id="t_project">
-            <option value="">Без проекта</option>
-            ${projects.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (state.selectedProject[selKey]===p.id?'selected':'')}>${escapeHtml(p.name)}</option>`).join('')}
-          </select>
+        <div class="field-row">
+          <div class="field"><label>Проект${!personal?' *':' (необязательно)'}</label>
+            <select id="t_project">
+              <option value="">${!personal?'— выберите проект —':'Без проекта'}</option>
+              ${projects.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (state.selectedProject[selKey]===p.id?'selected':'')}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+          </div>
+          ${!personal?`
+          <div class="field"><label>Блок *</label>
+            <select id="t_block">
+              <option value="">— выберите блок —</option>
+              ${state.blocksWork.map(b=>`<option value="${b.id}" ${existing&&existing.blockId===b.id?'selected':''}>📦 ${escapeHtml(b.name)}</option>`).join('')}
+            </select>
+          </div>`:''}
         </div>`:''}
         <div class="field-row" id="t_purchase_wrap" style="${initialIsPurchases?'':'display:none;'}">
           <div class="field"><label>Сумма покупки (необязательно)</label><input type="number" min="0" step="0.01" class="mono" id="t_purchase_amount" value="${existing&&existing.purchaseAmount?existing.purchaseAmount:''}"></div>
@@ -3611,6 +3632,12 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     if(!personal && !assigneeId) firstInvalid = firstInvalid || flagInvalid('t_assignee');
     if(!createdDate) firstInvalid = firstInvalid || flagInvalid('t_createdDate');
     if(!deadline) firstInvalid = firstInvalid || flagInvalid('t_deadline');
+    if(!parentId && !personal){
+      const projectEl = document.getElementById('t_project');
+      const blockEl = document.getElementById('t_block');
+      if(projectEl && !projectEl.value) firstInvalid = firstInvalid || flagInvalid('t_project');
+      if(blockEl && !blockEl.value) firstInvalid = firstInvalid || flagInvalid('t_block');
+    }
     const statusVal = document.getElementById('t_status').value;
     const completionCommentVal = document.getElementById('t_completion_comment').value.trim();
     if(statusVal==='done' && !completionCommentVal) firstInvalid = firstInvalid || flagInvalid('t_completion_comment');
@@ -3658,6 +3685,9 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     const projectId = parentId
       ? (parentTask ? parentTask.projectId : (existing?existing.projectId||null:null))
       : (document.getElementById('t_project').value || null);
+    const blockId = parentId
+      ? (parentTask ? parentTask.blockId : (existing?existing.blockId||null:null))
+      : ((!personal && document.getElementById('t_block')) ? (document.getElementById('t_block').value || null) : (existing ? (existing.blockId||null) : null));
     const chosenStatus = statusVal;
     const completedAt = chosenStatus==='done'
       ? (existing && existing.status==='done' ? existing.completedAt : todayISO())
@@ -3668,6 +3698,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       description,
       link,
       projectId,
+      blockId,
       parentId: parentId||null,
       assigneeId: assigneeId || null,
       creatorId,
@@ -3677,6 +3708,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       status: chosenStatus,
       completedAt,
       completionComment: chosenStatus==='done' ? completionCommentVal : '',
+      completionLink: existing ? (existing.completionLink||'') : '',
       eventId: document.getElementById('t_event').value || null,
       purchaseAmount: document.getElementById('t_purchase_amount').value ? parseFloat(document.getElementById('t_purchase_amount').value) : null,
       purchaseStore: document.getElementById('t_purchase_store').value.trim(),
@@ -3684,6 +3716,11 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       seriesId: existing ? (existing.seriesId||null) : null,
       // Если дедлайн перенесён — старая причина задержки больше не актуальна, потребуется новая при следующей просрочке.
       overdueReason: (existing && existing.deadline===deadline) ? (existing.overdueReason||'') : '',
+      reworkNote: existing ? (existing.reworkNote||'') : '',
+      approvedAt: existing ? (existing.approvedAt||null) : null,
+      approvedBy: existing ? (existing.approvedBy||null) : null,
+      comments: existing ? (existing.comments||[]) : [],
+      sortOrder: existing ? (existing.sortOrder||0) : 0,
     };
 
     if(!existing && repeatEl && repeatEl.value!=='none'){
@@ -4271,8 +4308,7 @@ function renderTaskAnalytics(el){
   function barColor(pct){ return pct>=70?'var(--teal)':pct>=30?'var(--ochre)':'var(--brick)'; }
 
   const blockRows = state.blocksWork.map(b=>{
-    const projIds = projectsInBlock(b.id).map(p=>p.id);
-    const tasks = state.tasksWork.filter(t=>projIds.includes(t.projectId));
+    const tasks = tasksInBlock(b.id);
     const done = tasks.filter(t=>t.status==='done').length;
     return {name:b.name, total:tasks.length, done, pct: tasks.length ? Math.round(done/tasks.length*100) : 0};
   }).filter(r=>r.total>0);
@@ -4388,6 +4424,7 @@ function renderTaskReport(el){
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="meta">
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
+          ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
           <span>Срок: ${t.deadline?fmtDate(t.deadline):'—'}</span>
           <span>Закрыто: ${fmtDate(t.completedAt)}</span>
@@ -4406,6 +4443,7 @@ function renderTaskReport(el){
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="meta">
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
+          ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
           <span>Срок: ${t.deadline?fmtDate(t.deadline):'—'}</span>
           <span class="badge" style="background:${t.status==='review'?'var(--ochre-bg,#F3E9D6)':'var(--brick-bg,#F6E2E2)'};color:${t.status==='review'?'var(--ochre)':'var(--brick)'};">${STATUSES[t.status]||t.status}</span>
@@ -4588,10 +4626,17 @@ function renderArchiveTab(root){
       <div style="margin-bottom:24px;">
         ${completedBlocksFor().map(b=>{
           const blockProjects = projectsInBlock(b.id);
+          const directTasks = directTasksInBlock(b.id).filter(t=>!t.parentId).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
           return `
             <div class="note" style="margin-bottom:10px;background:var(--rose-bg);border-color:var(--rose);">
-              <strong>📦 ${escapeHtml(b.name)}</strong> <span class="subtitle">— все проекты (${blockProjects.length}) завершены</span>
+              <strong>📦 ${escapeHtml(b.name)}</strong> <span class="subtitle">— все задачи блока завершены</span>
             </div>
+            ${directTasks.length ? `
+              <div class="note" style="margin:0 0 8px 20px;"><strong>Задачи блока напрямую</strong> <span class="subtitle">— (${directTasks.length})</span></div>
+              <div class="item-list" style="margin:0 0 14px 20px;">
+                ${directTasks.map(t=>taskItemHtml(t, false, {depth:0})).join('')}
+              </div>
+            ` : ''}
             ${blockProjects.map(p=>{
               const tasks = projectTasksFor(false, p.id).filter(t=>!t.parentId).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
               return `

@@ -528,7 +528,7 @@ function showConfirm(message, confirmLabel){
     ov.innerHTML=`
       <div class="modal" style="max-width:360px;">
         <h3>Подтвердите действие</h3>
-        <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;line-height:1.5;">${escapeHtml(message)}</p>
+        <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;line-height:1.5;white-space:pre-line;">${escapeHtml(message)}</p>
         <div class="modal-actions">
           <button class="btn ghost" id="cfNo">Отмена</button>
           <button class="btn danger" id="cfYes">${escapeHtml(confirmLabel||'Удалить')}</button>
@@ -1630,11 +1630,15 @@ function whyCantDelete(t){
 function canEditTask(t, personal){
   if(personal) return true;
   if(!t || !t.creatorId) return true;
-  return !!state.currentUserId && state.currentUserId === t.creatorId;
+  if(!state.currentUserId) return false;
+  if(state.currentUserId === t.creatorId) return true;
+  // Руководитель и Ассистент могут редактировать любую рабочую задачу — например, чтобы
+  // разнести существующие задачи по блокам и проектам, даже если ставил их не он.
+  return hasRole('Руководитель','Ассистент');
 }
 function whyCantEdit(t){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
-  return `Редактировать задачу может только тот, кто её поставил — ${empName(t.creatorId)}.`;
+  return `Редактировать задачу может только тот, кто её поставил — ${empName(t.creatorId)} — либо Руководитель/Ассистент.`;
 }
 function whyCantComplete(t){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
@@ -2829,6 +2833,37 @@ function openEventModal(id, presetDate){
       notes: document.getElementById('f_notes').value.trim(),
       seriesId: existing ? (existing.seriesId||null) : null,
     };
+    if(category==='vacation'){
+      if(!emp.length){ toast('Отпуск обязательно привязывается к конкретному сотруднику — отметьте его в «Участники»'); return; }
+      const repeatTypeEarly = repeatEl ? repeatEl.value : 'none';
+      let vacDates;
+      if(!existing && repeatTypeEarly!=='none'){
+        const untilVal = document.getElementById('f_repeat_until').value || data.date;
+        const weekdaySet = new Set(Array.from(document.querySelectorAll('#f_weekdays .cat-chip:not(.off)')).map(c=>parseInt(c.dataset.wd,10)));
+        vacDates = generateRecurrenceDates(data.date, repeatTypeEarly, weekdaySet, untilVal, 300);
+        if(!vacDates.length) vacDates = [data.date];
+      } else {
+        vacDates = [data.date];
+      }
+      const vacStart = vacDates.reduce((a,b)=>a<b?a:b);
+      const vacEnd = vacDates.reduce((a,b)=>a>b?a:b);
+      const conflicts = [];
+      emp.forEach(empId=>{
+        state.tasksWork.filter(t=>t.assigneeId===empId && t.status!=='done' && t.deadline).forEach(t=>{
+          const inRange = t.deadline>=vacStart && t.deadline<=vacEnd;
+          const soon = !inRange && t.deadline<vacStart && Math.round((new Date(vacStart)-new Date(t.deadline))/86400000)<=7;
+          if(inRange || soon){
+            conflicts.push(`• ${empName(empId)} — «${t.title}» (срок ${fmtDate(t.deadline)}${inRange?', попадает на сам отпуск':', близко к началу отпуска'})`);
+          }
+        });
+      });
+      if(conflicts.length){
+        const shown = conflicts.slice(0,8).join('\n');
+        const more = conflicts.length>8 ? `\n…и ещё ${conflicts.length-8}` : '';
+        const proceed = await showConfirm(`⚠️ Дедлайны следующих задач не состыкуются с этим отпуском:\n${shown}${more}\n\nВсё равно сохранить отпуск?`, 'Всё равно сохранить');
+        if(!proceed) return;
+      }
+    }
     const repeatType = repeatEl ? repeatEl.value : 'none';
     if(!existing && repeatType!=='none'){
       const untilVal = document.getElementById('f_repeat_until').value || data.date;

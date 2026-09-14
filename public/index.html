@@ -741,8 +741,10 @@ const state = {
   taskViewMode:'assigned',
   bulkSelectMode:false,
   bulkSelectedIds:new Set(),
+  taskFilterBlockId:{work:null, personal:null},
+  taskFilterProjectIds:{work:new Set(), personal:new Set()},
+  taskFilterNoProject:{work:false, personal:false},
   taskFilterStatus:'all',
-  selectedProject:{work:'all', personal:'all'},
   projectsWork:[],
   blocksWork:[],
   auditLog:[],
@@ -1021,7 +1023,9 @@ async function applyIdeaToProject(idea){
   });
   setTasksFor(false, tasksFor(false).concat(newTasks));
   await persistTasksFor(false);
-  state.selectedProject.work = project.id;
+  state.taskFilterProjectIds.work = new Set([project.id]);
+  state.taskFilterNoProject.work = false;
+  state.taskFilterBlockId.work = null;
   state.ideaBankWork = state.ideaBankWork.filter(i=>i.id!==idea.id);
   await saveIdeaBank();
   toast(isNewProject
@@ -1074,7 +1078,8 @@ async function applyChecklistToTasks(checklist){
   setTasksFor(false, tasksFor(false).concat([parentTask]).concat(subtasks));
   await persistTasksFor(false);
   state.taskSubtab = 'work';
-  state.selectedProject.work = 'all';
+  state.taskFilterProjectIds.work = new Set();
+  state.taskFilterNoProject.work = false;
   toast(`Добавлена задача «${checklist.name}» с ${subtasks.length} пунктами чек-листа`);
 }
 const PURCHASES_PROJECT_NAME = 'ПОКУПКИ';
@@ -1271,6 +1276,7 @@ async function saveAuditLog(){ return await sSet('audit:log', JSON.stringify(sta
 const AUDIT_LOG_MAX = 500;
 const AUDIT_ACTION_LABELS = {
   task_created: 'Поставил(а) задачу',
+  project_created: 'Создал(а) проект',
   task_deleted: 'Удалил(а) задачу',
   deadline_changed: 'Изменил(а) дедлайн',
   project_deleted: 'Удалил(а) проект',
@@ -1351,6 +1357,57 @@ function completedBlocksFor(){
 function blockName(blockId){
   const b = state.blocksWork.find(x=>x.id===blockId);
   return b ? b.name : '—';
+}
+// Разовая синхронизация для УЖЕ существующих задач (созданных до появления блоков или подзадач с наследованием):
+// 1) если у задачи есть проект, но нет блока — подставляем блок этого проекта;
+// 2) если у задачи есть родитель — подтягиваем актуальные проект и блок от родителя (вверх по всей цепочке).
+// Возвращает {changed: число обновлённых задач} или null при сбое сохранения.
+async function syncTaskBlocksAndProjects(){
+  const before = state.tasksWork;
+  const byId = {};
+  before.forEach(t=>{ byId[t.id]=t; });
+
+  // Шаг 1: у корневых задач с проектом, но без блока — подставляем блок проекта.
+  let step1 = before.map(t=>{
+    if(!t.parentId && t.projectId && !t.blockId){
+      const proj = state.projectsWork.find(p=>p.id===t.projectId);
+      if(proj && proj.blockId) return {...t, blockId: proj.blockId};
+    }
+    return t;
+  });
+  const step1ById = {};
+  step1.forEach(t=>{ step1ById[t.id]=t; });
+
+  // Шаг 2: у подзадач (любой глубины) — берём проект/блок от самого верхнего предка.
+  function resolveRoot(t){
+    let current = t;
+    const seen = new Set();
+    while(current.parentId && step1ById[current.parentId] && !seen.has(current.parentId)){
+      seen.add(current.parentId);
+      current = step1ById[current.parentId];
+    }
+    return current;
+  }
+  let changed = 0;
+  const step2 = step1.map(t=>{
+    if(!t.parentId) return t;
+    const root = resolveRoot(t);
+    if(root.id===t.id) return t;
+    if(t.projectId!==root.projectId || t.blockId!==root.blockId){
+      changed++;
+      return {...t, projectId: root.projectId||null, blockId: root.blockId||null};
+    }
+    return t;
+  });
+  // Считаем и изменения из шага 1 (корневые задачи, которым подставили блок)
+  step1.forEach((t,i)=>{ if(!t.parentId && t.blockId!==before[i].blockId) changed++; });
+
+  if(!changed) return {changed:0};
+  setTasksFor(false, step2);
+  const ok = await saveTasksWork();
+  if(!ok){ setTasksFor(false, before); return null; }
+  logAudit('sync_blocks_projects', `Обновлено задач: ${changed}`);
+  return {changed};
 }
 function tasksFor(personal){ return personal ? state.personalTasks : state.tasksWork; }
 async function migrateLegacyPersonalFunds(){
@@ -1942,7 +1999,7 @@ function renderReminderPanel(){
       <span>Уведомления браузера${!state.browserNotify?' (пока выключены)':''}</span>
       <label class="switch"><input type="checkbox" id="notifyToggle" ${state.browserNotify?'checked':''}><span class="slider"></span></label>
     </div>
-    <div class="note" style="margin-top:10px;">Также присылает уведомление: если вам поставили новую задачу; добавили новое событие с вашим участием; до начала события с вашим участием остался 1 час; а также подтверждение самому себе, когда вы поставили задачу, создали событие или отчитались по своей задаче — чтобы точно видеть, что действие сохранилось. Работает, пока эта вкладка открыта в браузере. Если вкладка или браузер закрыты — уведомления не приходят, это ограничение приложения без сервера.</div>
+    <div class="note" style="margin-top:10px;">Также присылает уведомление: если вам поставили новую задачу; добавили новое событие с вашим участием; до начала события с вашим участием остался 1 час; а также подтверждение самому себе, когда вы поставили задачу, создали проект, создали событие или отчитались по своей задаче — чтобы точно видеть, что действие сохранилось. Работает, пока эта вкладка открыта в браузере. Если вкладка или браузер закрыты — уведомления не приходят, это ограничение приложения без сервера.</div>
   `;
   document.body.appendChild(panel);
   panel.querySelectorAll('[data-open-task]').forEach(r=>r.onclick=()=>{
@@ -2974,15 +3031,14 @@ function taskItemHtml(t, personal, opts){
 function renderTaskBoard(el, personal){
   const selKey = personal?'personal':'work';
   const projects = activeProjectsFor(personal);
-  let selected = state.selectedProject[selKey];
-  // Если выбранный проект (или блок) только что стал завершённым и уехал в архив — сбрасываем на "Все"
-  if(selected && typeof selected==='string' && selected.startsWith('block:')){
-    const bid = selected.slice(6);
-    if(!activeBlocksFor().some(b=>b.id===bid)){ selected='all'; state.selectedProject[selKey]='all'; }
-  } else if(selected!=='all' && selected!=='none' && !projects.some(p=>p.id===selected)){
-    selected = 'all';
-    state.selectedProject[selKey] = 'all';
+  const activeBlockId = state.taskFilterBlockId[selKey];
+  // Если выбранный блок только что стал завершённым и уехал в архив — сбрасываем на "Все блоки"
+  if(activeBlockId && !activeBlocksFor().some(b=>b.id===activeBlockId)){
+    state.taskFilterBlockId[selKey] = null;
   }
+  // Убираем из выбора проекты, которые уже архивировались
+  const validProjIds = new Set(projects.map(p=>p.id));
+  state.taskFilterProjectIds[selKey].forEach(pid=>{ if(!validProjIds.has(pid)) state.taskFilterProjectIds[selKey].delete(pid); });
 
   el.innerHTML = `
     <div class="cat-filters" id="blockRow" style="display:none;"></div>
@@ -3010,33 +3066,63 @@ function renderTaskBoard(el, personal){
 
   const projRow = el.querySelector('#projRow');
   const blockRow = el.querySelector('#blockRow');
-  function projChip(p){
-    return `<button class="cat-chip ${selected===p.id?'':'off'}" data-proj="${p.id}"><span class="dot" style="background:var(--indigo);"></span>${escapeHtml(p.name)}</button>`;
-  }
+
   if(!personal && activeBlocksFor().length){
     blockRow.style.display = '';
     blockRow.className = 'cat-filters block-row';
     blockRow.innerHTML = `
       <span class="subtitle" style="margin:0 2px 0 0;font-weight:700;color:var(--rose);">📦 Блоки:</span>
-      ${activeBlocksFor().map(b=>`<button class="cat-chip ${selected==='block:'+b.id?'':'off'}" data-proj="block:${b.id}" style="border-color:var(--rose);"><span class="dot" style="background:var(--rose);"></span>${escapeHtml(b.name)}</button>`).join('')}
+      <button class="cat-chip ${!activeBlockId?'':'off'}" data-block="__all__" style="border-color:var(--rose);">Все блоки</button>
+      ${activeBlocksFor().map(b=>`<button class="cat-chip ${activeBlockId===b.id?'':'off'}" data-block="${b.id}" style="border-color:var(--rose);"><span class="dot" style="background:var(--rose);"></span>${escapeHtml(b.name)}</button>`).join('')}
     `;
   } else {
     blockRow.style.display = 'none';
     blockRow.innerHTML = '';
   }
-  const projChipsHtml = projects.map(projChip).join('');
+
+  // Если активен блок — показываем только его проекты (каскад); иначе все проекты в области видимости.
+  const projectsInScope = (!personal && activeBlockId) ? projects.filter(p=>p.blockId===activeBlockId) : projects;
+  function projChip(p){
+    const isSel = state.taskFilterProjectIds[selKey].has(p.id);
+    return `<button class="cat-chip ${isSel?'':'off'}" data-proj="${p.id}"><span class="dot" style="background:var(--indigo);"></span>${escapeHtml(p.name)}</button>`;
+  }
+  const noSelection = !state.taskFilterNoProject[selKey] && state.taskFilterProjectIds[selKey].size===0;
   projRow.innerHTML = `
-    <button class="cat-chip ${selected==='all'?'':'off'}" data-proj="all"><span class="dot" style="background:var(--ink-soft);"></span>Все</button>
-    <button class="cat-chip ${selected==='none'?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>
-    ${projChipsHtml}
+    <button class="cat-chip ${noSelection?'':'off'}" data-proj="all"><span class="dot" style="background:var(--ink-soft);"></span>Все${!personal && activeBlockId?' (в блоке)':''}</button>
+    <button class="cat-chip ${state.taskFilterNoProject[selKey]?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>
+    ${projectsInScope.map(projChip).join('')}
     <button class="btn ghost small" id="manageProjBtn">+ Проект</button>
     ${!personal?`<button class="btn ghost small" id="bulkSelectToggle">${state.bulkSelectMode?'✕ Отменить выбор':'☑️ Выбрать несколько'}</button>`:''}
   `;
-  blockRow.querySelectorAll('[data-proj]').forEach(chip=>{
-    chip.onclick=()=>{ state.selectedProject[selKey]=chip.dataset.proj; render(); };
+
+  const blockChips = blockRow.querySelectorAll('[data-block]');
+  blockChips.forEach(chip=>{
+    chip.onclick=()=>{
+      state.taskFilterBlockId[selKey] = chip.dataset.block==='__all__' ? null : chip.dataset.block;
+      // Смена блока сбрасывает выбор конкретных проектов — начинаем каскад заново.
+      state.taskFilterProjectIds[selKey] = new Set();
+      state.taskFilterNoProject[selKey] = false;
+      render();
+    };
   });
-  projRow.querySelectorAll('[data-proj]').forEach(chip=>{
-    chip.onclick=()=>{ state.selectedProject[selKey]=chip.dataset.proj; render(); };
+  projRow.querySelector('[data-proj="all"]').onclick=()=>{
+    state.taskFilterProjectIds[selKey] = new Set();
+    state.taskFilterNoProject[selKey] = false;
+    render();
+  };
+  projRow.querySelector('[data-proj="none"]').onclick=()=>{
+    state.taskFilterNoProject[selKey] = !state.taskFilterNoProject[selKey];
+    if(state.taskFilterNoProject[selKey]) state.taskFilterProjectIds[selKey] = new Set();
+    render();
+  };
+  projRow.querySelectorAll('[data-proj]:not([data-proj="all"]):not([data-proj="none"])').forEach(chip=>{
+    chip.onclick=()=>{
+      const pid = chip.dataset.proj;
+      if(state.taskFilterProjectIds[selKey].has(pid)) state.taskFilterProjectIds[selKey].delete(pid);
+      else state.taskFilterProjectIds[selKey].add(pid);
+      state.taskFilterNoProject[selKey] = false;
+      render();
+    };
   });
   projRow.querySelector('#manageProjBtn').onclick=()=>openProjectsModal(personal);
   const bulkToggleBtn = projRow.querySelector('#bulkSelectToggle');
@@ -3067,13 +3153,14 @@ function renderTaskBoard(el, personal){
     list = list.filter(t=>t.assigneeId===state.taskFilterEmployee);
   }
   if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
-  if(selected==='none') list = list.filter(t=>!t.projectId);
-  else if(typeof selected==='string' && selected.startsWith('block:')){
-    const bid = selected.slice(6);
-    const projectIdsInBlock = new Set(projectsInBlock(bid).map(p=>p.id));
-    list = list.filter(t=>t.blockId===bid || (t.projectId && projectIdsInBlock.has(t.projectId)));
+  if(state.taskFilterNoProject[selKey]){
+    list = list.filter(t=>!t.projectId);
+  } else if(state.taskFilterProjectIds[selKey].size){
+    list = list.filter(t=>state.taskFilterProjectIds[selKey].has(t.projectId));
+  } else if(!personal && activeBlockId){
+    const projectIdsInBlock = new Set(projectsInBlock(activeBlockId).map(p=>p.id));
+    list = list.filter(t=>t.blockId===activeBlockId || (t.projectId && projectIdsInBlock.has(t.projectId)));
   }
-  else if(selected!=='all') list = list.filter(t=>t.projectId===selected);
 
   const delegatedSummaryEl = el.querySelector('#delegatedSummary');
   if(delegatedSummaryEl){
@@ -3399,9 +3486,10 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   const projects = (currentProject && !activeProjects.some(p=>p.id===currentProject.id))
     ? activeProjects.concat([currentProject])
     : activeProjects;
+  const soleSelectedProjectId = state.taskFilterProjectIds[selKey].size===1 ? Array.from(state.taskFilterProjectIds[selKey])[0] : null;
   const initialProjectId = parentId
     ? (parentTask ? parentTask.projectId : null)
-    : (existing ? (existing.projectId||null) : (allProjects.some(p=>p.id===state.selectedProject[selKey]) ? state.selectedProject[selKey] : null));
+    : (existing ? (existing.projectId||null) : (allProjects.some(p=>p.id===soleSelectedProjectId) ? soleSelectedProjectId : null));
   const initialIsPurchases = !!(purchasesProject && initialProjectId===purchasesProject.id);
   const assistantEmp = state.employees.find(e=>e.role==='Ассистент');
   const modal = document.getElementById('modalRoot');
@@ -3415,12 +3503,6 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
         <div class="field"><label>Ссылка (необязательно)</label><input id="t_link" type="text" placeholder="https://..." value="${existing?escapeHtml(existing.link||''):''}"></div>
         ${!parentId?`
         <div class="field-row">
-          <div class="field"><label>Проект${!personal?' *':' (необязательно)'}</label>
-            <select id="t_project">
-              <option value="">${!personal?'— выберите проект —':'Без проекта'}</option>
-              ${projects.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (state.selectedProject[selKey]===p.id?'selected':'')}>${escapeHtml(p.name)}</option>`).join('')}
-            </select>
-          </div>
           ${!personal?`
           <div class="field"><label>Блок *</label>
             <select id="t_block">
@@ -3428,6 +3510,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
               ${state.blocksWork.map(b=>`<option value="${b.id}" ${existing&&existing.blockId===b.id?'selected':''}>📦 ${escapeHtml(b.name)}</option>`).join('')}
             </select>
           </div>`:''}
+          <div class="field" style="flex:2;"><label>Проект${!personal?' *':' (необязательно)'}</label>
+            <div style="display:flex;gap:6px;align-items:flex-start;">
+              <select id="t_project" style="flex:1;">
+                ${(()=>{
+                  const initialBlockId = !personal && existing ? (existing.blockId||'') : '';
+                  const scoped = (!personal && initialBlockId) ? projects.filter(p=>p.blockId===initialBlockId) : projects;
+                  const opts = [`<option value="">${!personal?'— выберите проект —':'Без проекта'}</option>`]
+                    .concat(scoped.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (soleSelectedProjectId===p.id?'selected':'')}>${escapeHtml(p.name)}</option>`));
+                  return opts.join('');
+                })()}
+              </select>
+              ${!personal?`<button type="button" class="btn ghost small" id="t_new_proj_btn" title="Создать новый проект, не выходя из формы">+ Новый</button>`:''}
+            </div>
+          </div>
         </div>`:''}
         <div class="field-row" id="t_purchase_wrap" style="${initialIsPurchases?'':'display:none;'}">
           <div class="field"><label>Сумма покупки (необязательно)</label><input type="number" min="0" step="0.01" class="mono" id="t_purchase_amount" value="${existing&&existing.purchaseAmount?existing.purchaseAmount:''}"></div>
@@ -3605,6 +3701,50 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   });
   if(initialEvCat) renderEventItems(initialEvCat);
 
+  function projectOptionsForBlock(blockId, selectedId){
+    const scoped = blockId ? projects.filter(p=>p.blockId===blockId) : projects;
+    const opts = [`<option value="">${!personal?'— выберите проект —':'Без проекта'}</option>`]
+      .concat(scoped.map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`));
+    return opts.join('');
+  }
+  const tBlockEl = document.getElementById('t_block');
+  const tProjectEl = document.getElementById('t_project');
+  if(tBlockEl && tProjectEl){
+    tBlockEl.onchange=()=>{
+      // Смена блока сужает список проектов до его состава; сохраняем текущий выбор,
+      // если выбранный проект всё ещё принадлежит новому блоку (иначе сбрасываем).
+      const currentProjId = tProjectEl.value;
+      const stillValid = currentProjId && projects.some(p=>p.id===currentProjId && p.blockId===tBlockEl.value);
+      tProjectEl.innerHTML = projectOptionsForBlock(tBlockEl.value, stillValid ? currentProjId : null);
+    };
+    tProjectEl.onchange=()=>{
+      // Если проект выбрали напрямую (например, до этого блок не выбирали) — подставляем его блок автоматически.
+      const projId = tProjectEl.value;
+      if(!projId) return;
+      const proj = projects.find(p=>p.id===projId);
+      if(proj && proj.blockId && tBlockEl.value!==proj.blockId){
+        tBlockEl.value = proj.blockId;
+        tProjectEl.innerHTML = projectOptionsForBlock(proj.blockId, projId);
+      }
+    };
+  }
+  const tNewProjBtn = document.getElementById('t_new_proj_btn');
+  if(tNewProjBtn) tNewProjBtn.onclick=async ()=>{
+    const blockId = tBlockEl ? tBlockEl.value : '';
+    if(!blockId){ toast('Сначала выберите блок — новый проект создастся сразу в нём'); return; }
+    const name = await showPrompt('Название нового проекта', '');
+    if(name===null || !name.trim()) return;
+    const before = state.projectsWork;
+    const newProj = {id:uid(), name:name.trim(), blockId};
+    state.projectsWork = before.concat([newProj]);
+    const ok = await saveProjectsWork();
+    if(!ok){ state.projectsWork = before; saveFailedToast(); return; }
+    logAudit('project_created', `«${newProj.name}» — блок «${blockName(blockId)}»`);
+    notifySelfSaved('✅ Проект создан', newProj.name);
+    projects.push(newProj);
+    tProjectEl.innerHTML = projectOptionsForBlock(blockId, newProj.id);
+  };
+
   function flagInvalid(elId){
     const elm = document.getElementById(elId);
     elm.classList.add('invalid');
@@ -3764,8 +3904,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
 
     const arr = tasksFor(personal);
     const beforeTasks = arr;
-    if(existing) setTasksFor(personal, arr.map(t=>t.id===existing.id?data:t));
-    else setTasksFor(personal, arr.concat([data]));
+    let toSave = existing ? arr.map(t=>t.id===existing.id?data:t) : arr.concat([data]);
+    // Если у самой задачи (не подзадачи) поменялся проект или блок — подтягиваем все подзадачи следом.
+    if(existing && !data.parentId && (existing.projectId!==data.projectId || existing.blockId!==data.blockId)){
+      function collectDescendantIds(rootId, list){
+        let ids=[];
+        list.filter(t=>t.parentId===rootId).forEach(c=>{ ids.push(c.id); ids = ids.concat(collectDescendantIds(c.id, list)); });
+        return ids;
+      }
+      const descendantIds = collectDescendantIds(data.id, toSave);
+      if(descendantIds.length){
+        toSave = toSave.map(t=>descendantIds.includes(t.id) ? {...t, projectId:data.projectId, blockId:data.blockId} : t);
+      }
+    }
+    setTasksFor(personal, toSave);
     const ok = await persistTasksFor(personal);
     if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(); return; }
     if(!existing){
@@ -3785,10 +3937,11 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   };
 }
 
-function openProjectsModal(personal){
+function openProjectsModal(personal, presetBlockId){
   const modal = document.getElementById('modalRoot');
   const selKey = personal?'personal':'work';
   const canDeleteProject = hasRole('Руководитель','Ассистент');
+  let quickBlockId = presetBlockId || null;
   function body(){
     const projects = projectsFor(personal);
     const blockSection = personal ? '' : `
@@ -3800,16 +3953,18 @@ function openProjectsModal(personal){
             <div class="item" style="background:var(--card);">
               <div class="main"><div class="title">${escapeHtml(b.name)}</div><div class="meta"><span>${projectsInBlock(b.id).length} проект(ов)</span></div></div>
               <div class="actions">
+                <button class="btn ghost small" data-quick-add-proj="${b.id}" title="Добавить проект сразу в этот блок">+ Проект</button>
                 <button class="btn ghost small" data-rename-block="${b.id}">✎</button>
                 <button class="btn danger small" data-del-block="${b.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять блоки может только Руководитель или Ассистент'}">✕</button>
               </div>
             </div>
           `).join('') || `<p class="subtitle" style="margin:0;">Блоков пока нет</p>`}
         </div>
-        <div class="field-row" style="margin:0;">
+        <div class="field-row" style="margin:0 0 12px;">
           <input id="block_name" placeholder="Например: Финансы" style="flex:1;">
           <button class="btn ghost small" id="addBlockBtn">+ Добавить блок</button>
         </div>
+        <button class="btn ghost small" id="syncBlocksBtn" style="${canDeleteProject?'':'opacity:.4;'}" ${canDeleteProject?'':'disabled'} title="${canDeleteProject?'Привести существующие задачи в соответствие: если у задачи есть проект без блока — подставить блок этого проекта; подзадачи подтянуть за родителем':'Доступно только Руководителю и Ассистенту'}">🔄 Обновить блоки/проекты у существующих задач</button>
       </div>
     `;
     function projectRow(p){
@@ -3852,7 +4007,16 @@ function openProjectsModal(personal){
           <div class="item-list" style="margin-bottom:16px;">
             ${projectsListHtml}
           </div>
-          <div class="field"><label>Название нового проекта</label><input id="proj_name" placeholder="Например: Запуск нового курса"></div>
+          <div class="field-row">
+            <div class="field" style="flex:2;"><label>Название нового проекта</label><input id="proj_name" placeholder="Например: Запуск нового курса"></div>
+            ${!personal?`
+            <div class="field"><label>Блок *</label>
+              <select id="proj_block">
+                <option value="">— выберите блок —</option>
+                ${state.blocksWork.map(b=>`<option value="${b.id}" ${quickBlockId===b.id?'selected':''}>📦 ${escapeHtml(b.name)}</option>`).join('')}
+              </select>
+            </div>`:''}
+          </div>
           <div class="modal-actions">
             <button class="btn ghost" id="closeProj">Закрыть</button>
             <button class="btn" id="addProj">Добавить</button>
@@ -3887,10 +4051,31 @@ function openProjectsModal(personal){
     document.getElementById('addProj').onclick=async ()=>{
       const name = document.getElementById('proj_name').value.trim();
       if(!name){ toast('Введите название'); return; }
-      setProjectsFor(personal, projectsFor(personal).concat([{id:uid(), name}]));
-      await persistProjectsFor(personal);
+      let blockIdForProj = null;
+      if(!personal){
+        const blockEl = document.getElementById('proj_block');
+        blockIdForProj = blockEl ? blockEl.value : '';
+        if(!blockIdForProj){
+          toast(state.blocksWork.length ? 'Выберите блок для проекта' : 'Сначала создайте блок — без него нельзя добавить проект');
+          return;
+        }
+      }
+      const before = projectsFor(personal);
+      const newProj = {id:uid(), name, blockId: blockIdForProj || null};
+      setProjectsFor(personal, before.concat([newProj]));
+      const ok = await persistProjectsFor(personal);
+      if(!ok){ setProjectsFor(personal, before); saveFailedToast(); return; }
+      logAudit('project_created', `«${name}»${blockIdForProj?` — блок «${blockName(blockIdForProj)}»`:''}`);
+      notifySelfSaved('✅ Проект создан', name);
+      quickBlockId = null;
       modal.innerHTML = body(); wire(); render();
     };
+    modal.querySelectorAll('[data-quick-add-proj]').forEach(b=>b.onclick=()=>{
+      quickBlockId = b.dataset.quickAddProj;
+      modal.innerHTML = body(); wire();
+      const nameInput = document.getElementById('proj_name');
+      if(nameInput){ nameInput.focus(); if(nameInput.scrollIntoView) nameInput.scrollIntoView({block:'center'}); }
+    });
     const addBlockBtn = document.getElementById('addBlockBtn');
     if(addBlockBtn) addBlockBtn.onclick=async ()=>{
       const name = document.getElementById('block_name').value.trim();
@@ -3899,6 +4084,15 @@ function openProjectsModal(personal){
       state.blocksWork = before.concat([{id:uid(), name}]);
       const ok = await saveBlocksWork();
       if(!ok){ state.blocksWork = before; saveFailedToast(); return; }
+      modal.innerHTML = body(); wire(); render();
+    };
+    const syncBlocksBtn = document.getElementById('syncBlocksBtn');
+    if(syncBlocksBtn) syncBlocksBtn.onclick=async ()=>{
+      if(!hasRole('Руководитель','Ассистент')){ toast('Доступно только Руководителю и Ассистенту'); return; }
+      if(!(await showConfirm('Проставить блок по проекту (где есть проект, но нет блока) и подтянуть проект/блок подзадачам от родителя — для всех существующих задач разом?', 'Обновить'))) return;
+      const result = await syncTaskBlocksAndProjects();
+      if(result===null){ saveFailedToast(); return; }
+      toast(result.changed ? `Обновлено задач: ${result.changed}` : 'Обновлять было нечего — всё уже согласовано');
       modal.innerHTML = body(); wire(); render();
     };
     modal.querySelectorAll('[data-rename-block]').forEach(b=>b.onclick=async ()=>{
@@ -3957,7 +4151,7 @@ function openProjectsModal(personal){
       await persistProjectsFor(personal);
       if(!personal) await saveTasksWork();
       if(doomedProj) logAudit('project_deleted', `«${doomedProj.name}»`);
-      if(state.selectedProject[selKey]===pid) state.selectedProject[selKey]='all';
+      if(state.taskFilterProjectIds[selKey]) state.taskFilterProjectIds[selKey].delete(pid);
       modal.innerHTML = body(); wire(); render();
     });
     if(!personal){
@@ -4956,8 +5150,11 @@ function openSearchModal(){
     resultsEl.querySelectorAll('[data-sr-project]').forEach(row=>row.onclick=()=>{
       finish();
       const personal = row.dataset.srProjectPersonal==='1';
-      state.tab='tasks'; state.taskSubtab = personal?'personal':'work';
-      state.selectedProject[personal?'personal':'work'] = row.dataset.srProject;
+      const key = personal?'personal':'work';
+      state.tab='tasks'; state.taskSubtab = key;
+      state.taskFilterProjectIds[key] = new Set([row.dataset.srProject]);
+      state.taskFilterNoProject[key] = false;
+      state.taskFilterBlockId[key] = null;
       render();
     });
     resultsEl.querySelectorAll('[data-sr-idea]').forEach(row=>row.onclick=()=>{
@@ -5220,7 +5417,9 @@ function openStaffModal(){
       closeModal();
       state.tab='tasks'; state.taskSubtab='work';
       state.taskFilterEmployee=empId;
-      state.selectedProject.work='all';
+      state.taskFilterProjectIds.work = new Set();
+      state.taskFilterNoProject.work = false;
+      state.taskFilterBlockId.work = null;
       render();
     });
     modal.querySelectorAll('[data-edit-emp]').forEach(b=>b.onclick=()=>{

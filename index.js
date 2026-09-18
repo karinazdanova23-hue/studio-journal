@@ -3,7 +3,6 @@ const os = require('os');
 const fs = require('fs');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 
@@ -127,28 +126,33 @@ function persist() {
   return writeQueue;
 }
 
-const app = express();
-app.use(express.json({ limit: '5mb' }));
-app.use(cookieParser());
-
 const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me-in-production-please';
 if (!process.env.SESSION_SECRET) {
   console.warn('[ВНИМАНИЕ] SESSION_SECRET не задан в переменных окружения — используется значение по умолчанию. Задайте свой секрет в панели Timeweb (Приложения → Переменные окружения).');
 }
 
-app.use(session({
-  // Хранилище сессий по умолчанию (в памяти процесса): при перезапуске сервера
-  // всем придётся войти заново — это нормально для небольшой команды.
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 дней
+const app = express();
+app.use(express.json({ limit: '5mb' }));
+app.use(cookieParser(SESSION_SECRET));
+
+// ---------- вход пользователя: подписанная cookie вместо серверной сессии в памяти ----------
+// Раньше вход хранился в express-session (память процесса Node). Проблема: при любом
+// перезапуске/передеплое/пересоздании контейнера на Timeweb (а также если приложение
+// когда-нибудь будет работать в нескольких экземплярах) эта память обнуляется — и все,
+// кто уже вошёл, внезапно перестают сохранять изменения (сервер отвечает 401, будто
+// они не входили). Подписанная cookie не зависит от памяти сервера: она сама содержит
+// id сотрудника и проверяется секретным ключом, поэтому вход переживает перезапуск сервера.
+const AUTH_COOKIE = 'auth';
+const AUTH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 дней
+function setAuthCookie(res, employeeId) {
+  res.cookie(AUTH_COOKIE, employeeId, {
+    signed: true,
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
-  },
-}));
+    maxAge: AUTH_COOKIE_MAX_AGE,
+  });
+}
 
 // ---------- helpers ----------
 function getEmployees() {
@@ -162,8 +166,9 @@ function hasAnyCredential() {
   return Object.keys(store.credentials).length > 0;
 }
 function currentEmployee(req) {
-  if (!req.session || !req.session.employeeId) return null;
-  return findEmployee(req.session.employeeId);
+  const employeeId = req.signedCookies && req.signedCookies[AUTH_COOKIE];
+  if (!employeeId) return null;
+  return findEmployee(employeeId);
 }
 function requireAuth(req, res, next) {
   const emp = currentEmployee(req);
@@ -200,12 +205,13 @@ app.post('/api/login', (req, res) => {
   if (!bcrypt.compareSync(password, hash)) {
     return res.status(401).json({ error: 'Неверный пароль' });
   }
-  req.session.employeeId = employeeId;
+  setAuthCookie(res, employeeId);
   res.json({ ok: true, employee: { id: emp.id, name: emp.name, role: emp.role } });
 });
 
 app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
+  res.clearCookie(AUTH_COOKIE);
+  res.json({ ok: true });
 });
 
 app.get('/api/me', (req, res) => {

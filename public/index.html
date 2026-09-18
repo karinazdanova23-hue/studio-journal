@@ -481,6 +481,12 @@ function fmtDate(iso){
   const months=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
   return `${parseInt(d)} ${months[parseInt(m)-1]} ${y}`;
 }
+// Дедлайн задачи: дата обязательна, время — необязательное уточнение (task.deadlineTime, "ЧЧ:ММ").
+// Принимает объект с полями .deadline/.deadlineTime (задача, либо {deadline, deadlineTime}).
+function fmtDeadline(t){
+  if(!t || !t.deadline) return '';
+  return fmtDate(t.deadline) + (t.deadlineTime ? `, ${t.deadlineTime}` : '');
+}
 function fmtMoney(n){
   const num = Number(n)||0;
   return num.toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2}) + ' ₽';
@@ -565,7 +571,7 @@ function showPrompt(title, defaultValue){
     ov.onclick=(e)=>{ if(e.target===ov) finish(null); };
   });
 }
-function requestCompletionComment(taskTitle){
+function requestCompletionComment(taskTitle, isOverdue){
   return new Promise(resolve=>{
     const ov=document.createElement('div');
     ov.className='overlay'; ov.style.zIndex=200;
@@ -575,6 +581,12 @@ function requestCompletionComment(taskTitle){
         <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 12px;line-height:1.5;">Задача «${escapeHtml(taskTitle)}» отмечается выполненной. Опишите коротко, что было сделано — это обязательно.</p>
         <textarea id="ccInput" rows="3" placeholder="Например: договорился с поставщиком, забрал материалы"></textarea>
         <div class="err-msg" id="ccErr" style="margin-top:6px;"></div>
+        ${isOverdue?`
+        <div class="field" style="margin-top:10px;">
+          <label style="color:var(--brick);">⚠️ Срок просрочен — укажите причину задержки *</label>
+          <textarea id="ccOverdueReason" rows="2" placeholder="Например: ждали материалы от поставщика"></textarea>
+          <div class="err-msg" id="ccOverdueErr" style="margin-top:6px;"></div>
+        </div>`:''}
         <div class="field" style="margin-top:10px;"><label>Ссылка на результат (необязательно)</label><input id="ccLink" type="text" placeholder="https://..."></div>
         <div class="modal-actions">
           <button class="btn ghost" id="ccCancel">Отмена</button>
@@ -589,9 +601,15 @@ function requestCompletionComment(taskTitle){
     ov.querySelector('#ccOk').onclick=()=>{
       const val = input.value.trim();
       if(!val){ ov.querySelector('#ccErr').textContent='Напишите, что сделано'; return; }
+      let overdueReason;
+      if(isOverdue){
+        const reasonEl = ov.querySelector('#ccOverdueReason');
+        overdueReason = reasonEl.value.trim();
+        if(!overdueReason){ ov.querySelector('#ccOverdueErr').textContent='Укажите причину задержки'; return; }
+      }
       const linkRaw = ov.querySelector('#ccLink').value.trim();
       const link = linkRaw ? (/^https?:\/\//i.test(linkRaw) ? linkRaw : 'https://'+linkRaw) : '';
-      finish({comment: val, link});
+      finish({comment: val, link, overdueReason});
     };
     ov.onclick=(e)=>{ if(e.target===ov) finish(null); };
   });
@@ -742,6 +760,7 @@ const state = {
   bulkSelectMode:false,
   bulkSelectedIds:new Set(),
   taskFilterBlockId:{work:null, personal:null},
+  overviewApprovedCollapsed:false,
   taskFilterProjectIds:{work:new Set(), personal:new Set()},
   taskFilterNoProject:{work:false, personal:false},
   taskFilterStatus:'all',
@@ -783,6 +802,8 @@ const TABS = [
 const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', birthday:'Дни рождения', personal:'Личные дела Карины'};
 const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', birthday:'var(--rose)', personal:'var(--plum)'};
 const STATUSES = {progress:'В работе', approval:'На согласовании', review:'На проверке', done:'Готово'};
+// Необязательная классификация задачи по функции управления — отдельно от рабочего статуса (STATUSES).
+const MANAGEMENT_STAGES = {planning:'Планирование', organization:'Организация', implementation:'Реализация', control:'Контроль', analysis:'Анализ'};
 const PRIORITIES = {low:'Низкий', med:'Средний', high:'Высокий'};
 
 function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -846,6 +867,7 @@ async function restoreTrashItem(personal, trashId){
     setTasksFor(personal, tasksFor(personal).concat([entry.data]));
     await persistTasksFor(personal);
   } else if(entry.type==='project'){
+    if(!personal) await refreshProjectsAndBlocksFromServer();
     setProjectsFor(personal, projectsFor(personal).concat([entry.data]));
     await persistProjectsFor(personal);
   } else if(entry.type==='event'){
@@ -991,6 +1013,7 @@ async function importAllData(payload){
   }
 }
 async function applyIdeaToProject(idea){
+  await refreshProjectsAndBlocksFromServer();
   const projects = projectsFor(false);
   let project = projects.find(p=>p.name.trim().toLowerCase()===idea.name.trim().toLowerCase());
   const isNewProject = !project;
@@ -1644,19 +1667,19 @@ function whyCantComplete(t){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
   return `Отметить выполненной может только исполнитель — ${empName(t.assigneeId)}.`;
 }
-function withStatus(t, newStatus, comment, completionLink){
-  if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||'')};
+function withStatus(t, newStatus, comment, completionLink, overdueReason){
+  if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), overdueReason: overdueReason!==undefined ? overdueReason : (t.overdueReason||'')};
   if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:'', completionLink:''};
   return {...t, status:newStatus};
 }
 // Исполнитель отмечает "сделано" -> обычно уходит не сразу в "Готово", а на проверку постановщику.
 // Исключение: если человек поставил задачу сам себе (постановщик = исполнитель), проверять
 // самого себя бессмысленно — задача сразу становится "Готово".
-function withStatusReview(t, comment, completionLink){
+function withStatusReview(t, comment, completionLink, overdueReason){
   if(t.creatorId && t.assigneeId && t.creatorId===t.assigneeId){
-    return withStatus(t, 'done', comment, completionLink);
+    return withStatus(t, 'done', comment, completionLink, overdueReason);
   }
-  return {...t, status:'review', completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), reworkNote:''};
+  return {...t, status:'review', completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), overdueReason: overdueReason!==undefined ? overdueReason : (t.overdueReason||''), reworkNote:''};
 }
 function canReviewTask(t, personal){
   if(personal) return true;
@@ -1766,6 +1789,21 @@ async function refreshTasksFromServer(personal){
     if(personal) state.personalTasks = arr; else state.tasksWork = arr;
     return arr;
   }catch(e){ return null; }
+}
+// Проекты и блоки хранятся общими ключами (tasks:projects, tasks:blocks) для всей команды.
+// Если два человека одновременно держат открытым журнал (например, Карина и Ассистент),
+// а каждое изменение (добавить/переименовать/удалить блок или проект) сохраняет ВЕСЬ массив
+// целиком из памяти браузера — тот, кто сохранит вторым, незаметно затирает свежее изменение
+// первого (проект то появляется, то пропадает, в зависимости от того, чья версия сохранилась
+// последней). Поэтому перед каждым изменением сначала подтягиваем актуальные версии с сервера,
+// и уже поверх них применяем правку — как это давно сделано для задач в refreshTasksFromServer.
+async function refreshProjectsAndBlocksFromServer(){
+  const [projRaw, blockRaw] = await Promise.all([
+    sGet('tasks:projects', true),
+    sGet('tasks:blocks', true),
+  ]);
+  if(projRaw !== null){ try{ state.projectsWork = JSON.parse(projRaw); }catch(e){} }
+  if(blockRaw !== null){ try{ state.blocksWork = JSON.parse(blockRaw); }catch(e){} }
 }
 async function maybeOfferPurchaseExpense(task, personal){
   if(!task || personal) return;
@@ -1989,9 +2027,9 @@ function renderReminderPanel(){
   panel.innerHTML = `
     ${state.currentUserId ? section('🙋 Мои задачи', myTasks, t=>{
       const overdue = t.deadline && t.deadline<todayISO();
-      return `<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="${overdue?'color:var(--brick);':''}">${t.deadline?fmtDate(t.deadline):'без срока'}</span></div>`;
+      return `<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="${overdue?'color:var(--brick);':''}">${t.deadline?fmtDeadline(t):'без срока'}</span></div>`;
     }) : ''}
-    ${section('Просрочено', overdueTasks, t=>`<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="color:var(--brick);">${fmtDate(t.deadline)}</span></div>`)}
+    ${section('Просрочено', overdueTasks, t=>`<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="color:var(--brick);">${fmtDeadline(t)}</span></div>`)}
     ${section('Задачи на сегодня', dueTodayTasks, t=>`<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag">сегодня</span></div>`)}
     ${section('Дедлайн через 1–3 дня', dueSoonTasks, t=>{
       const daysLeft = Math.round((new Date(t.deadline+'T00:00:00') - new Date(todayISO()+'T00:00:00'))/86400000);
@@ -2092,7 +2130,7 @@ async function checkNewTasksTick(){
   if(!newAssignedToMe.length) return;
   newAssignedToMe.forEach(t=>{
     new Notification('Новая задача: '+t.title, {
-      body: `Поставил: ${empName(t.creatorId)}${t.deadline?' · до '+fmtDate(t.deadline):''}`
+      body: `Поставил: ${empName(t.creatorId)}${t.deadline?' · до '+fmtDeadline(t):''}`
     });
   });
   state.tasksWork = fresh;
@@ -2225,7 +2263,8 @@ function renderOverview(root){
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="meta">
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
-          ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}</span>`:''}
+          ${t.managementStage?`<span class="badge" style="background:var(--indigo-bg,rgba(51,80,125,0.12));color:var(--indigo);">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
+          ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDeadline(t)}</span>`:''}
           ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
           ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
         </div>
@@ -2305,11 +2344,16 @@ function renderOverview(root){
       </div>
     ` : ''}
     ${recentlyApproved.length ? `
-      <h2 class="section-title" style="font-size:16px;">✅ Недавно принято (${recentlyApproved.length})</h2>
+      <div class="row-between" style="align-items:baseline;">
+        <h2 class="section-title" style="font-size:16px;margin-bottom:0;">✅ Недавно принято (${recentlyApproved.length})</h2>
+        <button class="btn ghost small" id="toggleApprovedList">${state.overviewApprovedCollapsed?'Показать':'Скрыть'}</button>
+      </div>
       <p class="subtitle" style="margin-top:-6px;">Ваши задачи, которые постановщик принял за последние 7 дней</p>
+      ${state.overviewApprovedCollapsed ? '' : `
       <div class="item-list" style="margin-bottom:24px;">
         ${recentlyApproved.map(approvedRow).join('')}
       </div>
+      `}
     ` : ''}
     ${state.currentUserId ? `
       <h2 class="section-title" style="font-size:16px;">${tasksLabel}</h2>
@@ -2344,6 +2388,11 @@ function renderOverview(root){
   };
   wireOverdueReasonInputs(root);
   wireReviewActions(root);
+  const toggleApprovedBtn = document.getElementById('toggleApprovedList');
+  if(toggleApprovedBtn) toggleApprovedBtn.onclick=()=>{
+    state.overviewApprovedCollapsed = !state.overviewApprovedCollapsed;
+    render();
+  };
   root.querySelectorAll('[data-ov-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
     cb.onchange = async ()=>{
@@ -2351,11 +2400,12 @@ function renderOverview(root){
       const personal = cb.dataset.ovDonePersonal==='1';
       const task = tasksFor(personal).find(t=>t.id===id);
       if(cb.checked){
-        const result = await requestCompletionComment(task ? task.title : '');
+        const isOverdue = !!(task && task.deadline && task.deadline < todayISO());
+        const result = await requestCompletionComment(task ? task.title : '', isOverdue);
         if(result===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
@@ -2614,11 +2664,12 @@ function wireDayTaskActions(el, iso){
         return;
       }
       if(cb.checked){
-        const result = await requestCompletionComment(task ? task.title : '');
+        const isOverdue = !!(task && task.deadline && task.deadline < todayISO());
+        const result = await requestCompletionComment(task ? task.title : '', isOverdue);
         if(result===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
@@ -2853,7 +2904,7 @@ function openEventModal(id, presetDate){
           const inRange = t.deadline>=vacStart && t.deadline<=vacEnd;
           const soon = !inRange && t.deadline<vacStart && Math.round((new Date(vacStart)-new Date(t.deadline))/86400000)<=7;
           if(inRange || soon){
-            conflicts.push(`• ${empName(empId)} — «${t.title}» (срок ${fmtDate(t.deadline)}${inRange?', попадает на сам отпуск':', близко к началу отпуска'})`);
+            conflicts.push(`• ${empName(empId)} — «${t.title}» (срок ${fmtDeadline(t)}${inRange?', попадает на сам отпуск':', близко к началу отпуска'})`);
           }
         });
       });
@@ -3024,13 +3075,14 @@ function taskItemHtml(t, personal, opts){
         <div class="meta">
           <span class="badge ${t.status||'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]}</span>
+          ${t.managementStage?`<span class="badge" style="background:var(--indigo-bg,rgba(51,80,125,0.12));color:var(--indigo);">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(personal,t.projectId))}</span>`:''}
           ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${opts.orphanParentName?`<span>⤷ подзадача: ${escapeHtml(opts.orphanParentName)}</span>`:''}
           ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
           ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
           ${t.createdDate?`<span>от ${fmtDate(t.createdDate)}</span>`:''}
-          ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDate(t.deadline)}${overdue?' · просрочено':''}</span>`:''}
+          ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDeadline(t)}${overdue?' · просрочено':''}</span>`:''}
           ${t.seriesId?`<span>🔁 повтор</span>`:''}
           ${t.purchaseStore?`<span>🏬 ${escapeHtml(t.purchaseStore)}</span>`:''}
           ${t.purchaseAmount?`<span>💰 ${fmtMoney(t.purchaseAmount)}</span>`:''}
@@ -3383,11 +3435,12 @@ function wireTaskActions(el, personal){
         return;
       }
       if(cb.checked){
-        const result = await requestCompletionComment(task ? task.title : '');
+        const isOverdue = !!(task && task.deadline && task.deadline < todayISO());
+        const result = await requestCompletionComment(task ? task.title : '', isOverdue);
         if(result===null){ cb.checked=false; return; }
         const fresh = await refreshTasksFromServer(personal);
         const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link):t);
+        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
         setTasksFor(personal, updated);
         const ok = await persistTasksFor(personal);
         if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
@@ -3527,6 +3580,13 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     : (existing ? (existing.projectId||null) : (allProjects.some(p=>p.id===soleSelectedProjectId) ? soleSelectedProjectId : null));
   const initialIsPurchases = !!(purchasesProject && initialProjectId===purchasesProject.id);
   const assistantEmp = state.employees.find(e=>e.role==='Ассистент');
+  // Блок формы по умолчанию: у уже существующей задачи — её собственный блок (а если он почему-то
+  // не проставлен у старой задачи — блок её проекта); у новой задачи, ставящейся в контексте уже
+  // выбранного проекта (например, из фильтра доски или как подзадача) — блок этого проекта.
+  const initialProjectForBlock = initialProjectId ? allProjects.find(p=>p.id===initialProjectId) : null;
+  const initialBlockId = !personal
+    ? (existing ? (existing.blockId || (initialProjectForBlock && initialProjectForBlock.blockId) || '') : ((initialProjectForBlock && initialProjectForBlock.blockId) || ''))
+    : '';
   const modal = document.getElementById('modalRoot');
   modal.innerHTML = `
     <div class="overlay" id="ov">
@@ -3542,14 +3602,13 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
           <div class="field"><label>Блок *</label>
             <select id="t_block">
               <option value="">— выберите блок —</option>
-              ${state.blocksWork.map(b=>`<option value="${b.id}" ${existing&&existing.blockId===b.id?'selected':''}>📦 ${escapeHtml(b.name)}</option>`).join('')}
+              ${state.blocksWork.map(b=>`<option value="${b.id}" ${initialBlockId===b.id?'selected':''}>📦 ${escapeHtml(b.name)}</option>`).join('')}
             </select>
           </div>`:''}
           <div class="field" style="flex:2;"><label>Проект${!personal?' *':' (необязательно)'}</label>
             <div style="display:flex;gap:6px;align-items:flex-start;">
               <select id="t_project" style="flex:1;">
                 ${(()=>{
-                  const initialBlockId = !personal && existing ? (existing.blockId||'') : '';
                   const scoped = (!personal && initialBlockId) ? projects.filter(p=>p.blockId===initialBlockId) : projects;
                   const opts = [`<option value="">${!personal?'— выберите проект —':'Без проекта'}</option>`]
                     .concat(scoped.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (soleSelectedProjectId===p.id?'selected':'')}>${escapeHtml(p.name)}</option>`));
@@ -3587,6 +3646,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
         <div class="field-row">
           <div class="field"><label>Дата постановки *</label><input type="date" id="t_createdDate" value="${existing?existing.createdDate||todayISO():todayISO()}"></div>
           <div class="field"><label>Дедлайн *</label><input type="date" id="t_deadline" value="${existing?existing.deadline||'':''}"></div>
+          <div class="field"><label>Время дедлайна (необязательно)</label><input type="time" id="t_deadlineTime" value="${existing?existing.deadlineTime||'':''}"></div>
           <div class="field"><label>Приоритет *</label>
             <select id="t_priority">
               ${Object.entries(PRIORITIES).map(([k,v])=>`<option value="${k}" ${existing?existing.priority===k?'selected':'':k==='med'?'selected':''}>${v}</option>`).join('')}
@@ -3595,6 +3655,12 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
           <div class="field"><label>Статус *</label>
             <select id="t_status">
               ${Object.entries(STATUSES).map(([k,v])=>`<option value="${k}" ${existing&&existing.status===k?'selected':''}>${v}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Функция управления (необязательно)</label>
+            <select id="t_mgmt_stage">
+              <option value="">— не указано —</option>
+              ${Object.entries(MANAGEMENT_STAGES).map(([k,v])=>`<option value="${k}" ${existing&&existing.managementStage===k?'selected':''}>${v}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -3640,17 +3706,18 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   document.getElementById('cancelTask').onclick=closeModal;
   document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
 
+  function handleProjectSelectPurchases(pid){
+    const isPurchases = !!(purchasesProject && pid===purchasesProject.id);
+    document.getElementById('t_purchase_wrap').style.display = isPurchases ? '' : 'none';
+    if(isPurchases && !personal && assistantEmp){
+      const assigneeSel = document.getElementById('t_assignee');
+      if(assigneeSel) assigneeSel.value = assistantEmp.id;
+    }
+  }
   if(!parentId){
-    const projectSelect = document.getElementById('t_project');
-    projectSelect.onchange=(e)=>{
-      const pid = e.target.value;
-      const isPurchases = !!(purchasesProject && pid===purchasesProject.id);
-      document.getElementById('t_purchase_wrap').style.display = isPurchases ? '' : 'none';
-      if(isPurchases && !personal && assistantEmp){
-        const assigneeSel = document.getElementById('t_assignee');
-        if(assigneeSel) assigneeSel.value = assistantEmp.id;
-      }
-    };
+    // Первичная простановка при открытии формы (на случай, если проект уже предзаполнен —
+    // например, задача создаётся в контексте уже выбранного на доске проекта).
+    handleProjectSelectPurchases(document.getElementById('t_project').value);
   }
 
   document.getElementById('t_status').onchange=(e)=>{
@@ -3751,17 +3818,23 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       const currentProjId = tProjectEl.value;
       const stillValid = currentProjId && projects.some(p=>p.id===currentProjId && p.blockId===tBlockEl.value);
       tProjectEl.innerHTML = projectOptionsForBlock(tBlockEl.value, stillValid ? currentProjId : null);
+      handleProjectSelectPurchases(tProjectEl.value);
     };
     tProjectEl.onchange=()=>{
       // Если проект выбрали напрямую (например, до этого блок не выбирали) — подставляем его блок автоматически.
       const projId = tProjectEl.value;
-      if(!projId) return;
-      const proj = projects.find(p=>p.id===projId);
-      if(proj && proj.blockId && tBlockEl.value!==proj.blockId){
-        tBlockEl.value = proj.blockId;
-        tProjectEl.innerHTML = projectOptionsForBlock(proj.blockId, projId);
+      if(projId){
+        const proj = projects.find(p=>p.id===projId);
+        if(proj && proj.blockId && tBlockEl.value!==proj.blockId){
+          tBlockEl.value = proj.blockId;
+          tProjectEl.innerHTML = projectOptionsForBlock(proj.blockId, projId);
+        }
       }
+      handleProjectSelectPurchases(tProjectEl.value);
     };
+  } else if(tProjectEl){
+    // Личные задачи: блока нет, но переключение проекта всё ещё должно обновлять блок «Покупки» (если применимо).
+    tProjectEl.onchange=()=>handleProjectSelectPurchases(tProjectEl.value);
   }
   const tNewProjBtn = document.getElementById('t_new_proj_btn');
   if(tNewProjBtn) tNewProjBtn.onclick=async ()=>{
@@ -3769,6 +3842,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     if(!blockId){ toast('Сначала выберите блок — новый проект создастся сразу в нём'); return; }
     const name = await showPrompt('Название нового проекта', '');
     if(name===null || !name.trim()) return;
+    await refreshProjectsAndBlocksFromServer();
     const before = state.projectsWork;
     const newProj = {id:uid(), name:name.trim(), blockId};
     state.projectsWork = before.concat([newProj]);
@@ -3799,6 +3873,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     const assigneeId = assigneeEl ? assigneeEl.value : null;
     const createdDate = document.getElementById('t_createdDate').value;
     const deadline = document.getElementById('t_deadline').value;
+    const deadlineTime = document.getElementById('t_deadlineTime').value || '';
 
     let firstInvalid = null;
     if(!title) firstInvalid = flagInvalid('t_title');
@@ -3827,7 +3902,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       return;
     }
     if(parentId && parentTask && parentTask.deadline && deadline > parentTask.deadline){
-      toast(`Дедлайн подзадачи не может быть позже дедлайна задачи (до ${fmtDate(parentTask.deadline)})`);
+      toast(`Дедлайн подзадачи не может быть позже дедлайна задачи (до ${fmtDeadline(parentTask)})`);
       flagInvalid('t_deadline');
       return;
     }
@@ -3835,7 +3910,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       const childTasks = tasksFor(personal).filter(c=>c.parentId===existing.id);
       const violatingChild = childTasks.find(c=>c.deadline && c.deadline > deadline);
       if(violatingChild){
-        toast(`Дедлайн задачи не может быть раньше дедлайна подзадачи «${violatingChild.title}» (до ${fmtDate(violatingChild.deadline)})`);
+        toast(`Дедлайн задачи не может быть раньше дедлайна подзадачи «${violatingChild.title}» (до ${fmtDeadline(violatingChild)})`);
         flagInvalid('t_deadline');
         return;
       }
@@ -3879,7 +3954,9 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       creatorId,
       createdDate,
       deadline,
+      deadlineTime,
       priority: document.getElementById('t_priority').value,
+      managementStage: document.getElementById('t_mgmt_stage') ? (document.getElementById('t_mgmt_stage').value || null) : (existing ? (existing.managementStage||null) : null),
       status: chosenStatus,
       completedAt,
       completionComment: chosenStatus==='done' ? completionCommentVal : '',
@@ -3958,7 +4035,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     if(!existing){
       logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}`);
     } else if(existing.deadline !== data.deadline){
-      logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDate(existing.deadline):'—'} → ${data.deadline?fmtDate(data.deadline):'—'}`);
+      logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDeadline(existing):'—'} → ${data.deadline?fmtDeadline(data):'—'}`);
     }
     if(chosenStatus==='done' && (!existing || existing.status!=='done')){
       await maybeOfferPurchaseExpense(data, personal);
@@ -4086,6 +4163,7 @@ function openProjectsModal(personal, presetBlockId){
     document.getElementById('addProj').onclick=async ()=>{
       const name = document.getElementById('proj_name').value.trim();
       if(!name){ toast('Введите название'); return; }
+      if(!personal) await refreshProjectsAndBlocksFromServer();
       let blockIdForProj = null;
       if(!personal){
         const blockEl = document.getElementById('proj_block');
@@ -4115,6 +4193,7 @@ function openProjectsModal(personal, presetBlockId){
     if(addBlockBtn) addBlockBtn.onclick=async ()=>{
       const name = document.getElementById('block_name').value.trim();
       if(!name){ toast('Введите название блока'); return; }
+      await refreshProjectsAndBlocksFromServer();
       const before = state.blocksWork;
       state.blocksWork = before.concat([{id:uid(), name}]);
       const ok = await saveBlocksWork();
@@ -4135,6 +4214,7 @@ function openProjectsModal(personal, presetBlockId){
       const current = state.blocksWork.find(x=>x.id===bid);
       const newName = await showPrompt('Название блока', current?current.name:'');
       if(newName===null || !newName) return;
+      await refreshProjectsAndBlocksFromServer();
       const before = state.blocksWork;
       state.blocksWork = before.map(x=>x.id===bid?{...x,name:newName}:x);
       const ok = await saveBlocksWork();
@@ -4144,6 +4224,7 @@ function openProjectsModal(personal, presetBlockId){
     modal.querySelectorAll('[data-del-block]').forEach(b=>b.onclick=async ()=>{
       if(!canDeleteProject){ toast('Удалять блоки может только Руководитель или Ассистент'); return; }
       if(!(await showConfirm('Удалить блок? Проекты внутри останутся, но станут «без блока».'))) return;
+      await refreshProjectsAndBlocksFromServer();
       const bid = b.dataset.delBlock;
       const doomedBlock = state.blocksWork.find(x=>x.id===bid);
       const beforeBlocks = state.blocksWork;
@@ -4159,6 +4240,7 @@ function openProjectsModal(personal, presetBlockId){
     modal.querySelectorAll('[data-proj-block]').forEach(sel=>sel.onchange=async ()=>{
       const pid = sel.dataset.projBlock;
       const newBlockId = sel.value || null;
+      await refreshProjectsAndBlocksFromServer();
       const before = state.projectsWork;
       state.projectsWork = before.map(p=>p.id===pid?{...p,blockId:newBlockId}:p);
       const ok = await saveProjectsWork();
@@ -4170,6 +4252,7 @@ function openProjectsModal(personal, presetBlockId){
       const current = projectsFor(personal).find(p=>p.id===pid);
       const newName = await showPrompt('Название проекта', current?current.name:'');
       if(newName===null || !newName) return;
+      if(!personal) await refreshProjectsAndBlocksFromServer();
       const finalName = isPurchasesProjectName(newName) ? PURCHASES_PROJECT_NAME : newName;
       setProjectsFor(personal, projectsFor(personal).map(p=>p.id===pid?{...p,name:finalName}:p));
       await persistProjectsFor(personal);
@@ -4178,6 +4261,7 @@ function openProjectsModal(personal, presetBlockId){
     modal.querySelectorAll('[data-del-proj]').forEach(b=>b.onclick=async ()=>{
       if(!canDeleteProject){ toast('Удалять проекты может только Руководитель или Ассистент'); return; }
       if(!(await showConfirm('Удалить проект? Задачи останутся, но будут перемещены в «Без проекта».'))) return;
+      if(!personal) await refreshProjectsAndBlocksFromServer();
       const pid = b.dataset.delProj;
       const doomedProj = projectsFor(personal).find(p=>p.id===pid);
       if(doomedProj) await moveToTrash(personal, 'project', doomedProj);
@@ -4655,7 +4739,7 @@ function renderTaskReport(el){
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
           ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
-          <span>Срок: ${t.deadline?fmtDate(t.deadline):'—'}</span>
+          <span>Срок: ${t.deadline?fmtDeadline(t):'—'}</span>
           <span>Закрыто: ${fmtDate(t.completedAt)}</span>
           ${late?`<span style="color:var(--brick);font-weight:600;">просрочено</span>`:''}
         </div>
@@ -4674,7 +4758,7 @@ function renderTaskReport(el){
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
           ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
-          <span>Срок: ${t.deadline?fmtDate(t.deadline):'—'}</span>
+          <span>Срок: ${t.deadline?fmtDeadline(t):'—'}</span>
           <span class="badge" style="background:${t.status==='review'?'var(--ochre-bg,#F3E9D6)':'var(--brick-bg,#F6E2E2)'};color:${t.status==='review'?'var(--ochre)':'var(--brick)'};">${STATUSES[t.status]||t.status}</span>
         </div>
         ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
@@ -4794,7 +4878,7 @@ function exportTaskReportCSV(){
       t.projectId?projectName(false,t.projectId):'',
       t.assigneeId?empName(t.assigneeId):'',
       t.creatorId?empName(t.creatorId):'',
-      t.deadline?fmtDate(t.deadline):'',
+      t.deadline?fmtDeadline(t):'',
       t.completedAt?fmtDate(t.completedAt):'',
       reportTaskWasLate(t)?'Да':'Нет',
       t.overdueReason||'',
@@ -4810,7 +4894,7 @@ function exportTaskReportCSV(){
       t.projectId?projectName(false,t.projectId):'',
       t.assigneeId?empName(t.assigneeId):'',
       t.creatorId?empName(t.creatorId):'',
-      t.deadline?fmtDate(t.deadline):'',
+      t.deadline?fmtDeadline(t):'',
       '',
       'Да',
       t.overdueReason||t.reworkNote||'',
@@ -5127,7 +5211,7 @@ function openSearchModal(){
       html += res.tasks.map(t=>`
         <div class="item" style="cursor:pointer;" data-sr-task="${t.id}" data-sr-personal="${t.__personal?'1':'0'}">
           <div class="main"><div class="title">${t.__personal?'🔒 ':''}${escapeHtml(t.title)}</div>
-          <div class="meta"><span class="badge ${t.status||'progress'}">${STATUSES[t.status]||''}</span>${t.deadline?`<span>до ${fmtDate(t.deadline)}</span>`:''}</div></div>
+          <div class="meta"><span class="badge ${t.status||'progress'}">${STATUSES[t.status]||''}</span>${t.deadline?`<span>до ${fmtDeadline(t)}</span>`:''}</div></div>
         </div>`).join('');
       html += `</div>`;
     }

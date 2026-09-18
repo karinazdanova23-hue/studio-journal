@@ -871,10 +871,12 @@ async function restoreTrashItem(personal, trashId){
     setProjectsFor(personal, projectsFor(personal).concat([entry.data]));
     await persistProjectsFor(personal);
   } else if(entry.type==='event'){
+    if(!personal) await refreshEventsFromServer();
     setEventsFor(personal, eventsFor(personal).concat([entry.data]));
     await persistEventsFor(personal);
   } else if(entry.type==='fund'){
     const fscope = personal ? 'personal' : 'work';
+    if(fscope!=='personal') await refreshFundsFromServer();
     setFundsFor(fscope, fundsFor(fscope).concat([entry.data]));
     await persistFundsFor(fscope);
   } else if(entry.type==='idea' && !personal){
@@ -1281,6 +1283,7 @@ async function restoreArchiveTask(taskId){
 async function restoreArchiveEvent(eventId){
   const e = state.archiveEvents.find(x=>x.id===eventId);
   if(!e) return;
+  await refreshEventsFromServer();
   state.events = state.events.concat([e]);
   state.archiveEvents = state.archiveEvents.filter(x=>x.id!==eventId);
   await saveEvents();
@@ -1805,6 +1808,19 @@ async function refreshProjectsAndBlocksFromServer(){
   if(projRaw !== null){ try{ state.projectsWork = JSON.parse(projRaw); }catch(e){} }
   if(blockRaw !== null){ try{ state.blocksWork = JSON.parse(blockRaw); }catch(e){} }
 }
+// Та же защита от потери данных при параллельной работе — для общей (не личной) бухгалтерии:
+// две записи о доходе/расходе, добавленные примерно одновременно с двух устройств, иначе рискуют
+// затереть друг друга (последнее сохранение полностью перезаписывает весь список записей).
+async function refreshFundsFromServer(){
+  const raw = await sGet('funds:ledger', true);
+  if(raw !== null){ try{ state.fundsEntries = JSON.parse(raw); }catch(e){} }
+}
+// И для общего календаря — то же самое: два события (например, два отпуска или встречи),
+// добавленные почти одновременно разными сотрудниками, не должны стирать друг друга.
+async function refreshEventsFromServer(){
+  const raw = await sGet('calendar:events', true);
+  if(raw !== null){ try{ state.events = JSON.parse(raw); }catch(e){} }
+}
 async function maybeOfferPurchaseExpense(task, personal){
   if(!task || personal) return;
   if(!task.projectId || !task.purchaseAmount || task.purchaseExpenseId) return;
@@ -1824,6 +1840,7 @@ async function maybeOfferPurchaseExpense(task, personal){
     comment: `Автоматически создано из задачи «${task.title}» (проект «${PURCHASES_PROJECT_NAME}»).`,
     createdAt: Date.now(),
   };
+  await refreshFundsFromServer();
   state.fundsEntries = state.fundsEntries.concat([entry]);
   await saveFunds();
   state.tasksWork = state.tasksWork.map(t=>t.id===task.id?{...t, purchaseExpenseId:entry.id}:t);
@@ -2421,15 +2438,16 @@ function renderOverview(root){
       }
     };
   });
+  // Открываем задачу/день поверх Обзора как модальное окно, НЕ переключая вкладку —
+  // иначе после закрытия/сохранения пользователя «перекидывало» в «Задачи»/«Календарь»
+  // вместо того, чтобы оставить его там, где он был (в Обзоре).
   root.querySelectorAll('[data-ov-task]').forEach(row=>row.onclick=()=>{
     const id = row.dataset.ovTask;
-    state.tab='tasks'; state.taskSubtab='work'; render();
-    setTimeout(()=>openTaskModal(id, false), 50);
+    openTaskModal(id, false);
   });
   root.querySelectorAll('[data-ov-day]').forEach(row=>row.onclick=()=>{
     const iso = row.dataset.ovDay;
-    state.tab='calendar'; render();
-    setTimeout(()=>openDayModal(iso), 50);
+    openDayModal(iso);
   });
 }
 
@@ -2608,6 +2626,7 @@ function openDayModal(iso){
   modal.querySelectorAll('[data-del]').forEach(b=>b.onclick=async ()=>{
     const evId = b.dataset.del;
     const personal = isPersonalEvent(evId);
+    if(!personal) await refreshEventsFromServer();
     const evObj = eventsFor(personal).find(e=>e.id===evId);
     if(evObj && evObj.seriesId){
       const choice = await showSeriesDeleteChoice();
@@ -2884,6 +2903,9 @@ function openEventModal(id, presetDate){
       notes: document.getElementById('f_notes').value.trim(),
       seriesId: existing ? (existing.seriesId||null) : null,
     };
+    // Общий календарь: подтягиваем свежую версию перед сохранением, чтобы не затереть
+    // событие, которое кто-то другой (или другая вкладка) успел добавить только что.
+    if(!existingPersonal || !newPersonal) await refreshEventsFromServer();
     if(category==='vacation'){
       if(!emp.length){ toast('Отпуск обязательно привязывается к конкретному сотруднику — отметьте его в «Участники»'); return; }
       const repeatTypeEarly = repeatEl ? repeatEl.value : 'none';
@@ -5065,6 +5087,7 @@ function renderFunds(root){
   root.querySelectorAll('[data-del-fund]').forEach(b=>b.onclick=async ()=>{
     if(!(await showConfirm('Удалить запись?'))) return;
     const fscope = b.dataset.fundScope;
+    if(fscope!=='personal') await refreshFundsFromServer();
     const before = fundsFor(fscope);
     const doomed = before.find(f=>f.id===b.dataset.delFund);
     if(doomed) await moveToTrash(fscope==='personal', 'fund', doomed);
@@ -5127,6 +5150,7 @@ function openFundModal(id, scope){
       comment: document.getElementById('fn_comment').value.trim(),
       createdAt: existing?existing.createdAt:Date.now(),
     };
+    if(scope!=='personal') await refreshFundsFromServer();
     const before = fundsFor(scope);
     if(existing) setFundsFor(scope, before.map(f=>f.id===existing.id?data:f));
     else setFundsFor(scope, before.concat([data]));

@@ -1891,9 +1891,17 @@ function computeReminders(filterAssigneeId){
   const dueSoonTasks = allTasks.filter(t=>t.deadline && t.deadline>today && t.deadline<=soonISO && t.status==='progress').sort((a,b)=>a.deadline.localeCompare(b.deadline));
   return {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks};
 }
+// Задачи, поставленные (созданные) текущему пользователю за последние 3 дня —
+// то, что показывается в окне колокольчика и что считает бейдж на нём.
+function computeNewlyAssignedTasks(){
+  if(!state.currentUserId) return [];
+  const cutoff = (() => { const d=new Date(); d.setDate(d.getDate()-3); return d.toISOString().slice(0,10); })();
+  return state.tasksWork
+    .filter(t=>t.assigneeId===state.currentUserId && t.createdDate && t.createdDate>=cutoff)
+    .sort((a,b)=>(b.createdDate||'').localeCompare(a.createdDate||''));
+}
 function renderBellBadge(){
-  const {overdueTasks, dueTodayTasks, todayEvents} = computeReminders();
-  const count = overdueTasks.length + dueTodayTasks.length + todayEvents.length;
+  const count = computeNewlyAssignedTasks().length;
   const badge = document.getElementById('bellBadge');
   if(!badge) return;
   if(count>0){ badge.style.display='flex'; badge.textContent = count>9?'9+':count; }
@@ -2031,10 +2039,7 @@ function renderReminderPanel(){
   const existing = document.getElementById('reminderPanel');
   if(existing) existing.remove();
   if(!state.reminderPanelOpen) return;
-  const {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks} = computeReminders();
-  const myTasks = state.currentUserId
-    ? state.tasksWork.filter(t=>t.assigneeId===state.currentUserId && t.status==='progress').sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'))
-    : [];
+  const newlyAssignedTasks = computeNewlyAssignedTasks();
   const panel = document.createElement('div');
   panel.className='reminder-panel';
   panel.id='reminderPanel';
@@ -2042,18 +2047,10 @@ function renderReminderPanel(){
     return `<h4>${title}</h4>${items.length? items.map(renderItem).join('') : `<div class="reminder-empty">Нет</div>`}`;
   }
   panel.innerHTML = `
-    ${state.currentUserId ? section('🙋 Мои задачи', myTasks, t=>{
+    ${section('🆕 Новые задачи (за 3 дня)', newlyAssignedTasks, t=>{
       const overdue = t.deadline && t.deadline<todayISO();
       return `<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="${overdue?'color:var(--brick);':''}">${t.deadline?fmtDeadline(t):'без срока'}</span></div>`;
-    }) : ''}
-    ${section('Просрочено', overdueTasks, t=>`<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="color:var(--brick);">${fmtDeadline(t)}</span></div>`)}
-    ${section('Задачи на сегодня', dueTodayTasks, t=>`<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag">сегодня</span></div>`)}
-    ${section('Дедлайн через 1–3 дня', dueSoonTasks, t=>{
-      const daysLeft = Math.round((new Date(t.deadline+'T00:00:00') - new Date(todayISO()+'T00:00:00'))/86400000);
-      return `<div class="reminder-row" data-open-task="${t.id}"><span>${escapeHtml(t.title)}</span><span class="tag" style="color:var(--ochre);">через ${daysLeft} дн.</span></div>`;
     })}
-    ${section('Сегодня в календаре', todayEvents, e=>`<div class="reminder-row" data-open-day="${e.date}"><span>${escapeHtml(e.title)}</span><span class="tag">${e.startTime||''}</span></div>`)}
-    ${section('Ближайшие 3 дня', upcomingEvents, e=>`<div class="reminder-row" data-open-day="${e.date}"><span>${escapeHtml(e.title)}</span><span class="tag">${fmtDate(e.date)}</span></div>`)}
     <div class="notify-toggle">
       <span>Уведомления браузера${!state.browserNotify?' (пока выключены)':''}</span>
       <label class="switch"><input type="checkbox" id="notifyToggle" ${state.browserNotify?'checked':''}><span class="slider"></span></label>
@@ -2063,15 +2060,7 @@ function renderReminderPanel(){
   document.body.appendChild(panel);
   panel.querySelectorAll('[data-open-task]').forEach(r=>r.onclick=()=>{
     state.reminderPanelOpen=false; renderReminderPanel();
-    const isPersonal = state.personalTasks.some(t=>t.id===r.dataset.openTask);
-    state.tab='tasks'; state.taskSubtab = isPersonal?'personal':'work';
-    render();
-    if(!isPersonal || personalAccessAllowed()) setTimeout(()=>openTaskModal(r.dataset.openTask, isPersonal),50);
-  });
-  panel.querySelectorAll('[data-open-day]').forEach(r=>r.onclick=()=>{
-    state.reminderPanelOpen=false; renderReminderPanel();
-    state.tab='calendar'; render();
-    setTimeout(()=>openDayModal(r.dataset.openDay),50);
+    openTaskModal(r.dataset.openTask, false);
   });
   document.getElementById('notifyToggle').onchange = async (e)=>{
     if(e.target.checked){

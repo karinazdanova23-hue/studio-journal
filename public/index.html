@@ -302,10 +302,21 @@
   .lock-icon{font-size:34px;text-align:center;margin-bottom:10px;}
   .note{font-size:12px;color:var(--ink-soft);background:#FAF8F2;border:1px solid var(--paper-line);border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.5;}
 
-  .toast{
-    position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--indigo-dark);color:#fff;
-    padding:10px 18px;border-radius:8px;font-size:13.5px;z-index:100;box-shadow:var(--shadow);
+  #toastRoot{
+    position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;
+    display:flex;flex-direction:column;gap:8px;align-items:center;
   }
+  .toast{
+    background:var(--indigo-dark);color:#fff;
+    padding:10px 18px;border-radius:8px;font-size:13.5px;box-shadow:var(--shadow);
+    display:flex;align-items:center;gap:12px;max-width:min(90vw,480px);
+  }
+  .toast-retry-btn{
+    background:rgba(255,255,255,0.16);color:#fff;border:1px solid rgba(255,255,255,0.4);
+    border-radius:6px;padding:4px 12px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;flex:none;
+  }
+  .toast-retry-btn:hover{ background:rgba(255,255,255,0.28); }
+  .toast-retry-btn:disabled{ opacity:.6;cursor:default; }
 
   .lock-screen{text-align:center;padding:60px 20px;}
   .lock-screen .lock-icon{font-size:40px;}
@@ -518,11 +529,31 @@ function truncate(str, max){
 function isMobileView(){ return window.innerWidth <= 640; }
 function calMaxShown(){ return isMobileView() ? 2 : 3; }
 function calChipLen(){ return isMobileView() ? 13 : 22; }
-function toast(msg){
+// opts.retry — необязательная async-функция: если передана, в уведомлении появляется кнопка
+// «Повторить», уведомление держится дольше (чтобы успели заметить и нажать), и по клику заново
+// вызывается та же самая функция, что и делала попытку сохранения изначально (со всеми её шагами —
+// подтянуть свежие данные с сервера, пересчитать, сохранить), а не просто «отправить тот же запрос».
+function toast(msg, opts){
   const el=document.createElement('div');
-  el.className='toast'; el.textContent=msg;
+  el.className='toast';
+  const textSpan=document.createElement('span');
+  textSpan.textContent=msg;
+  el.appendChild(textSpan);
+  let timeoutMs=2400;
+  if(opts && opts.retry){
+    timeoutMs=12000;
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='toast-retry-btn';
+    btn.textContent='Повторить';
+    btn.onclick=async ()=>{
+      btn.disabled=true; btn.textContent='Повтор…';
+      try{ await opts.retry(); }finally{ el.remove(); }
+    };
+    el.appendChild(btn);
+  }
   document.getElementById('toastRoot').appendChild(el);
-  setTimeout(()=>el.remove(),2400);
+  setTimeout(()=>el.remove(),timeoutMs);
 }
 
 /* Custom confirm/prompt dialogs — native window.confirm()/prompt() are blocked
@@ -764,6 +795,9 @@ const state = {
   taskFilterProjectIds:{work:new Set(), personal:new Set()},
   taskFilterNoProject:{work:false, personal:false},
   taskFilterStatus:'all',
+  taskFilterPriority:'all',
+  taskFilterPeriod:'all',
+  taskSortBy:'manual',
   projectsWork:[],
   blocksWork:[],
   auditLog:[],
@@ -779,6 +813,8 @@ const state = {
   reminderPanelOpen:false,
   dayModalIso:null,
   dayDoneExpanded:false,
+  eventModalId:null,
+  eventModalExpandedTasks:[],
   fundsScope:'work',
   collapsedTaskIds:new Set(),
   trash:[],
@@ -815,8 +851,9 @@ async function saveIdeaBank(){ return await sSet('tasks:ideabank', JSON.stringif
 async function saveTrash(){ return await sSet('trash:items', JSON.stringify(state.trash), true); }
 function trashFor(personal){ return personal ? state.personalTrash : state.trash; }
 function setTrashFor(personal, arr){ if(personal) state.personalTrash = arr; else state.trash = arr; }
-async function persistTrashFor(personal){ return personal ? await savePersonalData() : await saveTrash(); }
+async function persistTrashFor(personal){ return personal ? await savePersonalTrash() : await saveTrash(); }
 async function moveToTrash(personal, type, data){
+  await refreshTrashFromServer(personal);
   const entry = {trashId: uid(), type, data, deletedAt: Date.now()};
   setTrashFor(personal, trashFor(personal).concat([entry]));
   await persistTrashFor(personal);
@@ -826,6 +863,10 @@ async function performTaskDeletion(personal, targetTask){
     toast(whyCantDelete(targetTask));
     return false;
   }
+  // Задачи — общий список, и его правят одновременно с разных устройств (см. refreshTasksFromServer).
+  // Подтягиваем актуальную версию перед удалением, иначе можем затереть чужие изменения, сделанные
+  // за время, пока это устройство ничего не сохраняло.
+  await refreshTasksFromServer(personal);
   const all = tasksFor(personal);
   function idsToDelete(rootId){
     let ids=[rootId];
@@ -860,29 +901,33 @@ async function performTaskDeletion(personal, targetTask){
   return true;
 }
 async function restoreTrashItem(personal, trashId){
+  await refreshTrashFromServer(personal);
   const trash = trashFor(personal);
   const entry = trash.find(t=>t.trashId===trashId);
   if(!entry) return;
   if(entry.type==='task'){
+    await refreshTasksFromServer(personal);
     setTasksFor(personal, tasksFor(personal).concat([entry.data]));
     await persistTasksFor(personal);
   } else if(entry.type==='project'){
-    if(!personal) await refreshProjectsAndBlocksFromServer();
+    await refreshProjectsAndBlocksFromServer(personal);
     setProjectsFor(personal, projectsFor(personal).concat([entry.data]));
     await persistProjectsFor(personal);
   } else if(entry.type==='event'){
-    if(!personal) await refreshEventsFromServer();
+    await refreshEventsFromServer(personal);
     setEventsFor(personal, eventsFor(personal).concat([entry.data]));
     await persistEventsFor(personal);
   } else if(entry.type==='fund'){
     const fscope = personal ? 'personal' : 'work';
-    if(fscope!=='personal') await refreshFundsFromServer();
+    await refreshFundsFromServer(fscope);
     setFundsFor(fscope, fundsFor(fscope).concat([entry.data]));
     await persistFundsFor(fscope);
   } else if(entry.type==='idea' && !personal){
+    await refreshIdeaBankFromServer();
     state.ideaBankWork = state.ideaBankWork.concat([entry.data]);
     await saveIdeaBank();
   } else if(entry.type==='employee' && !personal){
+    await refreshEmployeesFromServer();
     if(!state.employees.some(e=>e.id===entry.data.id)){
       state.employees = state.employees.concat([entry.data]);
       await saveEmployees();
@@ -1046,11 +1091,13 @@ async function applyIdeaToProject(idea){
       purchaseStore: '',
     };
   });
+  await refreshTasksFromServer(false);
   setTasksFor(false, tasksFor(false).concat(newTasks));
   await persistTasksFor(false);
   state.taskFilterProjectIds.work = new Set([project.id]);
   state.taskFilterNoProject.work = false;
   state.taskFilterBlockId.work = null;
+  await refreshIdeaBankFromServer();
   state.ideaBankWork = state.ideaBankWork.filter(i=>i.id!==idea.id);
   await saveIdeaBank();
   toast(isNewProject
@@ -1100,6 +1147,7 @@ async function applyChecklistToTasks(checklist){
     purchaseStore: '',
     purchaseExpenseId: null,
   }));
+  await refreshTasksFromServer(false);
   setTasksFor(false, tasksFor(false).concat([parentTask]).concat(subtasks));
   await persistTasksFor(false);
   state.taskSubtab = 'work';
@@ -1274,6 +1322,7 @@ async function saveArchive(){
 async function restoreArchiveTask(taskId){
   const t = state.archiveTasks.find(x=>x.id===taskId);
   if(!t) return;
+  await refreshTasksFromServer(false);
   state.tasksWork = state.tasksWork.concat([t]);
   state.archiveTasks = state.archiveTasks.filter(x=>x.id!==taskId);
   await saveTasksWork();
@@ -1313,6 +1362,7 @@ const AUDIT_ACTION_LABELS = {
 };
 async function logAudit(action, details){
   if(!state.currentUserId) return;
+  await refreshAuditLogFromServer();
   state.auditLog = state.auditLog.concat([{
     id: uid(), actorId: state.currentUserId, action, details: details||'', at: new Date().toISOString()
   }]);
@@ -1322,6 +1372,10 @@ async function logAudit(action, details){
 async function saveFunds(){ return await sSet('funds:ledger', JSON.stringify(state.fundsEntries), true); }
 
 async function savePersonalData(){
+  // Полный «bulk»-сброс всех личных коллекций разом — используется только при импорте/восстановлении
+  // резервной копии, когда мы сознательно перезаписываем всё целиком. Для обычных мутаций (добавил
+  // задачу, удалил событие и т.п.) используем гранулярные save*-функции ниже — каждая пишет только
+  // свой ключ, чтобы не затирать чужие параллельные изменения в остальных личных коллекциях.
   const results = await Promise.all([
     sSet('personal:tasks', JSON.stringify(state.personalTasks), true),
     sSet('personal:projects', JSON.stringify(state.personalProjects), true),
@@ -1333,6 +1387,13 @@ async function savePersonalData(){
   ]);
   return results.every(Boolean);
 }
+async function savePersonalTasks(){ return await sSet('personal:tasks', JSON.stringify(state.personalTasks), true); }
+async function savePersonalProjects(){ return await sSet('personal:projects', JSON.stringify(state.personalProjects), true); }
+async function savePersonalFunds(){ return await sSet('personal:funds', JSON.stringify(state.personalFundsEntries), true); }
+async function savePersonalEvents(){ return await sSet('personal:events', JSON.stringify(state.personalEvents), true); }
+async function savePersonalTrash(){ return await sSet('personal:trash', JSON.stringify(state.personalTrash), true); }
+async function savePersonalArchiveTasks(){ return await sSet('personal:archiveTasks', JSON.stringify(state.personalArchiveTasks), true); }
+async function savePersonalArchiveEvents(){ return await sSet('personal:archiveEvents', JSON.stringify(state.personalArchiveEvents), true); }
 
 /* ---------------- project/task helpers (work vs personal) ---------------- */
 function projectsFor(personal){ return personal ? state.personalProjects : state.projectsWork; }
@@ -1389,6 +1450,7 @@ function blockName(blockId){
 // 2) если у задачи есть родитель — подтягиваем актуальные проект и блок от родителя (вверх по всей цепочке).
 // Возвращает {changed: число обновлённых задач} или null при сбое сохранения.
 async function syncTaskBlocksAndProjects(){
+  await refreshTasksFromServer(false);
   const before = state.tasksWork;
   const byId = {};
   before.forEach(t=>{ byId[t.id]=t; });
@@ -1442,7 +1504,7 @@ async function migrateLegacyPersonalFunds(){
   state.personalFundsEntries = state.personalFundsEntries.concat(legacy);
   state.fundsEntries = state.fundsEntries.filter(f=>f.scope!=='personal');
   await saveFunds();
-  await savePersonalData();
+  await savePersonalFunds();
 }
 async function migrateLegacyPersonalEvents(){
   const legacy = state.events.filter(e=>e.category==='personal');
@@ -1450,11 +1512,11 @@ async function migrateLegacyPersonalEvents(){
   state.personalEvents = state.personalEvents.concat(legacy);
   state.events = state.events.filter(e=>e.category!=='personal');
   await saveEvents();
-  await savePersonalData();
+  await savePersonalEvents();
 }
 function eventsFor(personal){ return personal ? state.personalEvents : state.events; }
 function setEventsFor(personal, arr){ if(personal) state.personalEvents = arr; else state.events = arr; }
-async function persistEventsFor(personal){ return personal ? await savePersonalData() : await saveEvents(); }
+async function persistEventsFor(personal){ return personal ? await savePersonalEvents() : await saveEvents(); }
 // Ищет конфликт дедлайна с отпуском сотрудника: попадает ли дедлайн на сам отпуск,
 // или отпуск начинается в течение недели после дедлайна (рискованно — не успеет доделать/сдать).
 // Возвращает текст предупреждения или null, если конфликта нет.
@@ -1515,12 +1577,24 @@ function allVisibleEvents(){
   return sharedVisible.concat(personalAccessAllowed() ? state.personalEvents : []);
 }
 function isPersonalEvent(id){ return state.personalEvents.some(e=>e.id===id); }
+async function refreshPersonalArchiveFromServer(){
+  const [tRaw, eRaw] = await Promise.all([
+    sGet('personal:archiveTasks', true),
+    sGet('personal:archiveEvents', true),
+  ]);
+  if(tRaw !== null){ try{ state.personalArchiveTasks = JSON.parse(tRaw); }catch(e){} }
+  if(eRaw !== null){ try{ state.personalArchiveEvents = JSON.parse(eRaw); }catch(e){} }
+}
 async function pruneAndArchivePersonal(){
-  let changed = false;
+  await refreshTrashFromServer(true);
+  await refreshTasksFromServer(true);
+  await refreshEventsFromServer(true);
+  await refreshPersonalArchiveFromServer();
+  let trashChanged = false, tasksChanged = false, eventsChanged = false;
   const cutoff = Date.now() - 30*24*60*60*1000;
   const beforeTrash = state.personalTrash.length;
   state.personalTrash = state.personalTrash.filter(t=>t.deletedAt>=cutoff);
-  if(state.personalTrash.length!==beforeTrash) changed = true;
+  if(state.personalTrash.length!==beforeTrash) trashChanged = true;
 
   const cutoffDate = new Date(); cutoffDate.setDate(cutoffDate.getDate()-180);
   const cutoffISO = dateToISO(cutoffDate);
@@ -1531,30 +1605,38 @@ async function pruneAndArchivePersonal(){
   if(toArchiveTasks.length){
     state.personalArchiveTasks = state.personalArchiveTasks.concat(toArchiveTasks);
     state.personalTasks = state.personalTasks.filter(t=>!toArchiveTasks.includes(t));
-    changed = true;
+    tasksChanged = true;
   }
   const toArchiveEvents = state.personalEvents.filter(e=>e.date<cutoffISO);
   if(toArchiveEvents.length){
     state.personalArchiveEvents = state.personalArchiveEvents.concat(toArchiveEvents);
     state.personalEvents = state.personalEvents.filter(e=>!toArchiveEvents.includes(e));
-    changed = true;
+    eventsChanged = true;
   }
-  if(changed) await savePersonalData();
+  if(trashChanged) await savePersonalTrash();
+  if(tasksChanged){ await savePersonalTasks(); await savePersonalArchiveTasks(); }
+  if(eventsChanged){ await savePersonalEvents(); await savePersonalArchiveEvents(); }
 }
 async function restorePersonalArchiveTask(taskId){
+  await refreshPersonalArchiveFromServer();
+  await refreshTasksFromServer(true);
   const t = state.personalArchiveTasks.find(x=>x.id===taskId);
   if(!t) return;
   state.personalTasks = state.personalTasks.concat([t]);
   state.personalArchiveTasks = state.personalArchiveTasks.filter(x=>x.id!==taskId);
-  await savePersonalData();
+  await savePersonalTasks();
+  await savePersonalArchiveTasks();
   toast('Задача возвращена из архива');
 }
 async function restorePersonalArchiveEvent(eventId){
+  await refreshPersonalArchiveFromServer();
+  await refreshEventsFromServer(true);
   const e = state.personalArchiveEvents.find(x=>x.id===eventId);
   if(!e) return;
   state.personalEvents = state.personalEvents.concat([e]);
   state.personalArchiveEvents = state.personalArchiveEvents.filter(x=>x.id!==eventId);
-  await savePersonalData();
+  await savePersonalEvents();
+  await savePersonalArchiveEvents();
   toast('Событие возвращено из архива');
 }
 async function attemptPersonalMigration(password){
@@ -1624,11 +1706,11 @@ function renderPersonalMigrationScreen(root, onDone){
 }
 function fundsFor(scope){ return scope==='personal' ? state.personalFundsEntries : state.fundsEntries; }
 function setFundsFor(scope, arr){ if(scope==='personal') state.personalFundsEntries = arr; else state.fundsEntries = arr; }
-async function persistFundsFor(scope){ return scope==='personal' ? await savePersonalData() : await saveFunds(); }
+async function persistFundsFor(scope){ return scope==='personal' ? await savePersonalFunds() : await saveFunds(); }
 function setTasksFor(personal, arr){ if(personal) state.personalTasks = arr; else state.tasksWork = arr; }
 function setProjectsFor(personal, arr){ if(personal) state.personalProjects = arr; else state.projectsWork = arr; }
-async function persistTasksFor(personal){ return personal ? await savePersonalData() : await saveTasksWork(); }
-async function persistProjectsFor(personal){ return personal ? await savePersonalData() : await saveProjectsWork(); }
+async function persistTasksFor(personal){ return personal ? await savePersonalTasks() : await saveTasksWork(); }
+async function persistProjectsFor(personal){ return personal ? await savePersonalProjects() : await saveProjectsWork(); }
 function projectName(personal, id){
   if(!id) return 'Без проекта';
   const p = projectsFor(personal).find(x=>x.id===id);
@@ -1694,47 +1776,63 @@ function whyCantReview(t){
   return `Принять или вернуть на доработку может только тот, кто поставил задачу — ${empName(t.creatorId)}.`;
 }
 async function approveTask(personal, id){
+  const target0 = tasksFor(personal).find(t=>t.id===id);
+  if(!target0 || !canReviewTask(target0, personal)){ toast(whyCantReview(target0||{})); return; }
+  // Подтягиваем свежий список перед сохранением — иначе «Принять» с телефона/вкладки, которая давно
+  // висела открытой, может затереть изменения, сохранённые кем-то другим в это же время.
+  await refreshTasksFromServer(personal);
   const before = tasksFor(personal);
   const target = before.find(t=>t.id===id);
   if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
   const updated = before.map(t=>t.id===id?{...t, status:'done', completedAt:todayISO(), reworkNote:'', approvedAt:todayISO(), approvedBy:state.currentUserId}:t);
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
-  if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+  if(!ok){ setTasksFor(personal, before); saveFailedToast(()=>approveTask(personal, id)); return; }
   await maybeOfferPurchaseExpense(updated.find(t=>t.id===id), personal);
   toast('Задача принята и закрыта');
   render();
 }
 async function reworkTask(personal, id){
+  const target0 = tasksFor(personal).find(t=>t.id===id);
+  if(!target0 || !canReviewTask(target0, personal)){ toast(whyCantReview(target0||{})); return; }
+  const note = await showPrompt('Что нужно доработать? (можно оставить пустым)', '');
+  if(note===null) return;
+  await reworkTaskSave(personal, id, note);
+}
+// Отдельно от reworkTask — чтобы кнопка «Повторить» при неудачном сохранении не переспрашивала
+// текст доработки заново, а просто пересохраняла уже введённый.
+async function reworkTaskSave(personal, id, note){
+  await refreshTasksFromServer(personal);
   const before = tasksFor(personal);
   const target = before.find(t=>t.id===id);
   if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
-  const note = await showPrompt('Что нужно доработать? (можно оставить пустым)', '');
-  if(note===null) return;
   const updated = before.map(t=>t.id===id?{...t, status:'progress', completedAt:null, reworkNote: note || 'Постановщик вернул задачу на доработку'}:t);
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
-  if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+  if(!ok){ setTasksFor(personal, before); saveFailedToast(()=>reworkTaskSave(personal, id, note)); return; }
   toast('Задача возвращена на доработку');
   render();
 }
-function saveFailedToast(){
-  toast('⚠️ Не удалось сохранить — проверьте подключение к интернету и попробуйте ещё раз');
+// retryFn (необязательно) — та же функция, что выполняла сохранение; если передать её, в
+// уведомлении появится кнопка «Повторить», которая заново попробует именно это действие.
+function saveFailedToast(retryFn){
+  toast('⚠️ Не удалось сохранить — проверьте подключение к интернету и попробуйте ещё раз', retryFn?{retry:retryFn}:undefined);
 }
 function wireOverdueReasonInputs(el){
   el.querySelectorAll('[data-save-overdue-reason]').forEach(btn=>{
-    btn.onclick = async (e)=>{
-      e.stopPropagation();
+    btn.onclick = async function retry(e){
+      if(e) e.stopPropagation();
       const id = btn.dataset.saveOverdueReason;
       const personal = state.personalTasks.some(pt=>pt.id===id);
       const input = el.querySelector(`[data-overdue-reason-input="${id}"]`);
       const text = input ? input.value.trim() : '';
       if(!text){ toast('Опишите причину задержки'); return; }
+      await refreshTasksFromServer(personal);
       const before = tasksFor(personal);
       const updated = before.map(t=>t.id===id?{...t, overdueReason:text}:t);
       setTasksFor(personal, updated);
       const ok = await persistTasksFor(personal);
-      if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+      if(!ok){ setTasksFor(personal, before); saveFailedToast(retry); return; }
       render();
     };
   });
@@ -1800,7 +1898,14 @@ async function refreshTasksFromServer(personal){
 // первого (проект то появляется, то пропадает, в зависимости от того, чья версия сохранилась
 // последней). Поэтому перед каждым изменением сначала подтягиваем актуальные версии с сервера,
 // и уже поверх них применяем правку — как это давно сделано для задач в refreshTasksFromServer.
-async function refreshProjectsAndBlocksFromServer(){
+// personal=true — подтягиваем личные проекты Карины (personal:projects, свой ключ, без блоков —
+// у личных дел их нет); personal=false (по умолчанию) — общие проекты и блоки, как раньше.
+async function refreshProjectsAndBlocksFromServer(personal){
+  if(personal){
+    const raw = await sGet('personal:projects', true);
+    if(raw !== null){ try{ state.personalProjects = JSON.parse(raw); }catch(e){} }
+    return;
+  }
   const [projRaw, blockRaw] = await Promise.all([
     sGet('tasks:projects', true),
     sGet('tasks:blocks', true),
@@ -1808,18 +1913,61 @@ async function refreshProjectsAndBlocksFromServer(){
   if(projRaw !== null){ try{ state.projectsWork = JSON.parse(projRaw); }catch(e){} }
   if(blockRaw !== null){ try{ state.blocksWork = JSON.parse(blockRaw); }catch(e){} }
 }
-// Та же защита от потери данных при параллельной работе — для общей (не личной) бухгалтерии:
-// две записи о доходе/расходе, добавленные примерно одновременно с двух устройств, иначе рискуют
-// затереть друг друга (последнее сохранение полностью перезаписывает весь список записей).
-async function refreshFundsFromServer(){
+// Та же защита от потери данных при параллельной работе — для бухгалтерии: две записи о доходе/
+// расходе, добавленные примерно одновременно с двух устройств, иначе рискуют затереть друг друга
+// (последнее сохранение полностью перезаписывает весь список записей). scope: 'work' (по умолчанию)
+// или 'personal' — личные финансы Карины хранятся отдельным ключом (personal:funds).
+async function refreshFundsFromServer(scope){
+  if(scope==='personal'){
+    const raw = await sGet('personal:funds', true);
+    if(raw !== null){ try{ state.personalFundsEntries = JSON.parse(raw); }catch(e){} }
+    return;
+  }
   const raw = await sGet('funds:ledger', true);
   if(raw !== null){ try{ state.fundsEntries = JSON.parse(raw); }catch(e){} }
 }
-// И для общего календаря — то же самое: два события (например, два отпуска или встречи),
-// добавленные почти одновременно разными сотрудниками, не должны стирать друг друга.
-async function refreshEventsFromServer(){
+// И для календаря — то же самое: два события (например, два отпуска или встречи), добавленные
+// почти одновременно, не должны стирать друг друга. personal=true — личный календарь Карины.
+async function refreshEventsFromServer(personal){
+  if(personal){
+    const raw = await sGet('personal:events', true);
+    if(raw !== null){ try{ state.personalEvents = JSON.parse(raw); }catch(e){} }
+    return;
+  }
   const raw = await sGet('calendar:events', true);
   if(raw !== null){ try{ state.events = JSON.parse(raw); }catch(e){} }
+}
+// Та же защита — для остальных общих (не личных) списков: банк идей, чек-листы, быстрые идеи,
+// корзина и список сотрудников. Каждый из них тоже сохраняется целиком поверх ключа на сервере,
+// поэтому перед изменением подтягиваем актуальную версию.
+async function refreshIdeaBankFromServer(){
+  const raw = await sGet('tasks:ideabank', true);
+  if(raw !== null){ try{ state.ideaBankWork = JSON.parse(raw); }catch(e){} }
+}
+async function refreshChecklistsFromServer(){
+  const raw = await sGet('tasks:checklists', true);
+  if(raw !== null){ try{ state.checklistsWork = JSON.parse(raw); }catch(e){} }
+}
+async function refreshQuickIdeasFromServer(){
+  const raw = await sGet('tasks:quickideas', true);
+  if(raw !== null){ try{ state.quickIdeasWork = JSON.parse(raw); }catch(e){} }
+}
+async function refreshEmployeesFromServer(){
+  const raw = await sGet('roster:employees', true);
+  if(raw !== null){ try{ state.employees = JSON.parse(raw); }catch(e){} }
+}
+async function refreshTrashFromServer(personal){
+  if(personal){
+    const raw = await sGet('personal:trash', true);
+    if(raw !== null){ try{ state.personalTrash = JSON.parse(raw); }catch(e){} }
+    return;
+  }
+  const raw = await sGet('trash:items', true);
+  if(raw !== null){ try{ state.trash = JSON.parse(raw); }catch(e){} }
+}
+async function refreshAuditLogFromServer(){
+  const raw = await sGet('audit:log', true);
+  if(raw !== null){ try{ state.auditLog = JSON.parse(raw); }catch(e){} }
 }
 async function maybeOfferPurchaseExpense(task, personal){
   if(!task || personal) return;
@@ -1843,6 +1991,7 @@ async function maybeOfferPurchaseExpense(task, personal){
   await refreshFundsFromServer();
   state.fundsEntries = state.fundsEntries.concat([entry]);
   await saveFunds();
+  await refreshTasksFromServer(false);
   state.tasksWork = state.tasksWork.map(t=>t.id===task.id?{...t, purchaseExpenseId:entry.id}:t);
   await saveTasksWork();
   toast('Расход добавлен в Финансы');
@@ -2238,6 +2387,29 @@ function render(){
 }
 
 /* ================= OVERVIEW ================= */
+// Сохранение галочки «Готово» на карточке задачи (Обзор, день в календаре) — вынесено из
+// обработчика, чтобы при неудачном сохранении кнопка «Повторить» могла пересохранить именно это
+// (не переспрашивая комментарий заново). afterSuccess — необязательный колбэк после удачного render().
+async function saveDoneToggle(id, personal, result, cb, task, afterSuccess){
+  const fresh = await refreshTasksFromServer(personal);
+  const before = fresh || tasksFor(personal);
+  const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
+  setTasksFor(personal, updated);
+  const ok = await persistTasksFor(personal);
+  if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(()=>saveDoneToggle(id, personal, result, cb, task, afterSuccess)); return; }
+  notifySelfSaved('✅ Отчёт по задаче сохранён', task ? task.title : '');
+  render();
+  if(afterSuccess) afterSuccess();
+}
+async function saveUndoneToggle(id, personal, cb, afterSuccess){
+  const fresh = await refreshTasksFromServer(personal);
+  const before = fresh || tasksFor(personal);
+  setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
+  const ok = await persistTasksFor(personal);
+  if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(()=>saveUndoneToggle(id, personal, cb, afterSuccess)); return; }
+  render();
+  if(afterSuccess) afterSuccess();
+}
 function renderOverview(root){
   const canChooseWhoToView = hasRole('Руководитель','Ассистент');
   // По умолчанию каждый видит только свои задачи. Руководитель/Ассистент могут выбрать чужой обзор или "Все".
@@ -2409,21 +2581,9 @@ function renderOverview(root){
         const isOverdue = !!(task && task.deadline && task.deadline < todayISO());
         const result = await requestCompletionComment(task ? task.title : '', isOverdue);
         if(result===null){ cb.checked=false; return; }
-        const fresh = await refreshTasksFromServer(personal);
-        const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
-        setTasksFor(personal, updated);
-        const ok = await persistTasksFor(personal);
-        if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
-        notifySelfSaved('✅ Отчёт по задаче сохранён', task ? task.title : '');
-        render();
+        await saveDoneToggle(id, personal, result, cb, task);
       } else {
-        const fresh = await refreshTasksFromServer(personal);
-        const before = fresh || tasksFor(personal);
-        setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
-        const ok = await persistTasksFor(personal);
-        if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(); return; }
-        render();
+        await saveUndoneToggle(id, personal, cb);
       }
     };
   });
@@ -2554,6 +2714,16 @@ function renderCalendar(root){
   });
 }
 
+// Финальный шаг удаления события (после подтверждения и перемещения в корзину) — отдельной
+// функцией, чтобы «Повторить» при неудачном сохранении не переспрашивал подтверждение и не
+// перемещал событие в корзину повторно, а просто пересохранял уже готовый результат.
+async function saveEventDeletion(personal, before, updated, evObj, isSeries){
+  setEventsFor(personal, updated);
+  const ok = await persistEventsFor(personal);
+  if(!ok){ setEventsFor(personal, before); saveFailedToast(()=>saveEventDeletion(personal, before, updated, evObj, isSeries)); return; }
+  if(evObj) logAudit('event_deleted', `«${evObj.title}»${isSeries?' (вся серия)':''}`);
+  closeModal(); render();
+}
 function openDayModal(iso){
   if(state.dayModalIso !== iso){ state.dayDoneExpanded = false; }
   state.dayModalIso = iso;
@@ -2615,32 +2785,27 @@ function openDayModal(iso){
   modal.querySelectorAll('[data-del]').forEach(b=>b.onclick=async ()=>{
     const evId = b.dataset.del;
     const personal = isPersonalEvent(evId);
-    if(!personal) await refreshEventsFromServer();
+    await refreshEventsFromServer(personal);
     const evObj = eventsFor(personal).find(e=>e.id===evId);
     if(evObj && evObj.seriesId){
       const choice = await showSeriesDeleteChoice();
       if(!choice) return;
       const before = eventsFor(personal);
+      let updated;
       if(choice==='one'){
         await moveToTrash(personal, 'event', evObj);
-        setEventsFor(personal, before.filter(e=>e.id!==evId));
+        updated = before.filter(e=>e.id!==evId);
       } else {
         const seriesEvents = before.filter(e=>e.seriesId===evObj.seriesId);
         for(const se of seriesEvents) await moveToTrash(personal, 'event', se);
-        setEventsFor(personal, before.filter(e=>e.seriesId!==evObj.seriesId));
+        updated = before.filter(e=>e.seriesId!==evObj.seriesId);
       }
-      const ok = await persistEventsFor(personal);
-      if(!ok){ setEventsFor(personal, before); saveFailedToast(); return; }
-      logAudit('event_deleted', `«${evObj.title}»${choice==='series'?' (вся серия)':''}`);
-      closeModal(); render();
+      await saveEventDeletion(personal, before, updated, evObj, choice==='series');
     } else if(await showConfirm('Удалить событие?')){
       const before = eventsFor(personal);
       if(evObj) await moveToTrash(personal, 'event', evObj);
-      setEventsFor(personal, before.filter(e=>e.id!==evId));
-      const ok = await persistEventsFor(personal);
-      if(!ok){ setEventsFor(personal, before); saveFailedToast(); return; }
-      if(evObj) logAudit('event_deleted', `«${evObj.title}»`);
-      closeModal(); render();
+      const updated = before.filter(e=>e.id!==evId);
+      await saveEventDeletion(personal, before, updated, evObj, false);
     }
   });
   const activeListEl = document.getElementById('dayTaskListActive');
@@ -2675,23 +2840,9 @@ function wireDayTaskActions(el, iso){
         const isOverdue = !!(task && task.deadline && task.deadline < todayISO());
         const result = await requestCompletionComment(task ? task.title : '', isOverdue);
         if(result===null){ cb.checked=false; return; }
-        const fresh = await refreshTasksFromServer(personal);
-        const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
-        setTasksFor(personal, updated);
-        const ok = await persistTasksFor(personal);
-        if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
-        notifySelfSaved('✅ Отчёт по задаче сохранён', task ? task.title : '');
-        render();
-        closeModal(); openDayModal(iso);
+        await saveDoneToggle(id, personal, result, cb, task, ()=>{ closeModal(); openDayModal(iso); });
       } else {
-        const fresh = await refreshTasksFromServer(personal);
-        const before = fresh || tasksFor(personal);
-        setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
-        const ok = await persistTasksFor(personal);
-        if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(); return; }
-        render();
-        closeModal(); openDayModal(iso);
+        await saveUndoneToggle(id, personal, cb, ()=>{ closeModal(); openDayModal(iso); });
       }
     };
   });
@@ -2725,6 +2876,13 @@ function openEventModal(id, presetDate){
     const e = state.employees.find(x=>x.id===eid);
     return e && (e.role==='Менеджер' || e.role==='Хостес');
   });
+  // Задачи, привязанные к этому событию (поле t.eventId) — показываем кратким списком,
+  // клик по задаче разворачивает подробности. Только для уже существующего события.
+  const linkedTasks = existing
+    ? state.tasksWork.concat(personalAccessAllowed() ? state.personalTasks : []).filter(t=>t.eventId===existing.id)
+    : [];
+  if(state.eventModalId !== (existing?existing.id:null)) state.eventModalExpandedTasks = [];
+  state.eventModalId = existing ? existing.id : null;
   const modal = document.getElementById('modalRoot');
   modal.innerHTML = `
     <div class="overlay" id="ov">
@@ -2775,6 +2933,40 @@ function openEventModal(id, presetDate){
           <input id="f_manual_names" value="${existing?escapeHtml(existing.manualNames||''):''}" placeholder="Например: Оля, Настя">
         </div>
         <div class="field"><label>Заметка</label><textarea id="f_notes" rows="2">${existing?escapeHtml(existing.notes||''):''}</textarea></div>
+        ${existing ? `
+        <div class="field">
+          <label>📋 Связанные задачи${linkedTasks.length?` (${linkedTasks.length})`:''}</label>
+          ${linkedTasks.length ? `
+          <div class="item-list" id="f_linked_tasks">
+            ${linkedTasks.map(t=>{
+              const expanded = state.eventModalExpandedTasks.includes(t.id);
+              const overdue = t.deadline && t.deadline < todayISO() && t.status==='progress';
+              const tPersonal = state.personalTasks.some(pt=>pt.id===t.id);
+              return `
+              <div class="item" data-linked-task-row="${t.id}" style="cursor:pointer;flex-direction:column;align-items:stretch;gap:6px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                  <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                    <span class="badge ${t.status||'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(t.title)}</span>
+                  </div>
+                  <span class="subtitle" style="margin:0;">${expanded?'▾':'▸'}</span>
+                </div>
+                ${expanded ? `
+                <div class="meta" style="padding-left:2px;">
+                  ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
+                  ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDeadline(t)}${overdue?' · просрочено':''}</span>`:''}
+                  ${t.projectId?`<span>📁 ${escapeHtml(projectName(tPersonal, t.projectId))}</span>`:''}
+                  ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
+                </div>
+                ${t.description?`<div class="desc" style="padding-left:2px;">${linkifyEscaped(t.description)}</div>`:''}
+                <button type="button" class="btn ghost small" data-open-linked-task="${t.id}" style="align-self:flex-start;">Открыть задачу →</button>
+                ` : ''}
+              </div>`;
+            }).join('')}
+          </div>
+          ` : `<p class="subtitle" style="margin:0;">Нет задач, привязанных к этому событию</p>`}
+        </div>
+        ` : ''}
         ${!existing ? `
         <div class="field"><label>Повтор</label>
           <select id="f_repeat">
@@ -2823,6 +3015,27 @@ function openEventModal(id, presetDate){
     document.getElementById('f_manual_wrap').style.display = hasMgrHost?'':'none';
   };
   empListEl.querySelectorAll('[data-emp-cb]').forEach(cb=>cb.onchange=refreshManualWrap);
+
+  if(existing && linkedTasks.length){
+    modal.querySelectorAll('[data-linked-task-row]').forEach(row=>{
+      row.onclick=(ev)=>{
+        if(ev.target.closest('[data-open-linked-task]')) return;
+        const tid = row.dataset.linkedTaskRow;
+        const idx = state.eventModalExpandedTasks.indexOf(tid);
+        if(idx>=0) state.eventModalExpandedTasks.splice(idx,1);
+        else state.eventModalExpandedTasks.push(tid);
+        closeModal(); openEventModal(id, presetDate);
+      };
+    });
+    modal.querySelectorAll('[data-open-linked-task]').forEach(b=>{
+      b.onclick=(ev)=>{
+        ev.stopPropagation();
+        const tid = b.dataset.openLinkedTask;
+        const tPersonal = state.personalTasks.some(pt=>pt.id===tid);
+        openTaskModal(tid, tPersonal);
+      };
+    });
+  }
 
   const repeatEl = document.getElementById('f_repeat');
   if(repeatEl){
@@ -2892,9 +3105,12 @@ function openEventModal(id, presetDate){
       notes: document.getElementById('f_notes').value.trim(),
       seriesId: existing ? (existing.seriesId||null) : null,
     };
-    // Общий календарь: подтягиваем свежую версию перед сохранением, чтобы не затереть
-    // событие, которое кто-то другой (или другая вкладка) успел добавить только что.
-    if(!existingPersonal || !newPersonal) await refreshEventsFromServer();
+    // Календарь (общий и личный): подтягиваем свежую версию перед сохранением, чтобы не затереть
+    // событие, которое кто-то другой (или другая вкладка/устройство) успел добавить только что.
+    // Категория может переключать событие между общим и личным контуром, поэтому обновляем оба,
+    // если затронут хотя бы один из них.
+    if(!existingPersonal || !newPersonal) await refreshEventsFromServer(false);
+    if(existingPersonal || newPersonal) await refreshEventsFromServer(true);
     if(category==='vacation'){
       if(!emp.length){ toast('Отпуск обязательно привязывается к конкретному сотруднику — отметьте его в «Участники»'); return; }
       const repeatTypeEarly = repeatEl ? repeatEl.value : 'none';
@@ -2934,63 +3150,84 @@ function openEventModal(id, presetDate){
       if(!dates.length) dates = [data.date];
       const seriesId = uid();
       const newEvts = dates.map(d=>({...data, id: uid()+d, date: d, seriesId}));
-      const before = eventsFor(newPersonal);
-      setEventsFor(newPersonal, before.concat(newEvts));
-      const ok = await persistEventsFor(newPersonal);
-      if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
-      toast(`Добавлено событий: ${dates.length}`);
-      notifySelfSaved('✅ Событие создано', data.title);
-      closeModal(); render();
+      // Каждая ветка сохранения — своей вложенной именованной функцией, чтобы при неудаче кнопка
+      // «Повторить» пересохраняла именно этот расчёт, не переспрашивая конфликты/выбор серии заново.
+      async function saveRecurringEvents(){
+        const before = eventsFor(newPersonal);
+        setEventsFor(newPersonal, before.concat(newEvts));
+        const ok = await persistEventsFor(newPersonal);
+        if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(saveRecurringEvents); return; }
+        toast(`Добавлено событий: ${dates.length}`);
+        notifySelfSaved('✅ Событие создано', data.title);
+        closeModal(); render();
+      }
+      await saveRecurringEvents();
       return;
     } else if(existing){
       if(existingPersonal !== newPersonal){
         // moved between personal/work — remove from old store, add to new
-        const beforeOld = eventsFor(existingPersonal);
-        setEventsFor(existingPersonal, beforeOld.filter(e=>e.id!==existing.id));
-        const ok1 = await persistEventsFor(existingPersonal);
-        if(!ok1){ setEventsFor(existingPersonal, beforeOld); saveFailedToast(); return; }
-        const beforeNew = eventsFor(newPersonal);
-        setEventsFor(newPersonal, beforeNew.concat([data]));
-        const ok2 = await persistEventsFor(newPersonal);
-        if(!ok2){
-          setEventsFor(newPersonal, beforeNew);
-          setEventsFor(existingPersonal, beforeOld);
-          await persistEventsFor(existingPersonal);
-          saveFailedToast();
-          return;
+        async function saveMovedEvent(){
+          const beforeOld = eventsFor(existingPersonal);
+          setEventsFor(existingPersonal, beforeOld.filter(e=>e.id!==existing.id));
+          const ok1 = await persistEventsFor(existingPersonal);
+          if(!ok1){ setEventsFor(existingPersonal, beforeOld); saveFailedToast(saveMovedEvent); return false; }
+          const beforeNew = eventsFor(newPersonal);
+          setEventsFor(newPersonal, beforeNew.concat([data]));
+          const ok2 = await persistEventsFor(newPersonal);
+          if(!ok2){
+            setEventsFor(newPersonal, beforeNew);
+            setEventsFor(existingPersonal, beforeOld);
+            await persistEventsFor(existingPersonal);
+            saveFailedToast(saveMovedEvent);
+            return false;
+          }
+          toast('Событие сохранено');
+          return true;
         }
-        toast('Событие сохранено');
+        if(!(await saveMovedEvent())) return;
       } else if(existing.seriesId){
         const choice = await showSeriesEditChoice();
         if(!choice) return;
-        const before = eventsFor(newPersonal);
-        if(choice==='one'){
-          setEventsFor(newPersonal, before.map(e=>e.id===existing.id?data:e));
-        } else {
-          setEventsFor(newPersonal, before.map(e=>{
-            if(e.seriesId===existing.seriesId){
-              return {...data, id:e.id, date:e.date, seriesId:e.seriesId};
-            }
-            return e;
-          }));
+        async function saveSeriesEdit(){
+          const before = eventsFor(newPersonal);
+          if(choice==='one'){
+            setEventsFor(newPersonal, before.map(e=>e.id===existing.id?data:e));
+          } else {
+            setEventsFor(newPersonal, before.map(e=>{
+              if(e.seriesId===existing.seriesId){
+                return {...data, id:e.id, date:e.date, seriesId:e.seriesId};
+              }
+              return e;
+            }));
+          }
+          const ok = await persistEventsFor(newPersonal);
+          if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(saveSeriesEdit); return false; }
+          toast(choice==='series' ? 'Изменения применены ко всей серии' : 'Событие сохранено');
+          return true;
         }
-        const ok = await persistEventsFor(newPersonal);
-        if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
-        toast(choice==='series' ? 'Изменения применены ко всей серии' : 'Событие сохранено');
+        if(!(await saveSeriesEdit())) return;
       } else {
-        const before = eventsFor(newPersonal);
-        setEventsFor(newPersonal, before.map(e=>e.id===existing.id?data:e));
-        const ok = await persistEventsFor(newPersonal);
-        if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
-        toast('Событие сохранено');
+        async function saveSimpleEventEdit(){
+          const before = eventsFor(newPersonal);
+          setEventsFor(newPersonal, before.map(e=>e.id===existing.id?data:e));
+          const ok = await persistEventsFor(newPersonal);
+          if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(saveSimpleEventEdit); return false; }
+          toast('Событие сохранено');
+          return true;
+        }
+        if(!(await saveSimpleEventEdit())) return;
       }
     } else {
-      const before = eventsFor(newPersonal);
-      setEventsFor(newPersonal, before.concat([data]));
-      const ok = await persistEventsFor(newPersonal);
-      if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(); return; }
-      toast('Событие сохранено');
-      notifySelfSaved('✅ Событие создано', data.title);
+      async function saveNewEvent(){
+        const before = eventsFor(newPersonal);
+        setEventsFor(newPersonal, before.concat([data]));
+        const ok = await persistEventsFor(newPersonal);
+        if(!ok){ setEventsFor(newPersonal, before); saveFailedToast(saveNewEvent); return false; }
+        toast('Событие сохранено');
+        notifySelfSaved('✅ Событие создано', data.title);
+        return true;
+      }
+      if(!(await saveNewEvent())) return;
     }
     closeModal(); render();
   };
@@ -3075,7 +3312,7 @@ function taskItemHtml(t, personal, opts){
   return `
     <div class="item ${t.status==='done'?'is-done':''}" data-task-row="${t.id}" data-depth="${depth}" style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
       ${opts.bulkSelect && depth===0?`<input type="checkbox" class="task-check" data-bulk-select="${t.id}" ${opts.bulkSelected?'checked':''} title="Выбрать для массового действия">`:''}
-      ${depth===0?`<span class="drag-handle" data-drag-handle="${t.id}" title="Перетащить, чтобы изменить порядок">⠿</span>`:''}
+      ${depth===0 && opts.dragEnabled!==false?`<span class="drag-handle" data-drag-handle="${t.id}" title="Перетащить, чтобы изменить порядок">⠿</span>`:''}
       <input type="checkbox" class="task-check${checkInteractive?'':' task-check-locked'}" data-done="${t.id}" ${isChecked?'checked':''} ${checkInteractive?'':'disabled'} title="${checkTitle}">
       <div class="main">
         <div class="title">
@@ -3126,6 +3363,18 @@ function taskItemHtml(t, personal, opts){
     </div>`;
 }
 
+// Финальный шаг массового удаления задач (после подтверждения и перемещения в корзину) —
+// отдельной функцией, чтобы «Повторить» не переспрашивал подтверждение и не дублировал корзину.
+async function saveBulkDelete(all, idsSet, deletedCount, skipped){
+  const before = state.tasksWork;
+  setTasksFor(false, all.filter(t=>!idsSet.includes(t.id)));
+  const ok = await persistTasksFor(false);
+  if(!ok){ setTasksFor(false, before); saveFailedToast(()=>saveBulkDelete(all, idsSet, deletedCount, skipped)); return; }
+  logAudit('bulk_delete', `${deletedCount} задач(и) удалено`);
+  toast(`Удалено: ${deletedCount}${skipped?`, пропущено (не вы постановщик): ${skipped}`:''}`);
+  state.bulkSelectedIds = new Set();
+  render();
+}
 function renderTaskBoard(el, personal){
   const selKey = personal?'personal':'work';
   const projects = activeProjectsFor(personal);
@@ -3156,6 +3405,22 @@ function renderTaskBoard(el, personal){
         <option value="all" ${state.taskFilterStatus==='all'?'selected':''}>Любой статус</option>
         ${Object.entries(STATUSES).map(([k,v])=>`<option value="${k}" ${state.taskFilterStatus===k?'selected':''}>${v}</option>`).join('')}
       </select>
+      <select id="filtPriority">
+        <option value="all" ${state.taskFilterPriority==='all'?'selected':''}>Любой приоритет</option>
+        ${Object.entries(PRIORITIES).map(([k,v])=>`<option value="${k}" ${state.taskFilterPriority===k?'selected':''}>${v}</option>`).join('')}
+      </select>
+    </div>
+    <div class="cat-filters" style="margin-bottom:10px;">
+      <span class="subtitle" style="margin:0 2px 0 0;">Сортировка:</span>
+      <button class="cat-chip ${state.taskSortBy==='manual'?'':'off'}" data-sort-by="manual">Обычный порядок</button>
+      <button class="cat-chip ${state.taskSortBy==='priority'?'':'off'}" data-sort-by="priority">По приоритету</button>
+      <button class="cat-chip ${state.taskSortBy==='deadline'?'':'off'}" data-sort-by="deadline">По сроку</button>
+    </div>
+    <div class="cat-filters" style="margin-bottom:10px;">
+      <span class="subtitle" style="margin:0 2px 0 0;">Срок:</span>
+      <button class="cat-chip ${state.taskFilterPeriod==='all'?'':'off'}" data-period="all">Все</button>
+      <button class="cat-chip ${state.taskFilterPeriod==='week'?'':'off'}" data-period="week">На этой неделе</button>
+      <button class="cat-chip ${state.taskFilterPeriod==='month'?'':'off'}" data-period="month">В этом месяце</button>
     </div>
     <div id="delegatedSummary"></div>
     <div id="bulkActionBar"></div>
@@ -3241,6 +3506,9 @@ function renderTaskBoard(el, personal){
     });
   }
   el.querySelector('#filtStatus').onchange=(e)=>{ state.taskFilterStatus=e.target.value; render(); };
+  el.querySelector('#filtPriority').onchange=(e)=>{ state.taskFilterPriority=e.target.value; render(); };
+  el.querySelectorAll('[data-sort-by]').forEach(b=>b.onclick=()=>{ state.taskSortBy=b.dataset.sortBy; render(); });
+  el.querySelectorAll('[data-period]').forEach(b=>b.onclick=()=>{ state.taskFilterPeriod=b.dataset.period; render(); });
 
   const viewMode = personal ? 'assigned' : state.taskViewMode;
   let list = tasksFor(personal).slice();
@@ -3251,6 +3519,24 @@ function renderTaskBoard(el, personal){
     list = list.filter(t=>t.assigneeId===state.taskFilterEmployee);
   }
   if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
+  if(state.taskFilterPriority!=='all') list = list.filter(t=>(t.priority||'med')===state.taskFilterPriority);
+  if(state.taskFilterPeriod!=='all'){
+    // «На этой неделе» / «В этом месяце» — по дедлайну, чтобы после планёрки было видно,
+    // что именно согласовано и поставлено на ближайший срок.
+    const now = new Date();
+    let rangeStart, rangeEnd;
+    if(state.taskFilterPeriod==='week'){
+      const day = (now.getDay()+6)%7;
+      const monday = new Date(now); monday.setDate(now.getDate()-day);
+      const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
+      rangeStart = dateToISO(monday); rangeEnd = dateToISO(sunday);
+    } else {
+      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+      const last = new Date(now.getFullYear(), now.getMonth()+1, 0);
+      rangeStart = dateToISO(first); rangeEnd = dateToISO(last);
+    }
+    list = list.filter(t=>t.deadline && t.deadline>=rangeStart && t.deadline<=rangeEnd);
+  }
   if(state.taskFilterNoProject[selKey]){
     list = list.filter(t=>!t.projectId);
   } else if(state.taskFilterProjectIds[selKey].size){
@@ -3282,14 +3568,25 @@ function renderTaskBoard(el, personal){
 
   const byId = {}; list.forEach(t=>byId[t.id]=t);
   const roots = list.filter(t=> !t.parentId || !byId[t.parentId]);
-  roots.sort((a,b)=> ((a.sortOrder||0) - (b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999'));
+  // Сортировка списка: «Обычный порядок» — вручную (drag&drop), «По приоритету» — высокий → средний → низкий,
+  // «По сроку» — по ближайшему дедлайну. Приоритет/срок применяются и к подзадачам, чтобы порядок был согласованным.
+  const PRIORITY_RANK = {high:0, med:1, low:2};
+  function taskComparator(a,b){
+    if(state.taskSortBy==='priority'){
+      return (PRIORITY_RANK[a.priority]??1) - (PRIORITY_RANK[b.priority]??1) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
+    } else if(state.taskSortBy==='deadline'){
+      return (a.deadline||'9999').localeCompare(b.deadline||'9999');
+    }
+    return ((a.sortOrder||0) - (b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
+  }
+  roots.sort(taskComparator);
 
   function renderNode(t, depth){
-    const children = list.filter(c=>c.parentId===t.id).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+    const children = list.filter(c=>c.parentId===t.id).sort(taskComparator);
     const allTasks = tasksFor(personal);
     const orphanParent = (t.parentId && !byId[t.parentId]) ? allTasks.find(x=>x.id===t.parentId) : null;
     const collapsed = state.collapsedTaskIds.has(t.id);
-    const html = taskItemHtml(t, personal, {depth, orphanParentName: orphanParent?orphanParent.title:null, childCount: children.length, collapsed, bulkSelect: state.bulkSelectMode && !personal, bulkSelected: state.bulkSelectedIds.has(t.id)});
+    const html = taskItemHtml(t, personal, {depth, orphanParentName: orphanParent?orphanParent.title:null, childCount: children.length, collapsed, bulkSelect: state.bulkSelectMode && !personal, bulkSelected: state.bulkSelectedIds.has(t.id), dragEnabled: state.taskSortBy==='manual'});
     if(collapsed || !children.length) return html;
     return html + children.map(c=>renderNode(c, depth+1)).join('');
   }
@@ -3344,33 +3641,35 @@ function renderTaskBoard(el, personal){
         };
       });
       const moveSel = bulkBarEl.querySelector('#bulkMoveProject');
-      if(moveSel) moveSel.onchange = async ()=>{
+      if(moveSel) moveSel.onchange = async function retry(){
         const val = moveSel.value;
         if(!val) return;
         const newProjectId = val==='__none__' ? null : val;
         const editable = selectedTasks.filter(t=>canEditTask(t, false));
         const skipped = selectedTasks.length - editable.length;
         if(!editable.length){ toast('Ни одну из выбранных задач нельзя изменить — вы не постановщик'); return; }
+        await refreshTasksFromServer(false);
         const before = state.tasksWork;
         state.tasksWork = before.map(t=>editable.some(e=>e.id===t.id)?{...t,projectId:newProjectId}:t);
         const ok = await saveTasksWork();
-        if(!ok){ state.tasksWork = before; saveFailedToast(); return; }
+        if(!ok){ state.tasksWork = before; saveFailedToast(retry); return; }
         logAudit('bulk_move_project', `${editable.length} задач(и) → ${newProjectId?projectName(false,newProjectId):'без проекта'}`);
         toast(`Перемещено: ${editable.length}${skipped?`, пропущено (не вы постановщик): ${skipped}`:''}`);
         state.bulkSelectedIds = new Set();
         render();
       };
       const reassignSel = bulkBarEl.querySelector('#bulkReassign');
-      if(reassignSel) reassignSel.onchange = async ()=>{
+      if(reassignSel) reassignSel.onchange = async function retry(){
         const val = reassignSel.value;
         if(!val) return;
         const editable = selectedTasks.filter(t=>canEditTask(t, false));
         const skipped = selectedTasks.length - editable.length;
         if(!editable.length){ toast('Ни одну из выбранных задач нельзя изменить — вы не постановщик'); return; }
+        await refreshTasksFromServer(false);
         const before = state.tasksWork;
         state.tasksWork = before.map(t=>editable.some(e=>e.id===t.id)?{...t,assigneeId:val}:t);
         const ok = await saveTasksWork();
-        if(!ok){ state.tasksWork = before; saveFailedToast(); return; }
+        if(!ok){ state.tasksWork = before; saveFailedToast(retry); return; }
         logAudit('bulk_reassign', `${editable.length} задач(и) → ${empName(val)}`);
         toast(`Переназначено: ${editable.length}${skipped?`, пропущено (не вы постановщик): ${skipped}`:''}`);
         state.bulkSelectedIds = new Set();
@@ -3382,6 +3681,7 @@ function renderTaskBoard(el, personal){
         const skipped = selectedTasks.length - deletable.length;
         if(!deletable.length){ toast('Ни одну из выбранных задач нельзя удалить — вы не постановщик'); return; }
         if(!(await showConfirm(`Удалить ${deletable.length} задач(и)? Это затронет и их подзадачи.`, 'Удалить'))) return;
+        await refreshTasksFromServer(false);
         const all = tasksFor(false);
         function idsToDelete(rootId){
           let ids=[rootId];
@@ -3395,14 +3695,7 @@ function renderTaskBoard(el, personal){
           const doomed = all.find(x=>x.id===tid);
           if(doomed) await moveToTrash(false, 'task', doomed);
         }
-        const before = state.tasksWork;
-        setTasksFor(false, all.filter(t=>!idsSet.includes(t.id)));
-        const ok = await persistTasksFor(false);
-        if(!ok){ setTasksFor(false, before); saveFailedToast(); return; }
-        logAudit('bulk_delete', `${deletable.length} задач(и) удалено`);
-        toast(`Удалено: ${deletable.length}${skipped?`, пропущено (не вы постановщик): ${skipped}`:''}`);
-        state.bulkSelectedIds = new Set();
-        render();
+        await saveBulkDelete(all, idsSet, deletable.length, skipped);
       };
     } else {
       bulkBarEl.innerHTML = '';
@@ -3449,21 +3742,9 @@ function wireTaskActions(el, personal){
         const isOverdue = !!(task && task.deadline && task.deadline < todayISO());
         const result = await requestCompletionComment(task ? task.title : '', isOverdue);
         if(result===null){ cb.checked=false; return; }
-        const fresh = await refreshTasksFromServer(personal);
-        const before = fresh || tasksFor(personal);
-        const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
-        setTasksFor(personal, updated);
-        const ok = await persistTasksFor(personal);
-        if(!ok){ setTasksFor(personal, before); cb.checked=false; saveFailedToast(); return; }
-        notifySelfSaved('✅ Отчёт по задаче сохранён', task ? task.title : '');
-        render();
+        await saveDoneToggle(id, personal, result, cb, task);
       } else {
-        const fresh = await refreshTasksFromServer(personal);
-        const before = fresh || tasksFor(personal);
-        setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
-        const ok = await persistTasksFor(personal);
-        if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(); return; }
-        render();
+        await saveUndoneToggle(id, personal, cb);
       }
     };
   });
@@ -3536,13 +3817,20 @@ function wireTaskDragReorder(listEl, personal, rootIdsInOrder){
           const idx = order.indexOf(targetId);
           const insertAt = targetPos==='top' ? idx : idx+1;
           order.splice(insertAt, 0, dragId);
-          const before = tasksFor(personal);
-          const orderMap = {}; order.forEach((id,i)=>{ orderMap[id]=(i+1)*10; });
-          const updated = before.map(t=> orderMap[t.id]!==undefined ? {...t, sortOrder: orderMap[t.id]} : t);
-          setTasksFor(personal, updated);
-          const ok = await persistTasksFor(personal);
-          if(!ok){ setTasksFor(personal, before); saveFailedToast(); }
-          render();
+          // Перетаскивание для смены порядка тоже перезаписывает весь список задач целиком —
+          // подтягиваем свежую версию перед сохранением (см. refreshTasksFromServer), иначе с телефона,
+          // который долго был открыт на старой странице, можно незаметно затереть чужие изменения.
+          async function saveReorder(){
+            await refreshTasksFromServer(personal);
+            const before = tasksFor(personal);
+            const orderMap = {}; order.forEach((id,i)=>{ orderMap[id]=(i+1)*10; });
+            const updated = before.map(t=> orderMap[t.id]!==undefined ? {...t, sortOrder: orderMap[t.id]} : t);
+            setTasksFor(personal, updated);
+            const ok = await persistTasksFor(personal);
+            if(!ok){ setTasksFor(personal, before); saveFailedToast(saveReorder); }
+            render();
+          }
+          await saveReorder();
         }
         dragId = null; dragEl = null; targetId = null; targetPos = null;
       };
@@ -3853,16 +4141,19 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     if(!blockId){ toast('Сначала выберите блок — новый проект создастся сразу в нём'); return; }
     const name = await showPrompt('Название нового проекта', '');
     if(name===null || !name.trim()) return;
-    await refreshProjectsAndBlocksFromServer();
-    const before = state.projectsWork;
-    const newProj = {id:uid(), name:name.trim(), blockId};
-    state.projectsWork = before.concat([newProj]);
-    const ok = await saveProjectsWork();
-    if(!ok){ state.projectsWork = before; saveFailedToast(); return; }
-    logAudit('project_created', `«${newProj.name}» — блок «${blockName(blockId)}»`);
-    notifySelfSaved('✅ Проект создан', newProj.name);
-    projects.push(newProj);
-    tProjectEl.innerHTML = projectOptionsForBlock(blockId, newProj.id);
+    async function saveNewInlineProject(){
+      await refreshProjectsAndBlocksFromServer();
+      const before = state.projectsWork;
+      const newProj = {id:uid(), name:name.trim(), blockId};
+      state.projectsWork = before.concat([newProj]);
+      const ok = await saveProjectsWork();
+      if(!ok){ state.projectsWork = before; saveFailedToast(saveNewInlineProject); return; }
+      logAudit('project_created', `«${newProj.name}» — блок «${blockName(blockId)}»`);
+      notifySelfSaved('✅ Проект создан', newProj.name);
+      projects.push(newProj);
+      tProjectEl.innerHTML = projectOptionsForBlock(blockId, newProj.id);
+    }
+    await saveNewInlineProject();
   };
 
   function flagInvalid(elId){
@@ -3986,6 +4277,11 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       sortOrder: existing ? (existing.sortOrder||0) : 0,
     };
 
+    // Список задач — общий, и его сохраняют вперемешку с разных устройств/вкладок. Подтягиваем
+    // самую свежую версию прямо перед записью, иначе форма, которая давно была открыта (например,
+    // на телефоне), при сохранении затирает всё, что успели сохранить другие с тех пор.
+    await refreshTasksFromServer(personal);
+
     if(!existing && repeatEl && repeatEl.value!=='none'){
       const repeatType = repeatEl.value;
       const untilVal = document.getElementById('t_repeat_until').value || deadline;
@@ -3993,70 +4289,87 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       let dates = generateRecurrenceDates(deadline, repeatType, weekdaySet, untilVal, 300);
       if(!dates.length) dates = [deadline];
       const seriesId = uid();
-      const arr = tasksFor(personal);
       const newTasks = dates.map(d=>({...data, id: uid()+d, deadline: d, seriesId}));
-      setTasksFor(personal, arr.concat(newTasks));
-      await persistTasksFor(personal);
-      closeModal(); render();
-      toast(`Добавлено задач: ${newTasks.length}`);
-      if(onDone) onDone();
+      async function saveRepeatingTasks(){
+        await refreshTasksFromServer(personal);
+        const arr = tasksFor(personal);
+        setTasksFor(personal, arr.concat(newTasks));
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, arr); saveFailedToast(saveRepeatingTasks); return; }
+        closeModal(); render();
+        toast(`Добавлено задач: ${newTasks.length}`);
+        if(onDone) onDone();
+      }
+      await saveRepeatingTasks();
       return;
     }
 
     if(existing && existing.seriesId){
       const choice = await showSeriesEditChoice();
       if(!choice) return;
-      if(choice==='one'){
-        setTasksFor(personal, tasksFor(personal).map(t=>t.id===existing.id?data:t));
-      } else {
-        setTasksFor(personal, tasksFor(personal).map(t=>{
-          if(t.seriesId===existing.seriesId){
-            return {...data, id:t.id, deadline:t.deadline, status:t.status, completedAt:t.completedAt, completionComment:t.completionComment, completionLink:t.completionLink, createdDate:t.createdDate, parentId:t.parentId, seriesId:t.seriesId, purchaseExpenseId:t.purchaseExpenseId};
-          }
-          return t;
-        }));
+      async function saveSeriesTaskEdit(){
+        // Пока был открыт выбор «одну / всю серию», кто-то другой мог успеть сохранить свои
+        // изменения — подтягиваем ещё раз перед самой записью.
+        await refreshTasksFromServer(personal);
+        const before = tasksFor(personal);
+        if(choice==='one'){
+          setTasksFor(personal, before.map(t=>t.id===existing.id?data:t));
+        } else {
+          setTasksFor(personal, before.map(t=>{
+            if(t.seriesId===existing.seriesId){
+              return {...data, id:t.id, deadline:t.deadline, status:t.status, completedAt:t.completedAt, completionComment:t.completionComment, completionLink:t.completionLink, createdDate:t.createdDate, parentId:t.parentId, seriesId:t.seriesId, purchaseExpenseId:t.purchaseExpenseId};
+            }
+            return t;
+          }));
+        }
+        const ok = await persistTasksFor(personal);
+        if(!ok){ setTasksFor(personal, before); saveFailedToast(saveSeriesTaskEdit); return; }
+        if(chosenStatus==='done' && existing.status!=='done'){
+          await maybeOfferPurchaseExpense(data, personal);
+        }
+        closeModal(); render();
+        toast(choice==='series' ? 'Изменения применены ко всей серии' : 'Задача сохранена');
       }
-      await persistTasksFor(personal);
-      if(chosenStatus==='done' && existing.status!=='done'){
-        await maybeOfferPurchaseExpense(data, personal);
-      }
-      closeModal(); render();
-      toast(choice==='series' ? 'Изменения применены ко всей серии' : 'Задача сохранена');
+      await saveSeriesTaskEdit();
       return;
     }
 
-    const arr = tasksFor(personal);
-    const beforeTasks = arr;
-    let toSave = existing ? arr.map(t=>t.id===existing.id?data:t) : arr.concat([data]);
-    // Если у самой задачи (не подзадачи) поменялся проект или блок — подтягиваем все подзадачи следом.
-    if(existing && !data.parentId && (existing.projectId!==data.projectId || existing.blockId!==data.blockId)){
-      function collectDescendantIds(rootId, list){
-        let ids=[];
-        list.filter(t=>t.parentId===rootId).forEach(c=>{ ids.push(c.id); ids = ids.concat(collectDescendantIds(c.id, list)); });
-        return ids;
+    async function saveTaskMain(){
+      await refreshTasksFromServer(personal);
+      const arr = tasksFor(personal);
+      const beforeTasks = arr;
+      let toSave = existing ? arr.map(t=>t.id===existing.id?data:t) : arr.concat([data]);
+      // Если у самой задачи (не подзадачи) поменялся проект или блок — подтягиваем все подзадачи следом.
+      if(existing && !data.parentId && (existing.projectId!==data.projectId || existing.blockId!==data.blockId)){
+        function collectDescendantIds(rootId, list){
+          let ids=[];
+          list.filter(t=>t.parentId===rootId).forEach(c=>{ ids.push(c.id); ids = ids.concat(collectDescendantIds(c.id, list)); });
+          return ids;
+        }
+        const descendantIds = collectDescendantIds(data.id, toSave);
+        if(descendantIds.length){
+          toSave = toSave.map(t=>descendantIds.includes(t.id) ? {...t, projectId:data.projectId, blockId:data.blockId} : t);
+        }
       }
-      const descendantIds = collectDescendantIds(data.id, toSave);
-      if(descendantIds.length){
-        toSave = toSave.map(t=>descendantIds.includes(t.id) ? {...t, projectId:data.projectId, blockId:data.blockId} : t);
+      setTasksFor(personal, toSave);
+      const ok = await persistTasksFor(personal);
+      if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(saveTaskMain); return; }
+      if(!existing){
+        logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}`);
+      } else if(existing.deadline !== data.deadline){
+        logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDeadline(existing):'—'} → ${data.deadline?fmtDeadline(data):'—'}`);
+      }
+      if(chosenStatus==='done' && (!existing || existing.status!=='done')){
+        await maybeOfferPurchaseExpense(data, personal);
+      }
+      closeModal(); render();
+      toast('Задача сохранена');
+      if(!existing){
+        notifySelfSaved('✅ Задача создана', data.title);
+        if(onDone) onDone();
       }
     }
-    setTasksFor(personal, toSave);
-    const ok = await persistTasksFor(personal);
-    if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(); return; }
-    if(!existing){
-      logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}`);
-    } else if(existing.deadline !== data.deadline){
-      logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDeadline(existing):'—'} → ${data.deadline?fmtDeadline(data):'—'}`);
-    }
-    if(chosenStatus==='done' && (!existing || existing.status!=='done')){
-      await maybeOfferPurchaseExpense(data, personal);
-    }
-    closeModal(); render();
-    toast('Задача сохранена');
-    if(!existing){
-      notifySelfSaved('✅ Задача создана', data.title);
-      if(onDone) onDone();
-    }
+    await saveTaskMain();
   };
 }
 
@@ -4171,10 +4484,10 @@ function openProjectsModal(personal, presetBlockId){
   function wire(){
     document.getElementById('closeProj').onclick=closeModal;
     document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
-    document.getElementById('addProj').onclick=async ()=>{
+    document.getElementById('addProj').onclick=async function retry(){
       const name = document.getElementById('proj_name').value.trim();
       if(!name){ toast('Введите название'); return; }
-      if(!personal) await refreshProjectsAndBlocksFromServer();
+      await refreshProjectsAndBlocksFromServer(personal);
       let blockIdForProj = null;
       if(!personal){
         const blockEl = document.getElementById('proj_block');
@@ -4188,7 +4501,7 @@ function openProjectsModal(personal, presetBlockId){
       const newProj = {id:uid(), name, blockId: blockIdForProj || null};
       setProjectsFor(personal, before.concat([newProj]));
       const ok = await persistProjectsFor(personal);
-      if(!ok){ setProjectsFor(personal, before); saveFailedToast(); return; }
+      if(!ok){ setProjectsFor(personal, before); saveFailedToast(retry); return; }
       logAudit('project_created', `«${name}»${blockIdForProj?` — блок «${blockName(blockIdForProj)}»`:''}`);
       notifySelfSaved('✅ Проект создан', name);
       quickBlockId = null;
@@ -4201,61 +4514,70 @@ function openProjectsModal(personal, presetBlockId){
       if(nameInput){ nameInput.focus(); if(nameInput.scrollIntoView) nameInput.scrollIntoView({block:'center'}); }
     });
     const addBlockBtn = document.getElementById('addBlockBtn');
-    if(addBlockBtn) addBlockBtn.onclick=async ()=>{
+    if(addBlockBtn) addBlockBtn.onclick=async function retry(){
       const name = document.getElementById('block_name').value.trim();
       if(!name){ toast('Введите название блока'); return; }
       await refreshProjectsAndBlocksFromServer();
       const before = state.blocksWork;
       state.blocksWork = before.concat([{id:uid(), name}]);
       const ok = await saveBlocksWork();
-      if(!ok){ state.blocksWork = before; saveFailedToast(); return; }
+      if(!ok){ state.blocksWork = before; saveFailedToast(retry); return; }
       modal.innerHTML = body(); wire(); render();
     };
     const syncBlocksBtn = document.getElementById('syncBlocksBtn');
     if(syncBlocksBtn) syncBlocksBtn.onclick=async ()=>{
       if(!hasRole('Руководитель','Ассистент')){ toast('Доступно только Руководителю и Ассистенту'); return; }
       if(!(await showConfirm('Проставить блок по проекту (где есть проект, но нет блока) и подтянуть проект/блок подзадачам от родителя — для всех существующих задач разом?', 'Обновить'))) return;
-      const result = await syncTaskBlocksAndProjects();
-      if(result===null){ saveFailedToast(); return; }
-      toast(result.changed ? `Обновлено задач: ${result.changed}` : 'Обновлять было нечего — всё уже согласовано');
-      modal.innerHTML = body(); wire(); render();
+      async function runSync(){
+        const result = await syncTaskBlocksAndProjects();
+        if(result===null){ saveFailedToast(runSync); return; }
+        toast(result.changed ? `Обновлено задач: ${result.changed}` : 'Обновлять было нечего — всё уже согласовано');
+        modal.innerHTML = body(); wire(); render();
+      }
+      await runSync();
     };
     modal.querySelectorAll('[data-rename-block]').forEach(b=>b.onclick=async ()=>{
       const bid = b.dataset.renameBlock;
       const current = state.blocksWork.find(x=>x.id===bid);
       const newName = await showPrompt('Название блока', current?current.name:'');
       if(newName===null || !newName) return;
-      await refreshProjectsAndBlocksFromServer();
-      const before = state.blocksWork;
-      state.blocksWork = before.map(x=>x.id===bid?{...x,name:newName}:x);
-      const ok = await saveBlocksWork();
-      if(!ok){ state.blocksWork = before; saveFailedToast(); return; }
-      modal.innerHTML = body(); wire(); render();
+      async function saveRename(){
+        await refreshProjectsAndBlocksFromServer();
+        const before = state.blocksWork;
+        state.blocksWork = before.map(x=>x.id===bid?{...x,name:newName}:x);
+        const ok = await saveBlocksWork();
+        if(!ok){ state.blocksWork = before; saveFailedToast(saveRename); return; }
+        modal.innerHTML = body(); wire(); render();
+      }
+      await saveRename();
     });
     modal.querySelectorAll('[data-del-block]').forEach(b=>b.onclick=async ()=>{
       if(!canDeleteProject){ toast('Удалять блоки может только Руководитель или Ассистент'); return; }
       if(!(await showConfirm('Удалить блок? Проекты внутри останутся, но станут «без блока».'))) return;
-      await refreshProjectsAndBlocksFromServer();
-      const bid = b.dataset.delBlock;
-      const doomedBlock = state.blocksWork.find(x=>x.id===bid);
-      const beforeBlocks = state.blocksWork;
-      const beforeProjects = state.projectsWork;
-      state.blocksWork = beforeBlocks.filter(x=>x.id!==bid);
-      state.projectsWork = beforeProjects.map(p=>p.blockId===bid?{...p,blockId:null}:p);
-      const ok1 = await saveBlocksWork();
-      const ok2 = await saveProjectsWork();
-      if(!ok1 || !ok2){ state.blocksWork = beforeBlocks; state.projectsWork = beforeProjects; saveFailedToast(); return; }
-      if(doomedBlock) logAudit('block_deleted', `«${doomedBlock.name}»`);
-      modal.innerHTML = body(); wire(); render();
+      async function saveBlockDeletion(){
+        await refreshProjectsAndBlocksFromServer();
+        const bid = b.dataset.delBlock;
+        const doomedBlock = state.blocksWork.find(x=>x.id===bid);
+        const beforeBlocks = state.blocksWork;
+        const beforeProjects = state.projectsWork;
+        state.blocksWork = beforeBlocks.filter(x=>x.id!==bid);
+        state.projectsWork = beforeProjects.map(p=>p.blockId===bid?{...p,blockId:null}:p);
+        const ok1 = await saveBlocksWork();
+        const ok2 = await saveProjectsWork();
+        if(!ok1 || !ok2){ state.blocksWork = beforeBlocks; state.projectsWork = beforeProjects; saveFailedToast(saveBlockDeletion); return; }
+        if(doomedBlock) logAudit('block_deleted', `«${doomedBlock.name}»`);
+        modal.innerHTML = body(); wire(); render();
+      }
+      await saveBlockDeletion();
     });
-    modal.querySelectorAll('[data-proj-block]').forEach(sel=>sel.onchange=async ()=>{
+    modal.querySelectorAll('[data-proj-block]').forEach(sel=>sel.onchange=async function retry(){
       const pid = sel.dataset.projBlock;
       const newBlockId = sel.value || null;
       await refreshProjectsAndBlocksFromServer();
       const before = state.projectsWork;
       state.projectsWork = before.map(p=>p.id===pid?{...p,blockId:newBlockId}:p);
       const ok = await saveProjectsWork();
-      if(!ok){ state.projectsWork = before; saveFailedToast(); sel.value = before.find(p=>p.id===pid).blockId || ''; return; }
+      if(!ok){ state.projectsWork = before; saveFailedToast(retry); sel.value = before.find(p=>p.id===pid).blockId || ''; return; }
       render();
     });
     modal.querySelectorAll('[data-rename-proj]').forEach(b=>b.onclick=async ()=>{
@@ -4263,26 +4585,38 @@ function openProjectsModal(personal, presetBlockId){
       const current = projectsFor(personal).find(p=>p.id===pid);
       const newName = await showPrompt('Название проекта', current?current.name:'');
       if(newName===null || !newName) return;
-      if(!personal) await refreshProjectsAndBlocksFromServer();
-      const finalName = isPurchasesProjectName(newName) ? PURCHASES_PROJECT_NAME : newName;
-      setProjectsFor(personal, projectsFor(personal).map(p=>p.id===pid?{...p,name:finalName}:p));
-      await persistProjectsFor(personal);
-      modal.innerHTML = body(); wire(); render();
+      async function saveProjRename(){
+        await refreshProjectsAndBlocksFromServer(personal);
+        const before = projectsFor(personal);
+        const finalName = isPurchasesProjectName(newName) ? PURCHASES_PROJECT_NAME : newName;
+        setProjectsFor(personal, before.map(p=>p.id===pid?{...p,name:finalName}:p));
+        const ok = await persistProjectsFor(personal);
+        if(!ok){ setProjectsFor(personal, before); saveFailedToast(saveProjRename); return; }
+        modal.innerHTML = body(); wire(); render();
+      }
+      await saveProjRename();
     });
     modal.querySelectorAll('[data-del-proj]').forEach(b=>b.onclick=async ()=>{
       if(!canDeleteProject){ toast('Удалять проекты может только Руководитель или Ассистент'); return; }
       if(!(await showConfirm('Удалить проект? Задачи останутся, но будут перемещены в «Без проекта».'))) return;
-      if(!personal) await refreshProjectsAndBlocksFromServer();
+      await refreshProjectsAndBlocksFromServer(personal);
+      await refreshTasksFromServer(personal);
       const pid = b.dataset.delProj;
       const doomedProj = projectsFor(personal).find(p=>p.id===pid);
       if(doomedProj) await moveToTrash(personal, 'project', doomedProj);
-      setProjectsFor(personal, projectsFor(personal).filter(p=>p.id!==pid));
-      setTasksFor(personal, tasksFor(personal).map(t=>t.projectId===pid?{...t,projectId:null}:t));
-      await persistProjectsFor(personal);
-      if(!personal) await saveTasksWork();
-      if(doomedProj) logAudit('project_deleted', `«${doomedProj.name}»`);
-      if(state.taskFilterProjectIds[selKey]) state.taskFilterProjectIds[selKey].delete(pid);
-      modal.innerHTML = body(); wire(); render();
+      async function saveProjDeletion(){
+        const beforeProjects = projectsFor(personal);
+        const beforeTasks = tasksFor(personal);
+        setProjectsFor(personal, beforeProjects.filter(p=>p.id!==pid));
+        setTasksFor(personal, beforeTasks.map(t=>t.projectId===pid?{...t,projectId:null}:t));
+        const ok1 = await persistProjectsFor(personal);
+        const ok2 = personal ? true : await saveTasksWork();
+        if(!ok1 || !ok2){ setProjectsFor(personal, beforeProjects); setTasksFor(personal, beforeTasks); saveFailedToast(saveProjDeletion); return; }
+        if(doomedProj) logAudit('project_deleted', `«${doomedProj.name}»`);
+        if(state.taskFilterProjectIds[selKey]) state.taskFilterProjectIds[selKey].delete(pid);
+        modal.innerHTML = body(); wire(); render();
+      }
+      await saveProjDeletion();
     });
     if(!personal){
       const ideaBtn = document.getElementById('addIdeaBtn');
@@ -4290,6 +4624,7 @@ function openProjectsModal(personal, presetBlockId){
       modal.querySelectorAll('[data-edit-idea]').forEach(b=>b.onclick=()=>openIdeaModal(b.dataset.editIdea, ()=>{ modal.innerHTML = body(); wire(); }));
       modal.querySelectorAll('[data-del-idea]').forEach(b=>b.onclick=async ()=>{
         if(!(await showConfirm('Удалить идею из банка?'))) return;
+        await refreshIdeaBankFromServer();
         const doomedIdea = state.ideaBankWork.find(i=>i.id===b.dataset.delIdea);
         if(doomedIdea) await moveToTrash(false, 'idea', doomedIdea);
         state.ideaBankWork = state.ideaBankWork.filter(i=>i.id!==b.dataset.delIdea);
@@ -4357,6 +4692,7 @@ function openIdeaModal(ideaId, onDone){
     const name = ov.querySelector('#idea_name').value.trim();
     if(!name){ toast('Введите название идеи'); return; }
     const taskTitles = Array.from(rowsWrap.querySelectorAll('.idea-task-input')).map(i=>i.value.trim()).filter(Boolean);
+    await refreshIdeaBankFromServer();
     if(existing){
       state.ideaBankWork = state.ideaBankWork.map(i=>i.id===existing.id?{...i, name, tasks:taskTitles}:i);
     } else {
@@ -4403,32 +4739,41 @@ function openQuickIdeasModal(){
   function wire(){
     document.getElementById('closeQuickIdeas').onclick = closeModal;
     document.getElementById('ov').onclick = (ev)=>{ if(ev.target.id==='ov') closeModal(); };
-    document.getElementById('addQuickIdeaBtn').onclick = async ()=>{
+    document.getElementById('addQuickIdeaBtn').onclick = async function retry(){
       const text = document.getElementById('quickidea_text').value.trim();
       if(!text){ toast('Введите текст идеи'); return; }
+      await refreshQuickIdeasFromServer();
       const before = state.quickIdeasWork;
       state.quickIdeasWork = before.concat([{id:uid(), text}]);
       const ok = await saveQuickIdeas();
-      if(!ok){ state.quickIdeasWork = before; saveFailedToast(); return; }
+      if(!ok){ state.quickIdeasWork = before; saveFailedToast(retry); return; }
       modal.innerHTML = body(); wire();
     };
     modal.querySelectorAll('[data-del-quickidea]').forEach(b=>b.onclick=async ()=>{
       if(!(await showConfirm('Удалить идею?'))) return;
-      const before = state.quickIdeasWork;
-      state.quickIdeasWork = before.filter(q=>q.id!==b.dataset.delQuickidea);
-      const ok = await saveQuickIdeas();
-      if(!ok){ state.quickIdeasWork = before; saveFailedToast(); return; }
-      modal.innerHTML = body(); wire();
+      async function saveQuickIdeaDeletion(){
+        await refreshQuickIdeasFromServer();
+        const before = state.quickIdeasWork;
+        state.quickIdeasWork = before.filter(q=>q.id!==b.dataset.delQuickidea);
+        const ok = await saveQuickIdeas();
+        if(!ok){ state.quickIdeasWork = before; saveFailedToast(saveQuickIdeaDeletion); return; }
+        modal.innerHTML = body(); wire();
+      }
+      await saveQuickIdeaDeletion();
     });
     modal.querySelectorAll('[data-assign-idea]').forEach(b=>b.onclick=()=>{
       const qid = b.dataset.assignIdea;
       const idea = state.quickIdeasWork.find(q=>q.id===qid);
       if(!idea) return;
       openTaskModal(null, false, null, idea.text, async ()=>{
-        const before = state.quickIdeasWork;
-        state.quickIdeasWork = before.filter(q=>q.id!==qid);
-        const ok = await saveQuickIdeas();
-        if(!ok){ state.quickIdeasWork = before; saveFailedToast(); }
+        async function saveQuickIdeaConsumed(){
+          await refreshQuickIdeasFromServer();
+          const before = state.quickIdeasWork;
+          state.quickIdeasWork = before.filter(q=>q.id!==qid);
+          const ok = await saveQuickIdeas();
+          if(!ok){ state.quickIdeasWork = before; saveFailedToast(saveQuickIdeaConsumed); }
+        }
+        await saveQuickIdeaConsumed();
       });
     });
   }
@@ -4469,16 +4814,17 @@ function openTaskCommentsModal(taskId, personal){
     if(closeBtn) closeBtn.onclick = closeModal;
     document.getElementById('ov').onclick = (ev)=>{ if(ev.target.id==='ov') closeModal(); };
     const addBtn = document.getElementById('addComment');
-    if(addBtn) addBtn.onclick = async ()=>{
+    if(addBtn) addBtn.onclick = async function retry(){
       const text = document.getElementById('comment_text').value.trim();
       if(!text){ toast('Напишите комментарий'); return; }
       if(!state.currentUserId){ toast('Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.'); return; }
+      await refreshTasksFromServer(personal);
       const before = tasksFor(personal);
       const newComment = {id:uid(), authorId:state.currentUserId, text, at:new Date().toISOString()};
       const updated = before.map(x=>x.id===taskId?{...x, comments:(x.comments||[]).concat([newComment])}:x);
       setTasksFor(personal, updated);
       const ok = await persistTasksFor(personal);
-      if(!ok){ setTasksFor(personal, before); saveFailedToast(); return; }
+      if(!ok){ setTasksFor(personal, before); saveFailedToast(retry); return; }
       modal.innerHTML = body(); wire(); render();
     };
   }
@@ -4522,6 +4868,7 @@ function openChecklistsModal(){
     modal.querySelectorAll('[data-edit-checklist]').forEach(b=>b.onclick=()=>openChecklistEditModal(b.dataset.editChecklist, ()=>{ modal.innerHTML = body(); wire(); }));
     modal.querySelectorAll('[data-del-checklist]').forEach(b=>b.onclick=async ()=>{
       if(!(await showConfirm('Удалить чек-лист?'))) return;
+      await refreshChecklistsFromServer();
       state.checklistsWork = state.checklistsWork.filter(c=>c.id!==b.dataset.delChecklist);
       await saveChecklists();
       modal.innerHTML = body(); wire();
@@ -4585,6 +4932,7 @@ function openChecklistEditModal(checklistId, onDone){
     const name = ov.querySelector('#cl_name').value.trim();
     if(!name){ toast('Введите название процесса'); return; }
     const items = Array.from(rowsWrap.querySelectorAll('.cl-item-input')).map(i=>i.value.trim()).filter(Boolean);
+    await refreshChecklistsFromServer();
     if(existing){
       state.checklistsWork = state.checklistsWork.map(c=>c.id===existing.id?{...c, name, items}:c);
     } else {
@@ -4727,6 +5075,23 @@ function computeNotDoneTasks(){
 function reportTaskWasLate(t){
   return !!(t.deadline && t.completedAt && t.completedAt.slice(0,10) > t.deadline);
 }
+function reportPctColor(pct){ return pct===null?'var(--ink-soft)':pct>=80?'var(--teal)':pct>=50?'var(--ochre)':'var(--brick)'; }
+// Процент выполнения по группам (сотрудник/проект) для отчёта за период. Отдельная функция, а не
+// вложенная в renderTaskReport, чтобы тот же расчёт мог использовать и экспорт в CSV.
+function computeReportCompletionByGroup(doneTasks, notDoneTasks, groupBy){
+  if(groupBy!=='employee' && groupBy!=='project') return null;
+  const keyFn = groupBy==='employee' ? (t=>t.assigneeId||'none') : (t=>t.projectId||'none');
+  const labelFn = groupBy==='employee'
+    ? (key=> key==='none' ? 'Без исполнителя' : empName(key))
+    : (key=> key==='none' ? 'Без проекта' : projectName(false,key));
+  const map = {};
+  doneTasks.forEach(t=>{ const k=keyFn(t); (map[k]=map[k]||{done:0,notDone:0}).done++; });
+  notDoneTasks.forEach(t=>{ const k=keyFn(t); (map[k]=map[k]||{done:0,notDone:0}).notDone++; });
+  return Object.entries(map).map(([k,v])=>({
+    key:k, label:labelFn(k), done:v.done, notDone:v.notDone, total:v.done+v.notDone,
+    pct: (v.done+v.notDone)>0 ? Math.round(v.done/(v.done+v.notDone)*100) : null,
+  })).sort((a,b)=>b.total-a.total);
+}
 function renderTaskReport(el){
   const today = todayISO();
   if(!state.reportStart){
@@ -4814,6 +5179,31 @@ function renderTaskReport(el){
   const notDoneHtml = buildGroupedHtml(notDoneTasks, 'deadline', notDoneRowHtml) ||
     `<p class="subtitle" style="margin:0;">Не осталось незакрытых задач с истёкшим сроком за этот период 🎉</p>`;
 
+  // Процент выполнения = «Выполнено» / («Выполнено» + «Не выполнено, срок уже наступил»).
+  // Общий процент — в карточке сводки; по сотруднику/проекту — отдельным блоком, когда отчёт сгруппирован именно так.
+  // Обе функции вынесены на верхний уровень (reportPctColor / computeReportCompletionByGroup),
+  // чтобы этот же расчёт мог использовать и экспорт в CSV — не только экран.
+  const overallTotal = doneTasks.length + notDoneTasks.length;
+  const overallPct = overallTotal ? Math.round(doneTasks.length/overallTotal*100) : null;
+  const completionGroups = computeReportCompletionByGroup(doneTasks, notDoneTasks, state.reportGroupBy);
+  const completionHtml = (completionGroups && completionGroups.length) ? `
+    <h2 class="section-title" style="font-size:16px;">📊 Процент выполнения ${state.reportGroupBy==='employee'?'по сотрудникам':'по проектам'}</h2>
+    <div class="item-list" style="margin-bottom:20px;">
+      ${completionGroups.map(g=>`
+        <div class="item" style="flex-direction:column;align-items:stretch;gap:6px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span>${escapeHtml(g.label)}</span>
+            <span class="mono" style="font-weight:600;color:${reportPctColor(g.pct)};">${g.pct===null?'—':g.pct+'%'}</span>
+          </div>
+          <div style="height:8px;border-radius:4px;background:var(--paper-line);overflow:hidden;">
+            <div style="height:100%;width:${g.pct===null?0:g.pct}%;background:${reportPctColor(g.pct)};border-radius:4px;"></div>
+          </div>
+          <span class="subtitle" style="margin:0;font-size:11.5px;">Выполнено ${g.done} из ${g.total}${g.notDone?`, не выполнено: ${g.notDone}`:''}</span>
+        </div>
+      `).join('')}
+    </div>
+  ` : '';
+
   el.innerHTML = `
     <div class="field-row" style="align-items:flex-end;">
       <div class="field"><label>С какой даты</label><input type="date" id="rep_start" value="${state.reportStart}"></div>
@@ -4841,7 +5231,9 @@ function renderTaskReport(el){
       <div class="sum-card spent"><div class="label">С опозданием</div><div class="val mono">${lateTasks.length}</div></div>
       <div class="sum-card issued"><div class="label">Средний срок</div><div class="val mono">${avgDays!==null?avgDays.toFixed(1)+' дн.':'—'}</div></div>
       <div class="sum-card" style="background:var(--brick-bg,#F6E2E2);"><div class="label">Не выполнено</div><div class="val mono" style="color:var(--brick);">${notDoneTasks.length}</div></div>
+      <div class="sum-card"><div class="label">% выполнено</div><div class="val mono" style="color:${reportPctColor(overallPct)};">${overallPct===null?'—':overallPct+'%'}</div></div>
     </div>
+    ${completionHtml}
     <h2 class="section-title" style="font-size:16px;">✅ Выполнено</h2>
     ${doneHtml}
     <h2 class="section-title" style="font-size:16px;margin-top:24px;">❌ Не выполнено (срок уже наступил)</h2>
@@ -4914,6 +5306,25 @@ function exportTaskReportCSV(){
       t.link||'',
     ].map(csvEscape).join(';'));
   });
+
+  // \u0418\u0442\u043E\u0433\u043E\u0432\u044B\u0439 \u0431\u043B\u043E\u043A \u0441 % \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u044F \u2014 \u0442\u043E\u0442 \u0436\u0435 \u0440\u0430\u0441\u0447\u0451\u0442, \u0447\u0442\u043E \u0438 \u043D\u0430 \u044D\u043A\u0440\u0430\u043D\u0435 \u043E\u0442\u0447\u0451\u0442\u0430.
+  const overallTotal = doneTasks.length + notDoneTasks.length;
+  const overallPct = overallTotal ? Math.round(doneTasks.length/overallTotal*100) : null;
+  lines.push('');
+  lines.push(['\u041F\u0440\u043E\u0446\u0435\u043D\u0442 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u044F'].map(csvEscape).join(';'));
+  lines.push(['\u0412\u0441\u0435\u0433\u043E \u0437\u0430\u0434\u0430\u0447', String(overallTotal)].map(csvEscape).join(';'));
+  lines.push(['\u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E', String(doneTasks.length)].map(csvEscape).join(';'));
+  lines.push(['\u041D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E', String(notDoneTasks.length)].map(csvEscape).join(';'));
+  lines.push(['% \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E', overallPct===null?'\u2014':overallPct+'%'].map(csvEscape).join(';'));
+  const completionGroups = computeReportCompletionByGroup(doneTasks, notDoneTasks, state.reportGroupBy);
+  if(completionGroups && completionGroups.length){
+    lines.push('');
+    lines.push([state.reportGroupBy==='employee' ? '\u041F\u043E \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0443' : '\u041F\u043E \u043F\u0440\u043E\u0435\u043A\u0442\u0443', '\u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E', '\u041D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E', '\u0412\u0441\u0435\u0433\u043E', '%'].map(csvEscape).join(';'));
+    completionGroups.forEach(g=>{
+      lines.push([g.label, String(g.done), String(g.notDone), String(g.total), g.pct===null?'\u2014':g.pct+'%'].map(csvEscape).join(';'));
+    });
+  }
+
   const csv = '\uFEFF' + lines.join('\r\n');
   downloadTextFile(`otchet-zadachi-${state.reportStart}--${state.reportEnd}.csv`, 'text/csv;charset=utf-8', csv);
 }
@@ -5076,14 +5487,18 @@ function renderFunds(root){
   root.querySelectorAll('[data-del-fund]').forEach(b=>b.onclick=async ()=>{
     if(!(await showConfirm('Удалить запись?'))) return;
     const fscope = b.dataset.fundScope;
-    if(fscope!=='personal') await refreshFundsFromServer();
-    const before = fundsFor(fscope);
-    const doomed = before.find(f=>f.id===b.dataset.delFund);
+    await refreshFundsFromServer(fscope);
+    const doomed = fundsFor(fscope).find(f=>f.id===b.dataset.delFund);
     if(doomed) await moveToTrash(fscope==='personal', 'fund', doomed);
-    setFundsFor(fscope, before.filter(f=>f.id!==b.dataset.delFund));
-    const ok = await persistFundsFor(fscope);
-    if(!ok){ setFundsFor(fscope, before); saveFailedToast(); return; }
-    render();
+    async function saveFundDeletion(){
+      await refreshFundsFromServer(fscope);
+      const before = fundsFor(fscope);
+      setFundsFor(fscope, before.filter(f=>f.id!==b.dataset.delFund));
+      const ok = await persistFundsFor(fscope);
+      if(!ok){ setFundsFor(fscope, before); saveFailedToast(saveFundDeletion); return; }
+      render();
+    }
+    await saveFundDeletion();
   });
 }
 
@@ -5124,7 +5539,7 @@ function openFundModal(id, scope){
   document.getElementById('fn_type').onchange=(e)=>{
     document.getElementById('fn_receipt_wrap').style.display = e.target.value==='expense' ? '' : 'none';
   };
-  document.getElementById('saveFund').onclick=async ()=>{
+  document.getElementById('saveFund').onclick=async function retry(){
     const amount = parseFloat(document.getElementById('fn_amount').value);
     if(!amount || amount<=0){ toast('Укажите сумму'); return; }
     const type = document.getElementById('fn_type').value;
@@ -5139,12 +5554,12 @@ function openFundModal(id, scope){
       comment: document.getElementById('fn_comment').value.trim(),
       createdAt: existing?existing.createdAt:Date.now(),
     };
-    if(scope!=='personal') await refreshFundsFromServer();
+    await refreshFundsFromServer(scope);
     const before = fundsFor(scope);
     if(existing) setFundsFor(scope, before.map(f=>f.id===existing.id?data:f));
     else setFundsFor(scope, before.concat([data]));
     const ok = await persistFundsFor(scope);
-    if(!ok){ setFundsFor(scope, before); saveFailedToast(); return; }
+    if(!ok){ setFundsFor(scope, before); saveFailedToast(retry); return; }
     closeModal(); render();
     toast('Запись сохранена');
   };
@@ -5303,6 +5718,7 @@ function openSearchModal(){
 function openDataModal(){
   const modal = document.getElementById('modalRoot');
   let autoBackups = null; // null = ещё грузится
+  let frequentBackups = null;
   function body(){
     const allTrash = state.trash.slice().sort((a,b)=>b.deletedAt-a.deletedAt);
     const personalTrashRows = personalAccessAllowed() ? state.personalTrash.slice().sort((a,b)=>b.deletedAt-a.deletedAt) : [];
@@ -5316,6 +5732,16 @@ function openDataModal(){
               <div class="actions"><button class="btn ghost small" data-download-autobackup="${b.key}">⬇️ Скачать</button></div>
             </div>
           `).join('') : `<p class="subtitle" style="margin:0;">Бэкапов пока нет — первый появится в течение суток после запуска</p>`);
+    const frequentBackupsHtml = !hasRole('Руководитель','Ассистент')
+      ? ''
+      : frequentBackups===null
+        ? `<p class="subtitle" style="margin:0;">Загрузка…</p>`
+        : (frequentBackups.length ? frequentBackups.map(b=>`
+            <div class="item">
+              <div class="main"><div class="title">${new Date(b.takenAt).toLocaleString('ru-RU')}</div></div>
+              <div class="actions"><button class="btn ghost small" data-download-autobackup="${b.key}">⬇️ Скачать</button></div>
+            </div>
+          `).join('') : `<p class="subtitle" style="margin:0;">Снимков пока нет — первый появится в течение пары минут после запуска сервера</p>`);
     return `
       <div class="overlay" id="ov">
         <div class="modal" style="max-width:520px;">
@@ -5337,6 +5763,14 @@ function openDataModal(){
           <div class="item-list" style="margin-bottom:20px;">
             ${autoBackupsHtml}
           </div>
+
+          ${hasRole('Руководитель','Ассистент') ? `
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Частые снимки</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Дополнительно — снимок каждые 15 минут, на случай если что-то потерялось только что и не хочется ждать завтрашнего бэкапа. Хранится последние 48 часов.</p>
+          <div class="item-list" style="margin-bottom:20px;max-height:260px;overflow-y:auto;">
+            ${frequentBackupsHtml}
+          </div>
+          ` : ''}
 
           ${hasRole('Руководитель','Ассистент') ? `
           <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Журнал действий — кто что изменил</h4>
@@ -5488,9 +5922,9 @@ function openDataModal(){
   wire();
   if(hasRole('Руководитель','Ассистент')){
     fetch('/api/auto-backups', {credentials:'same-origin'})
-      .then(r=>r.ok?r.json():{backups:[]})
-      .then(data=>{ autoBackups = data.backups||[]; modal.innerHTML = body(); wire(); })
-      .catch(()=>{ autoBackups = []; modal.innerHTML = body(); wire(); });
+      .then(r=>r.ok?r.json():{backups:[],frequentBackups:[]})
+      .then(data=>{ autoBackups = data.backups||[]; frequentBackups = data.frequentBackups||[]; modal.innerHTML = body(); wire(); })
+      .catch(()=>{ autoBackups = []; frequentBackups = []; modal.innerHTML = body(); wire(); });
   }
 }
 
@@ -5533,14 +5967,15 @@ function openStaffModal(){
   function wire(){
     document.getElementById('closeStaff').onclick=closeModal;
     document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
-    document.getElementById('addEmp').onclick=async ()=>{
+    document.getElementById('addEmp').onclick=async function retry(){
       const name = document.getElementById('emp_name').value.trim();
       if(!name){ toast('Введите имя'); return; }
       const role = document.getElementById('emp_role').value.trim();
+      await refreshEmployeesFromServer();
       const before = state.employees;
       state.employees = before.concat([{id:uid(), name, role}]);
       const ok = await saveEmployees();
-      if(!ok){ state.employees = before; saveFailedToast(); return; }
+      if(!ok){ state.employees = before; saveFailedToast(retry); return; }
       logAudit('employee_added', `«${name}»${role?` (${role})`:''}`);
       modal.innerHTML = body(); wire(); render();
     };
@@ -5562,14 +5997,19 @@ function openStaffModal(){
     });
     modal.querySelectorAll('[data-del-emp]').forEach(b=>b.onclick=async ()=>{
       if(!(await showConfirm('Удалить сотрудника? Задачи и события останутся, но без привязки к нему. Можно будет вернуть через корзину (🗄️).'))) return;
-      const before = state.employees;
-      const doomedEmp = before.find(e=>e.id===b.dataset.delEmp);
+      await refreshEmployeesFromServer();
+      const doomedEmp = state.employees.find(e=>e.id===b.dataset.delEmp);
       if(doomedEmp) await moveToTrash(false, 'employee', doomedEmp);
-      state.employees = before.filter(e=>e.id!==b.dataset.delEmp);
-      const ok = await saveEmployees();
-      if(!ok){ state.employees = before; saveFailedToast(); return; }
-      if(doomedEmp) logAudit('employee_deleted', `«${doomedEmp.name}»`);
-      modal.innerHTML = body(); wire(); render();
+      async function saveEmpDeletion(){
+        await refreshEmployeesFromServer();
+        const before = state.employees;
+        state.employees = before.filter(e=>e.id!==b.dataset.delEmp);
+        const ok = await saveEmployees();
+        if(!ok){ state.employees = before; saveFailedToast(saveEmpDeletion); return; }
+        if(doomedEmp) logAudit('employee_deleted', `«${doomedEmp.name}»`);
+        modal.innerHTML = body(); wire(); render();
+      }
+      await saveEmpDeletion();
     });
   }
   function refreshAndRender(){
@@ -5607,14 +6047,15 @@ function openEditEmployeeModal(empId, onDone){
   const finish = ()=>ov.remove();
   ov.querySelector('#editEmpCancel').onclick = finish;
   ov.onclick = (e)=>{ if(e.target===ov) finish(); };
-  ov.querySelector('#editEmpSave').onclick = async ()=>{
+  ov.querySelector('#editEmpSave').onclick = async function retry(){
     const name = nameInput.value.trim();
     if(!name){ toast('Введите имя'); return; }
     const role = ov.querySelector('#edit_emp_role').value.trim();
+    await refreshEmployeesFromServer();
     const before = state.employees;
     state.employees = before.map(e=>e.id===empId?{...e, name, role}:e);
     const ok = await saveEmployees();
-    if(!ok){ state.employees = before; saveFailedToast(); return; }
+    if(!ok){ state.employees = before; saveFailedToast(retry); return; }
     toast('Сотрудник обновлён');
     finish();
     if(onDone) onDone();

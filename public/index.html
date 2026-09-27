@@ -477,6 +477,63 @@ async function sDelete(key, shared){
     pendingSaveCount--; updateSavingIndicator();
   }
 }
+// ============================================================================================
+// Безопасное сохранение при одновременной работе нескольких человек.
+//
+// Проблема: каждая saveX() раньше отправляла на сервер ВЕСЬ раздел целиком (весь список задач,
+// проектов и т.д.) таким, каким он был в памяти именно этого браузера. Если два человека
+// одновременно открыли журнал, у каждого — свой слегка устаревший снимок. Когда один сохранял
+// что-либо (даже не трогая чужие записи), его устаревшая копия целиком перезаписывала сервер —
+// и всё, что второй добавил за это время, бесследно исчезало. В коде уже были точечные попытки
+// смягчить это через refreshXFromServer() перед изменением (см. комментарии рядом с этими
+// функциями) — это сокращает окно риска, но не убирает его: между refresh и save всё ещё может
+// вклиниться чужое сохранение. Здесь — более надёжный слой поверх: сохранение отправляет не
+// "весь список", а только то, что реально изменилось в этой вкладке относительно точки отсчёта
+// (baseline, снимок на момент загрузки/последнего сохранения), и накладывает это поверх самой
+// свежей версии с сервера, а не поверх устаревшей локальной копии.
+function diffForMerge(baseline, current, keyFn){
+  const kf = keyFn || (x=>x.id);
+  const baseMap = new Map((baseline||[]).filter(Boolean).map(x=>[kf(x), x]));
+  const curMap = new Map((current||[]).filter(Boolean).map(x=>[kf(x), x]));
+  const upserts = [];
+  curMap.forEach((item, key)=>{
+    const b = baseMap.get(key);
+    if(!b || JSON.stringify(b) !== JSON.stringify(item)) upserts.push(item);
+  });
+  const deletes = [];
+  baseMap.forEach((b, key)=>{ if(!curMap.has(key)) deletes.push(key); });
+  return { upserts, deletes };
+}
+async function saveCollectionMerged(storageKey, currentArray, baselineArray, applyMerged, keyFn){
+  const kf = keyFn || (x=>x.id);
+  const { upserts, deletes } = diffForMerge(baselineArray, currentArray, kf);
+  let serverArray;
+  try{
+    const raw = await sGet(storageKey, true);
+    serverArray = raw === null ? [] : JSON.parse(raw);
+  }catch(e){
+    // сервер недоступен для сверки — сохраняем как раньше (весь локальный список), чтобы хотя бы
+    // не потерять то, что успели ввести именно в этой вкладке; безопасное слияние тут невозможно
+    const ok = await sSet(storageKey, JSON.stringify(currentArray), true);
+    if(ok) applyMerged(currentArray);
+    return ok;
+  }
+  const deleteSet = new Set(deletes);
+  const map = new Map(serverArray.filter(Boolean).filter(x=>!deleteSet.has(kf(x))).map(x=>[kf(x), x]));
+  upserts.forEach(x=>{ map.set(kf(x), x); });
+  const finalArr = Array.from(map.values());
+  const ok = await sSet(storageKey, JSON.stringify(finalArr), true);
+  if(ok) applyMerged(finalArr);
+  return ok;
+}
+// Сырое сохранение без слияния — используется ТОЛЬКО для намеренной ПОЛНОЙ замены данных
+// (восстановление из файла резервной копии), где слияние было бы неправильным: весь смысл в том,
+// чтобы заменить содержимое разделов файлом целиком, а не смёрджить с тем, что на сервере.
+async function saveRawMerged(storageKey, value, applyBaseline){
+  const ok = await sSet(storageKey, JSON.stringify(value), true);
+  if(ok && applyBaseline) applyBaseline(value);
+  return ok;
+}
 function handleSessionExpired(){
   if(state.sessionExpiredHandled) return;
   state.sessionExpiredHandled = true;
@@ -845,10 +902,20 @@ const PRIORITIES = {low:'Низкий', med:'Средний', high:'Высоки
 function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 
 /* ---------------- idea bank (Банк идей-проектов) ---------------- */
-async function saveIdeaBank(){ return await sSet('tasks:ideabank', JSON.stringify(state.ideaBankWork), true); }
+async function saveIdeaBank(){
+  return await saveCollectionMerged('tasks:ideabank', state.ideaBankWork, state._ideaBankBaseline, (finalArr)=>{
+    state.ideaBankWork = finalArr;
+    state._ideaBankBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
 
 /* ---------------- trash (soft delete, 30 days) ---------------- */
-async function saveTrash(){ return await sSet('trash:items', JSON.stringify(state.trash), true); }
+async function saveTrash(){
+  return await saveCollectionMerged('trash:items', state.trash, state._trashBaseline, (finalArr)=>{
+    state.trash = finalArr;
+    state._trashBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
 function trashFor(personal){ return personal ? state.personalTrash : state.trash; }
 function setTrashFor(personal, arr){ if(personal) state.personalTrash = arr; else state.trash = arr; }
 async function persistTrashFor(personal){ return personal ? await savePersonalTrash() : await saveTrash(); }
@@ -1040,17 +1107,24 @@ async function importAllData(payload){
   state.personalFundsEntries = payload.personalFundsEntries || [];
   state.personalEvents = payload.personalEvents || [];
   state.personalTrash = payload.personalTrash || [];
-  await saveEmployees();
-  await saveEvents();
-  await saveTasksWork();
-  await saveProjectsWork();
-  await saveBlocksWork();
-  await saveIdeaBank();
-  await saveChecklists();
-  await saveQuickIdeas();
-  await saveFunds();
-  await saveTrash();
+  // ПОЛНАЯ замена — намеренно в обход безопасного слияния (см. saveRawMerged): восстановление из
+  // резервной копии должно заменить содержимое разделов файлом целиком, а не смёрджить с сервером.
+  await saveRawMerged('roster:employees', state.employees, (v)=>{ state._employeesBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('calendar:events', state.events, (v)=>{ state._eventsBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('tasks:work', state.tasksWork, (v)=>{ state._tasksWorkBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('tasks:projects', state.projectsWork, (v)=>{ state._projectsWorkBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('tasks:blocks', state.blocksWork, (v)=>{ state._blocksWorkBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('tasks:ideabank', state.ideaBankWork, (v)=>{ state._ideaBankBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('tasks:checklists', state.checklistsWork, (v)=>{ state._checklistsBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('tasks:quickideas', state.quickIdeasWork, (v)=>{ state._quickIdeasBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('funds:ledger', state.fundsEntries, (v)=>{ state._fundsEntriesBaseline = JSON.parse(JSON.stringify(v)); });
+  await saveRawMerged('trash:items', state.trash, (v)=>{ state._trashBaseline = JSON.parse(JSON.stringify(v)); });
   await savePersonalData();
+  state._personalTasksBaseline = JSON.parse(JSON.stringify(state.personalTasks));
+  state._personalProjectsBaseline = JSON.parse(JSON.stringify(state.personalProjects));
+  state._personalFundsEntriesBaseline = JSON.parse(JSON.stringify(state.personalFundsEntries));
+  state._personalEventsBaseline = JSON.parse(JSON.stringify(state.personalEvents));
+  state._personalTrashBaseline = JSON.parse(JSON.stringify(state.personalTrash));
   if(payload.personalSalt && payload.personalBlobRaw){
     state.personalSalt = payload.personalSalt;
     await sSet('tasks:personal:salt', payload.personalSalt, true);
@@ -1104,8 +1178,18 @@ async function applyIdeaToProject(idea){
     ? `Добавлен проект «${idea.name}»${newTasks.length?` с ${newTasks.length} задачами`:''} — идея убрана из банка`
     : `В проект «${idea.name}» добавлено задач: ${newTasks.length} — идея убрана из банка`);
 }
-async function saveChecklists(){ return await sSet('tasks:checklists', JSON.stringify(state.checklistsWork), true); }
-async function saveQuickIdeas(){ return await sSet('tasks:quickideas', JSON.stringify(state.quickIdeasWork), true); }
+async function saveChecklists(){
+  return await saveCollectionMerged('tasks:checklists', state.checklistsWork, state._checklistsBaseline, (finalArr)=>{
+    state.checklistsWork = finalArr;
+    state._checklistsBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function saveQuickIdeas(){
+  return await saveCollectionMerged('tasks:quickideas', state.quickIdeasWork, state._quickIdeasBaseline, (finalArr)=>{
+    state.quickIdeasWork = finalArr;
+    state._quickIdeasBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
 async function applyChecklistToTasks(checklist){
   const leader = state.employees.find(e=>e.role==='Руководитель');
   const today = todayISO();
@@ -1285,6 +1369,31 @@ async function loadAll(){
   }
   state.archiveTasks = archTasksRaw ? JSON.parse(archTasksRaw) : [];
   state.archiveEvents = archEventsRaw ? JSON.parse(archEventsRaw) : [];
+
+  // отправные точки для безопасного слияния при сохранении (см. saveCollectionMerged выше) —
+  // снимок того, что было получено с сервера при открытии, ДО каких-либо локальных правок в этой
+  // вкладке; без этого save() не смог бы отличить "я это изменил" от "это уже было"
+  state._employeesBaseline = JSON.parse(JSON.stringify(state.employees));
+  state._eventsBaseline = JSON.parse(JSON.stringify(state.events));
+  state._tasksWorkBaseline = JSON.parse(JSON.stringify(state.tasksWork));
+  state._projectsWorkBaseline = JSON.parse(JSON.stringify(state.projectsWork));
+  state._blocksWorkBaseline = JSON.parse(JSON.stringify(state.blocksWork));
+  state._auditLogBaseline = JSON.parse(JSON.stringify(state.auditLog));
+  state._fundsEntriesBaseline = JSON.parse(JSON.stringify(state.fundsEntries));
+  state._ideaBankBaseline = JSON.parse(JSON.stringify(state.ideaBankWork));
+  state._checklistsBaseline = JSON.parse(JSON.stringify(state.checklistsWork));
+  state._quickIdeasBaseline = JSON.parse(JSON.stringify(state.quickIdeasWork));
+  state._trashBaseline = JSON.parse(JSON.stringify(state.trash));
+  state._archiveTasksBaseline = JSON.parse(JSON.stringify(state.archiveTasks));
+  state._archiveEventsBaseline = JSON.parse(JSON.stringify(state.archiveEvents));
+  state._personalTasksBaseline = JSON.parse(JSON.stringify(state.personalTasks));
+  state._personalProjectsBaseline = JSON.parse(JSON.stringify(state.personalProjects));
+  state._personalFundsEntriesBaseline = JSON.parse(JSON.stringify(state.personalFundsEntries));
+  state._personalEventsBaseline = JSON.parse(JSON.stringify(state.personalEvents));
+  state._personalTrashBaseline = JSON.parse(JSON.stringify(state.personalTrash));
+  state._personalArchiveTasksBaseline = JSON.parse(JSON.stringify(state.personalArchiveTasks));
+  state._personalArchiveEventsBaseline = JSON.parse(JSON.stringify(state.personalArchiveEvents));
+
   await runArchiveSweep();
   if(!state.personalMigrationNeeded){
     await migrateLegacyPersonalFunds();
@@ -1316,8 +1425,14 @@ async function runArchiveSweep(){
   }
 }
 async function saveArchive(){
-  await sSet('archive:tasks', JSON.stringify(state.archiveTasks), true);
-  await sSet('archive:events', JSON.stringify(state.archiveEvents), true);
+  await saveCollectionMerged('archive:tasks', state.archiveTasks, state._archiveTasksBaseline, (finalArr)=>{
+    state.archiveTasks = finalArr;
+    state._archiveTasksBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+  await saveCollectionMerged('archive:events', state.archiveEvents, state._archiveEventsBaseline, (finalArr)=>{
+    state.archiveEvents = finalArr;
+    state._archiveEventsBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
 }
 async function restoreArchiveTask(taskId){
   const t = state.archiveTasks.find(x=>x.id===taskId);
@@ -1340,12 +1455,44 @@ async function restoreArchiveEvent(eventId){
   toast('Событие возвращено из архива');
 }
 
-async function saveEmployees(){ return await sSet('roster:employees', JSON.stringify(state.employees), true); }
-async function saveEvents(){ return await sSet('calendar:events', JSON.stringify(state.events), true); }
-async function saveTasksWork(){ return await sSet('tasks:work', JSON.stringify(state.tasksWork), true); }
-async function saveProjectsWork(){ return await sSet('tasks:projects', JSON.stringify(state.projectsWork), true); }
-async function saveBlocksWork(){ return await sSet('tasks:blocks', JSON.stringify(state.blocksWork), true); }
-async function saveAuditLog(){ return await sSet('audit:log', JSON.stringify(state.auditLog), true); }
+async function saveEmployees(){
+  return await saveCollectionMerged('roster:employees', state.employees, state._employeesBaseline, (finalArr)=>{
+    state.employees = finalArr;
+    state._employeesBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function saveEvents(){
+  return await saveCollectionMerged('calendar:events', state.events, state._eventsBaseline, (finalArr)=>{
+    state.events = finalArr;
+    state._eventsBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function saveTasksWork(){
+  return await saveCollectionMerged('tasks:work', state.tasksWork, state._tasksWorkBaseline, (finalArr)=>{
+    state.tasksWork = finalArr;
+    state._tasksWorkBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function saveProjectsWork(){
+  return await saveCollectionMerged('tasks:projects', state.projectsWork, state._projectsWorkBaseline, (finalArr)=>{
+    state.projectsWork = finalArr;
+    state._projectsWorkBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function saveBlocksWork(){
+  return await saveCollectionMerged('tasks:blocks', state.blocksWork, state._blocksWorkBaseline, (finalArr)=>{
+    state.blocksWork = finalArr;
+    state._blocksWorkBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function saveAuditLog(){
+  return await saveCollectionMerged('audit:log', state.auditLog, state._auditLogBaseline, (finalArr)=>{
+    finalArr.sort((a,b)=> (a.at||'').localeCompare(b.at||''));
+    if(finalArr.length > AUDIT_LOG_MAX) finalArr = finalArr.slice(finalArr.length - AUDIT_LOG_MAX);
+    state.auditLog = finalArr;
+    state._auditLogBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
 // Записывает значимое действие в постоянный журнал (кто что изменил).
 // Не блокирует основной поток на неудаче — если запись не удалась, просто теряем эту одну строку лога.
 const AUDIT_LOG_MAX = 500;
@@ -1369,7 +1516,12 @@ async function logAudit(action, details){
   if(state.auditLog.length > AUDIT_LOG_MAX) state.auditLog = state.auditLog.slice(state.auditLog.length - AUDIT_LOG_MAX);
   try{ await saveAuditLog(); }catch(e){}
 }
-async function saveFunds(){ return await sSet('funds:ledger', JSON.stringify(state.fundsEntries), true); }
+async function saveFunds(){
+  return await saveCollectionMerged('funds:ledger', state.fundsEntries, state._fundsEntriesBaseline, (finalArr)=>{
+    state.fundsEntries = finalArr;
+    state._fundsEntriesBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
 
 async function savePersonalData(){
   // Полный «bulk»-сброс всех личных коллекций разом — используется только при импорте/восстановлении
@@ -1387,13 +1539,48 @@ async function savePersonalData(){
   ]);
   return results.every(Boolean);
 }
-async function savePersonalTasks(){ return await sSet('personal:tasks', JSON.stringify(state.personalTasks), true); }
-async function savePersonalProjects(){ return await sSet('personal:projects', JSON.stringify(state.personalProjects), true); }
-async function savePersonalFunds(){ return await sSet('personal:funds', JSON.stringify(state.personalFundsEntries), true); }
-async function savePersonalEvents(){ return await sSet('personal:events', JSON.stringify(state.personalEvents), true); }
-async function savePersonalTrash(){ return await sSet('personal:trash', JSON.stringify(state.personalTrash), true); }
-async function savePersonalArchiveTasks(){ return await sSet('personal:archiveTasks', JSON.stringify(state.personalArchiveTasks), true); }
-async function savePersonalArchiveEvents(){ return await sSet('personal:archiveEvents', JSON.stringify(state.personalArchiveEvents), true); }
+async function savePersonalTasks(){
+  return await saveCollectionMerged('personal:tasks', state.personalTasks, state._personalTasksBaseline, (finalArr)=>{
+    state.personalTasks = finalArr;
+    state._personalTasksBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function savePersonalProjects(){
+  return await saveCollectionMerged('personal:projects', state.personalProjects, state._personalProjectsBaseline, (finalArr)=>{
+    state.personalProjects = finalArr;
+    state._personalProjectsBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function savePersonalFunds(){
+  return await saveCollectionMerged('personal:funds', state.personalFundsEntries, state._personalFundsEntriesBaseline, (finalArr)=>{
+    state.personalFundsEntries = finalArr;
+    state._personalFundsEntriesBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function savePersonalEvents(){
+  return await saveCollectionMerged('personal:events', state.personalEvents, state._personalEventsBaseline, (finalArr)=>{
+    state.personalEvents = finalArr;
+    state._personalEventsBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function savePersonalTrash(){
+  return await saveCollectionMerged('personal:trash', state.personalTrash, state._personalTrashBaseline, (finalArr)=>{
+    state.personalTrash = finalArr;
+    state._personalTrashBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function savePersonalArchiveTasks(){
+  return await saveCollectionMerged('personal:archiveTasks', state.personalArchiveTasks, state._personalArchiveTasksBaseline, (finalArr)=>{
+    state.personalArchiveTasks = finalArr;
+    state._personalArchiveTasksBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
+async function savePersonalArchiveEvents(){
+  return await saveCollectionMerged('personal:archiveEvents', state.personalArchiveEvents, state._personalArchiveEventsBaseline, (finalArr)=>{
+    state.personalArchiveEvents = finalArr;
+    state._personalArchiveEventsBaseline = JSON.parse(JSON.stringify(finalArr));
+  });
+}
 
 /* ---------------- project/task helpers (work vs personal) ---------------- */
 function projectsFor(personal){ return personal ? state.personalProjects : state.projectsWork; }

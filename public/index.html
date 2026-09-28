@@ -830,6 +830,7 @@ const state = {
   taskFilterPriority:'all',
   taskFilterPeriod:'all',
   taskSortBy:'manual',
+  taskFilterCreatedDate:null,
   projectsWork:[],
   blocksWork:[],
   auditLog:[],
@@ -1799,22 +1800,40 @@ function canDeleteTask(t, personal){
   if(!t || !t.creatorId) return true;
   return !!state.currentUserId && state.currentUserId === t.creatorId;
 }
+// Прикреплённые к задаче ссылки. Раньше было одно поле `link` — старые задачи так и хранятся;
+// новые сохраняются в массиве `links`, куда попадает даже одна ссылка. Эта функция читает оба
+// варианта, чтобы старые задачи не потеряли свою единственную ссылку после обновления.
+function taskLinks(t){
+  if(!t) return [];
+  if(Array.isArray(t.links) && t.links.length) return t.links;
+  return t.link ? [t.link] : [];
+}
+// Готовый HTML-блок со всеми прикреплёнными ссылками задачи — используется во всех местах,
+// где показываются задачи (Обзор, список задач, отчёты), чтобы вёрстка была одинаковой.
+function taskLinksHtml(t){
+  const links = taskLinks(t);
+  if(!links.length) return '';
+  const items = links.map((l,i)=>`📎 <a href="${escapeHtml(l)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">${links.length>1?`Файл ${i+1}`:'Прикреплённый файл'}</a>`).join('&nbsp;&nbsp;');
+  return `<div class="desc">${items}</div>`;
+}
 function whyCantDelete(t){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
   return `Удалить задачу может только тот, кто её поставил — ${empName(t.creatorId)}.`;
 }
 function canEditTask(t, personal){
   if(personal) return true;
-  if(!t || !t.creatorId) return true;
+  if(!t) return true;
   if(!state.currentUserId) return false;
-  if(state.currentUserId === t.creatorId) return true;
   // Руководитель и Ассистент могут редактировать любую рабочую задачу — например, чтобы
   // разнести существующие задачи по блокам и проектам, даже если ставил их не он.
-  return hasRole('Руководитель','Ассистент');
+  if(hasRole('Руководитель','Ассистент')) return true;
+  // Остальные сотрудники могут редактировать только задачи, отмеченные как «самостоятельно
+  // поставленные», и только если они сами их поставили или являются исполнителем.
+  return !!t.selfAssigned && (state.currentUserId === t.creatorId || state.currentUserId === t.assigneeId);
 }
 function whyCantEdit(t){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
-  return `Редактировать задачу может только тот, кто её поставил — ${empName(t.creatorId)} — либо Руководитель/Ассистент.`;
+  return 'Редактировать можно только задачи, отмеченные как «самостоятельно поставленные», которые вы сами поставили или выполняете — либо Руководителю/Ассистенту.';
 }
 function whyCantComplete(t, personal){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
@@ -2126,10 +2145,15 @@ function computeReminders(filterAssigneeId){
   if(filterAssigneeId){ allTasks = allTasks.filter(t=>t.assigneeId===filterAssigneeId); }
   const overdueTasks = allTasks.filter(t=>t.deadline && t.deadline<today && t.status==='progress');
   const dueTodayTasks = allTasks.filter(t=>t.deadline===today && t.status==='progress');
-  const todayEvents = allVisibleEvents().filter(e=>e.date===today).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
+  // При просмотре конкретного сотрудника считаем только события, в которых он действительно
+  // участвует (employeeIds) — иначе (например, у Руководителя с полным расписанием) счётчик
+  // показывал вообще все видимые события дня, даже те, где этот сотрудник не задействован.
+  let eventsInScope = allVisibleEvents();
+  if(filterAssigneeId){ eventsInScope = eventsInScope.filter(e=>e.employeeIds && e.employeeIds.includes(filterAssigneeId)); }
+  const todayEvents = eventsInScope.filter(e=>e.date===today).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
   const soon = new Date(); soon.setDate(soon.getDate()+3);
   const soonISO = soon.toISOString().slice(0,10);
-  const upcomingEvents = allVisibleEvents().filter(e=>e.date>today && e.date<=soonISO).sort((a,b)=>a.date.localeCompare(b.date));
+  const upcomingEvents = eventsInScope.filter(e=>e.date>today && e.date<=soonISO).sort((a,b)=>a.date.localeCompare(b.date));
   const dueSoonTasks = allTasks.filter(t=>t.deadline && t.deadline>today && t.deadline<=soonISO && t.status==='progress').sort((a,b)=>a.deadline.localeCompare(b.deadline));
   return {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks};
 }
@@ -2525,6 +2549,11 @@ function renderOverview(root){
     .sort((a,b)=>(b.approvedAt||'').localeCompare(a.approvedAt||'')) : [];
   const reworkCount = state.currentUserId ? state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[])
     .filter(t=>t.status==='progress' && t.reworkNote && (viewCompanyWide || t.assigneeId===viewingId)).length : 0;
+  // Задачи, поставленные сегодня — отдельное окно: Руководитель/Ассистент видят все такие задачи
+  // по компании (кто бы их ни поставил), остальные — только те, что поставили сами.
+  const createdTodayTasks = state.currentUserId ? state.tasksWork
+    .filter(t=>t.createdDate===todayISO() && (canChooseWhoToView || t.creatorId===state.currentUserId))
+    .slice().reverse() : [];
 
   function taskRow(t){
     const overdue = t.deadline && t.deadline<todayISO();
@@ -2542,6 +2571,7 @@ function renderOverview(root){
           ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
         </div>
         ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
+        ${taskLinksHtml(t)}
         ${t.status==='progress' && t.reworkNote?`<div class="desc" style="color:var(--brick);">↩️ Возвращено на доработку: ${linkifyEscaped(t.reworkNote)}</div>`:''}
         ${t.status==='progress' && t.reworkNote && t.completionComment?`<div class="desc" style="color:var(--ink-soft);">Предыдущий отчёт исполнителя: ${linkifyEscaped(t.completionComment)}</div>`:''}
       </div>
@@ -2557,6 +2587,7 @@ function renderOverview(root){
           <span>Сдано: ${t.completedAt?fmtDate(t.completedAt):'—'}</span>
         </div>
         ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
+        ${taskLinksHtml(t)}
         ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
         ${t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
       </div>
@@ -2574,7 +2605,9 @@ function renderOverview(root){
           <span>Принял(а): ${escapeHtml(empName(t.approvedBy))}</span>
           <span>${fmtDate(t.approvedAt)}</span>
         </div>
+        ${taskLinksHtml(t)}
         ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
       </div>
     </div>`;
   }
@@ -2604,6 +2637,7 @@ function renderOverview(root){
       <div class="sum-card issued"><div class="label">Задач на сегодня</div><div class="val mono">${dueTodayTasks.length}</div></div>
       <div class="sum-card"><div class="label">Событий сегодня</div><div class="val mono" style="color:var(--indigo);">${todayEvents.length}</div></div>
       ${reworkCount ? `<div class="sum-card"><div class="label">↩️ На доработке</div><div class="val mono" style="color:var(--brick);">${reworkCount}</div></div>` : ''}
+      ${createdTodayTasks.length ? `<div class="sum-card" id="createdTodayCard" style="cursor:pointer;"><div class="label">📋 Поставлено сегодня</div><div class="val mono" style="color:var(--indigo);">${createdTodayTasks.length}</div></div>` : ''}
       ${reviewQueue.length ? `<div class="sum-card"><div class="label">🔍 Нужно проверить</div><div class="val mono" style="color:var(--ochre);">${reviewQueue.length}</div></div>` : ''}
       ${recentlyApproved.length ? `<div class="sum-card"><div class="label">✅ Недавно принято</div><div class="val mono" style="color:var(--teal);">${recentlyApproved.length}</div></div>` : ''}
       ${hasRole('Руководитель','Ассистент') ? `
@@ -2673,6 +2707,8 @@ function renderOverview(root){
     state.overviewApprovedCollapsed = !state.overviewApprovedCollapsed;
     render();
   };
+  const createdTodayCard = document.getElementById('createdTodayCard');
+  if(createdTodayCard) createdTodayCard.onclick=()=>openCreatedTodayModal(createdTodayTasks, canChooseWhoToView);
   root.querySelectorAll('[data-ov-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
     cb.onchange = async ()=>{
@@ -2699,6 +2735,44 @@ function renderOverview(root){
   root.querySelectorAll('[data-ov-day]').forEach(row=>row.onclick=()=>{
     const iso = row.dataset.ovDay;
     openDayModal(iso);
+  });
+}
+// Отдельное окно со списком задач, поставленных сегодня — Руководитель/Ассистент видят все
+// такие задачи по компании (кто бы их ни поставил), остальные — только те, что поставили сами.
+function openCreatedTodayModal(tasks, companyWide){
+  const modal = document.getElementById('modalRoot');
+  function row(t){
+    return `<div class="item" style="cursor:pointer;" data-ct-task="${t.id}">
+      <div class="main">
+        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="meta">
+          <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
+          ${t.deadline?`<span>до ${fmtDeadline(t)}</span>`:''}
+          ${companyWide && t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
+          ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
+        </div>
+        ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
+        ${taskLinksHtml(t)}
+      </div>
+    </div>`;
+  }
+  modal.innerHTML = `
+    <div class="overlay" id="ov">
+      <div class="modal">
+        <h3>📋 Поставлено сегодня (${tasks.length})</h3>
+        <p class="subtitle" style="margin-top:-6px;">${companyWide?'Все задачи по компании, созданные сегодня':'Задачи, которые вы поставили сегодня'} — ${fmtDate(todayISO())}</p>
+        <div class="item-list">
+          ${tasks.length ? tasks.map(row).join('') : `<p class="subtitle" style="margin:0;">Пока ничего</p>`}
+        </div>
+        <div class="modal-actions">
+          <button class="btn ghost" id="closeCreatedToday">Закрыть</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('closeCreatedToday').onclick=closeModal;
+  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+  modal.querySelectorAll('[data-ct-task]').forEach(r=>r.onclick=()=>{
+    openTaskModal(r.dataset.ctTask, false);
   });
 }
 
@@ -3437,7 +3511,7 @@ function taskItemHtml(t, personal, opts){
           ${t.purchaseStore?`<span>🏬 ${escapeHtml(t.purchaseStore)}</span>`:''}
           ${t.purchaseAmount?`<span>💰 ${fmtMoney(t.purchaseAmount)}</span>`:''}
           ${t.purchaseExpenseId?`<span style="color:var(--teal);">💳 расход добавлен</span>`:''}
-          ${t.link?`<span>🔗 <a href="${escapeHtml(t.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка</a></span>`:''}
+          ${taskLinks(t).map((l,i)=>`<span>🔗 <a href="${escapeHtml(l)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">${taskLinks(t).length>1?`Ссылка ${i+1}`:'Ссылка'}</a></span>`).join('')}
           ${linkedEventBadge(t)}
         </div>
         ${t.description?`<div class="desc">${linkifyEscaped(t.description)}</div>`:''}
@@ -3512,11 +3586,13 @@ function renderTaskBoard(el, personal){
         ${Object.entries(PRIORITIES).map(([k,v])=>`<option value="${k}" ${state.taskFilterPriority===k?'selected':''}>${v}</option>`).join('')}
       </select>
     </div>
-    <div class="cat-filters" style="margin-bottom:10px;">
+    <div class="cat-filters" style="margin-bottom:10px;align-items:center;">
       <span class="subtitle" style="margin:0 2px 0 0;">Сортировка:</span>
       <button class="cat-chip ${state.taskSortBy==='manual'?'':'off'}" data-sort-by="manual">Обычный порядок</button>
       <button class="cat-chip ${state.taskSortBy==='priority'?'':'off'}" data-sort-by="priority">По приоритету</button>
       <button class="cat-chip ${state.taskSortBy==='deadline'?'':'off'}" data-sort-by="deadline">По сроку</button>
+      <button class="cat-chip ${state.taskSortBy==='created'?'':'off'}" data-sort-by="created">📅 Поставленные</button>
+      ${state.taskSortBy==='created'?`<input type="date" id="filtCreatedDate" value="${state.taskFilterCreatedDate||todayISO()}" style="width:auto;">`:''}
     </div>
     <div class="cat-filters" style="margin-bottom:10px;">
       <span class="subtitle" style="margin:0 2px 0 0;">Срок:</span>
@@ -3609,7 +3685,13 @@ function renderTaskBoard(el, personal){
   }
   el.querySelector('#filtStatus').onchange=(e)=>{ state.taskFilterStatus=e.target.value; render(); };
   el.querySelector('#filtPriority').onchange=(e)=>{ state.taskFilterPriority=e.target.value; render(); };
-  el.querySelectorAll('[data-sort-by]').forEach(b=>b.onclick=()=>{ state.taskSortBy=b.dataset.sortBy; render(); });
+  el.querySelectorAll('[data-sort-by]').forEach(b=>b.onclick=()=>{
+    state.taskSortBy=b.dataset.sortBy;
+    if(state.taskSortBy==='created' && !state.taskFilterCreatedDate) state.taskFilterCreatedDate = todayISO();
+    render();
+  });
+  const createdDateInput = el.querySelector('#filtCreatedDate');
+  if(createdDateInput) createdDateInput.onchange=(e)=>{ state.taskFilterCreatedDate = e.target.value || todayISO(); render(); };
   el.querySelectorAll('[data-period]').forEach(b=>b.onclick=()=>{ state.taskFilterPeriod=b.dataset.period; render(); });
 
   const viewMode = personal ? 'assigned' : state.taskViewMode;
@@ -3622,7 +3704,12 @@ function renderTaskBoard(el, personal){
   }
   if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
   if(state.taskFilterPriority!=='all') list = list.filter(t=>(t.priority||'med')===state.taskFilterPriority);
-  if(state.taskFilterPeriod!=='all'){
+  if(state.taskSortBy==='created'){
+    // Режим «Поставленные» — показываем только задачи, созданные ровно в выбранный день,
+    // независимо от дедлайна (фильтр «Срок» в этом режиме не применяется).
+    const pickedDate = state.taskFilterCreatedDate || todayISO();
+    list = list.filter(t=>t.createdDate===pickedDate);
+  } else if(state.taskFilterPeriod!=='all'){
     // «На этой неделе» / «В этом месяце» — по дедлайну, чтобы после планёрки было видно,
     // что именно согласовано и поставлено на ближайший срок.
     const now = new Date();
@@ -3678,6 +3765,8 @@ function renderTaskBoard(el, personal){
       return (PRIORITY_RANK[a.priority]??1) - (PRIORITY_RANK[b.priority]??1) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
     } else if(state.taskSortBy==='deadline'){
       return (a.deadline||'9999').localeCompare(b.deadline||'9999');
+    } else if(state.taskSortBy==='created'){
+      return (PRIORITY_RANK[a.priority]??1) - (PRIORITY_RANK[b.priority]??1) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
     }
     return ((a.sortOrder||0) - (b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
   }
@@ -3702,7 +3791,9 @@ function renderTaskBoard(el, personal){
 
   const listEl = el.querySelector('#taskList');
   const activeHtml = activeRoots.length ? activeRoots.map(t=>renderNode(t,0)).join('') :
-    (doneRoots.length ? '' : `<div class="empty-state"><div class="big">Пока нет задач</div><p>${projects.length?'Добавьте задачу в этот проект':'Добавьте первую задачу'}</p></div>`);
+    (doneRoots.length ? '' : (state.taskSortBy==='created'
+      ? `<div class="empty-state"><div class="big">Ничего не поставлено</div><p>В этот день (${fmtDate(state.taskFilterCreatedDate||todayISO())}) задач не создавалось — выберите другую дату выше</p></div>`
+      : `<div class="empty-state"><div class="big">Пока нет задач</div><p>${projects.length?'Добавьте задачу в этот проект':'Добавьте первую задачу'}</p></div>`));
   const doneToggleHtml = doneRoots.length ? `
     <button type="button" class="btn ghost small" id="toggleDoneRoots" style="margin:10px 0;">
       ${state.taskBoardShowDone ? '▾' : '▸'} Выполнено (${doneRoots.length})
@@ -3988,15 +4079,30 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   const initialBlockId = !personal
     ? (existing ? (existing.blockId || (initialProjectForBlock && initialProjectForBlock.blockId) || '') : ((initialProjectForBlock && initialProjectForBlock.blockId) || ''))
     : '';
+  // Обычный сотрудник может редактировать только задачи, отмеченные как «самостоятельно
+  // поставленные» (галочка ниже) — остальные задачи он видит, но не может менять; форма для
+  // них показывается только для просмотра. Руководитель/Ассистент могут редактировать всё.
+  const editable = !existing || canEditTask(existing, personal);
   const modal = document.getElementById('modalRoot');
   modal.innerHTML = `
     <div class="overlay" id="ov">
       <div class="modal">
-        <h3>${existing?'Изменить задачу':(parentId?'Новая подзадача':'Новая задача')}${personal?' · личная':''}</h3>
+        <h3>${existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':'Новая задача')}${personal?' · личная':''}</h3>
+        ${existing && !editable?`<div class="note">Эту задачу вам поставили не вы сами, поэтому менять её нельзя — можно только посмотреть. Изменить может тот, кто её поставил (если задача отмечена как «самостоятельно поставленная»), либо Руководитель/Ассистент.</div>`:''}
+        <div id="t_formWrap" style="${editable?'':'pointer-events:none;opacity:.6;'}">
         ${parentId?`<div class="note">Подзадача для: <strong>${escapeHtml(parentTask?parentTask.title:'')}</strong></div>`:''}
         <div class="field"><label>Название *</label><input id="t_title" value="${existing?escapeHtml(existing.title):escapeHtml(presetTitle||'')}"></div>
         <div class="field"><label>Описание *</label><textarea id="t_desc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
-        <div class="field"><label>Ссылка (необязательно)</label><input id="t_link" type="text" placeholder="https://..." value="${existing?escapeHtml(existing.link||''):''}"></div>
+        <div class="field"><label>Ссылки (необязательно)</label>
+          <div id="t_links_list">
+            ${(taskLinks(existing).length?taskLinks(existing):['']).map(l=>`
+            <div class="link-row" style="display:flex;gap:6px;margin-bottom:6px;">
+              <input type="text" class="t-link-input" placeholder="https://..." value="${escapeHtml(l)}" style="flex:1;">
+              <button type="button" class="btn ghost small link-remove-btn">✕</button>
+            </div>`).join('')}
+          </div>
+          <button type="button" class="btn ghost small" id="t_links_add">+ Добавить ещё ссылку</button>
+        </div>
         ${!parentId?`
         <div class="field-row">
           ${!personal?`
@@ -4044,6 +4150,12 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
             </select>
           </div>
         </div>
+        ${!personal?`
+        <div class="field" style="display:flex;align-items:center;gap:8px;flex-direction:row;">
+          <input type="checkbox" id="t_self_assigned" style="width:auto;" ${existing?(existing.selfAssigned?'checked':''):''}>
+          <label for="t_self_assigned" style="margin:0;cursor:pointer;">Самостоятельно поставленная задача (я сам(а) себе её поставил(а) — смогу редактировать её и дальше)</label>
+        </div>
+        `:''}
         <div class="field-row">
           <div class="field"><label>Дата постановки *</label><input type="date" id="t_createdDate" value="${existing?existing.createdDate||todayISO():todayISO()}"></div>
           <div class="field"><label>Дедлайн *</label><input type="date" id="t_deadline" value="${existing?existing.deadline||'':''}"></div>
@@ -4098,15 +4210,40 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
           <div class="cat-filters" id="t_event_items" style="margin-top:8px;"></div>
           <input type="hidden" id="t_event" value="">
         </div>
+        </div>
         <div class="modal-actions">
           ${existing?`<button class="btn danger" id="deleteTask" style="${canDeleteTask(existing,personal)?'':'opacity:.4;'}" title="${canDeleteTask(existing,personal)?'Удалить задачу':whyCantDelete(existing)}">Удалить</button>`:''}
-          <button class="btn ghost" id="cancelTask">Отмена</button>
-          <button class="btn" id="saveTask">Сохранить</button>
+          <button class="btn ghost" id="cancelTask">${editable?'Отмена':'Закрыть'}</button>
+          ${editable?`<button class="btn" id="saveTask">Сохранить</button>`:''}
         </div>
       </div>
     </div>`;
   document.getElementById('cancelTask').onclick=closeModal;
   document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+  // Несколько ссылок к задаче: каждая строка — своё поле, можно добавлять и убирать.
+  // Последнюю оставшуюся строку не удаляем целиком (чтобы поле не пропадало из формы), а просто очищаем.
+  function wireLinkRows(){
+    document.querySelectorAll('.link-remove-btn').forEach(btn=>{
+      btn.onclick=()=>{
+        const row = btn.closest('.link-row');
+        const rows = document.querySelectorAll('#t_links_list .link-row');
+        if(rows.length<=1){ row.querySelector('.t-link-input').value=''; return; }
+        row.remove();
+      };
+    });
+  }
+  wireLinkRows();
+  const linksAddBtn = document.getElementById('t_links_add');
+  if(linksAddBtn) linksAddBtn.onclick=()=>{
+    const list = document.getElementById('t_links_list');
+    const row = document.createElement('div');
+    row.className = 'link-row';
+    row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
+    row.innerHTML = `<input type="text" class="t-link-input" placeholder="https://..." style="flex:1;"><button type="button" class="btn ghost small link-remove-btn">✕</button>`;
+    list.appendChild(row);
+    wireLinkRows();
+    row.querySelector('input').focus();
+  };
   if(existing){
     document.getElementById('deleteTask').onclick=async ()=>{
       const didDelete = await performTaskDeletion(personal, existing);
@@ -4276,11 +4413,16 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     return elm;
   }
 
-  document.getElementById('saveTask').onclick=async ()=>{
+  const saveTaskBtn = document.getElementById('saveTask');
+  if(saveTaskBtn) saveTaskBtn.onclick=async ()=>{
+    if(existing && !canEditTask(existing, personal)){ toast(whyCantEdit(existing)); return; }
     const title = document.getElementById('t_title').value.trim();
     const description = document.getElementById('t_desc').value.trim();
-    const linkRaw = document.getElementById('t_link').value.trim();
-    const link = linkRaw ? (/^https?:\/\//i.test(linkRaw) ? linkRaw : 'https://'+linkRaw) : '';
+    const links = Array.from(document.querySelectorAll('.t-link-input'))
+      .map(i=>i.value.trim())
+      .filter(Boolean)
+      .map(l=>/^https?:\/\//i.test(l) ? l : 'https://'+l);
+    const link = links[0] || ''; // держим первое поле в старом виде для совместимости со старым кодом/экспортом
     const creatorId = document.getElementById('t_creator').value;
     const assigneeEl = document.getElementById('t_assignee');
     const assigneeId = assigneeEl ? assigneeEl.value : null;
@@ -4360,6 +4502,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       title,
       description,
       link,
+      links,
       projectId,
       blockId,
       parentId: parentId||null,
@@ -4386,6 +4529,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       approvedBy: existing ? (existing.approvedBy||null) : null,
       comments: existing ? (existing.comments||[]) : [],
       sortOrder: existing ? (existing.sortOrder||0) : 0,
+      selfAssigned: document.getElementById('t_self_assigned') ? document.getElementById('t_self_assigned').checked : !!(existing && existing.selfAssigned),
     };
 
     // Список задач — общий, и его сохраняют вперемешку с разных устройств/вкладок. Подтягиваем
@@ -5233,7 +5377,7 @@ function renderTaskReport(el){
         ${t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
         ${t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
         ${late && t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
-        ${t.link?`<div class="desc">🔗 <a href="${escapeHtml(t.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;">Ссылка</a></div>`:''}
+        ${taskLinksHtml(t)}
       </div>
     </div>`;
   }
@@ -5383,7 +5527,7 @@ function renderTaskReport(el){
 function exportTaskReportCSV(){
   const doneTasks = computeReportTasks().slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||''));
   const notDoneTasks = computeNotDoneTasks().slice().sort((a,b)=>(a.deadline||'').localeCompare(b.deadline||''));
-  const header = ['Статус','Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка на результат','Ссылка'];
+  const header = ['Статус','Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка на результат','Ссылки'];
   const lines = [header.map(csvEscape).join(';')];
   doneTasks.forEach(t=>{
     lines.push([
@@ -5398,7 +5542,7 @@ function exportTaskReportCSV(){
       t.overdueReason||'',
       t.completionComment||'',
       t.completionLink||'',
-      t.link||'',
+      taskLinks(t).join(', '),
     ].map(csvEscape).join(';'));
   });
   notDoneTasks.forEach(t=>{
@@ -5414,7 +5558,7 @@ function exportTaskReportCSV(){
       t.overdueReason||t.reworkNote||'',
       '',
       '',
-      t.link||'',
+      taskLinks(t).join(', '),
     ].map(csvEscape).join(';'));
   });
 

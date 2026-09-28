@@ -73,16 +73,19 @@ let store = { kv: {}, credentials: {} };
 const AUTO_BACKUP_PREFIX = 'backup:auto:';
 const AUTO_BACKUP_RETENTION_DAYS = 14;
 function isoDate(d) { return d.toISOString().slice(0, 10); }
+function snapshotOfStore() {
+  // Копируем весь текущий kv (кроме самих бэкапов, чтобы не вкладывать бэкапы в бэкапы)
+  const snapshot = {};
+  for (const k of Object.keys(store.kv)) {
+    if (!k.startsWith(AUTO_BACKUP_PREFIX) && !k.startsWith(FREQUENT_BACKUP_PREFIX)) snapshot[k] = store.kv[k];
+  }
+  return snapshot;
+}
 async function runAutoBackup() {
   try {
     const today = isoDate(new Date());
     const key = AUTO_BACKUP_PREFIX + today;
-    // Копируем весь текущий kv (кроме самих бэкапов, чтобы не вкладывать бэкапы в бэкапы)
-    const snapshot = {};
-    for (const k of Object.keys(store.kv)) {
-      if (!k.startsWith(AUTO_BACKUP_PREFIX)) snapshot[k] = store.kv[k];
-    }
-    store.kv[key] = JSON.stringify({ takenAt: new Date().toISOString(), data: snapshot });
+    store.kv[key] = JSON.stringify({ takenAt: new Date().toISOString(), data: snapshotOfStore() });
     // Чистим бэкапы старше срока хранения
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - AUTO_BACKUP_RETENTION_DAYS);
     const cutoffStr = isoDate(cutoff);
@@ -96,6 +99,33 @@ async function runAutoBackup() {
     console.log(`Автоматический бэкап создан: ${key}`);
   } catch (e) {
     console.error('Ошибка автоматического бэкапа:', e.message);
+  }
+}
+
+// ---------- частые снимки (каждые 15 минут, короткое хранение) ----------
+// Дополняют суточные бэкапы выше: если что-то потёрлось сегодня, не обязательно ждать завтра —
+// можно откатиться на состояние 15-минутной давности. Храним недолго (по умолчанию 48 часов),
+// иначе снимков накопится слишком много и они займут много места.
+const FREQUENT_BACKUP_PREFIX = 'backup:freq:';
+const FREQUENT_BACKUP_INTERVAL_MS = 15 * 60 * 1000;
+const FREQUENT_BACKUP_RETENTION_MS = 48 * 60 * 60 * 1000;
+async function runFrequentBackup() {
+  try {
+    const now = new Date();
+    const key = FREQUENT_BACKUP_PREFIX + now.toISOString();
+    store.kv[key] = JSON.stringify({ takenAt: now.toISOString(), data: snapshotOfStore() });
+    const cutoffMs = now.getTime() - FREQUENT_BACKUP_RETENTION_MS;
+    Object.keys(store.kv).forEach(k => {
+      if (k.startsWith(FREQUENT_BACKUP_PREFIX)) {
+        const tsStr = k.slice(FREQUENT_BACKUP_PREFIX.length);
+        const ts = Date.parse(tsStr);
+        if (!ts || ts < cutoffMs) delete store.kv[k];
+      }
+    });
+    await persist();
+    console.log(`Частый снимок создан: ${key}`);
+  } catch (e) {
+    console.error('Ошибка частого снимка:', e.message);
   }
 }
 
@@ -292,6 +322,9 @@ app.delete('/api/storage/:key', requireAuth, (req, res) => {
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
+  if (isRosterKey(key) && !isPrivilegedRole(req.employee.role)) {
+    return res.status(403).json({ error: 'Изменять список сотрудников может только Руководитель или Ассистент' });
+  }
   delete store.kv[key];
   persist();
   res.json({ ok: true });
@@ -311,7 +344,15 @@ app.get('/api/auto-backups', requireAuth, (req, res) => {
       return { key: k, date, takenAt };
     })
     .sort((a, b) => b.date.localeCompare(a.date));
-  res.json({ backups: list });
+  const frequentList = Object.keys(store.kv)
+    .filter(k => k.startsWith(FREQUENT_BACKUP_PREFIX))
+    .map(k => {
+      let takenAt = null;
+      try { takenAt = JSON.parse(store.kv[k]).takenAt; } catch (e) {}
+      return { key: k, takenAt: takenAt || k.slice(FREQUENT_BACKUP_PREFIX.length) };
+    })
+    .sort((a, b) => b.takenAt.localeCompare(a.takenAt));
+  res.json({ backups: list, frequentBackups: frequentList });
 });
 
 // ---------- статика (сам интерфейс) ----------
@@ -341,4 +382,7 @@ app.get('*', (req, res) => {
   // Автобэкап: один раз вскоре после старта (на случай долгого простоя сервера), затем раз в сутки
   setTimeout(runAutoBackup, 60 * 1000);
   setInterval(runAutoBackup, 24 * 60 * 60 * 1000);
+  // Частые снимки — каждые 15 минут (первый почти сразу после старта)
+  setTimeout(runFrequentBackup, 90 * 1000);
+  setInterval(runFrequentBackup, FREQUENT_BACKUP_INTERVAL_MS);
 })();

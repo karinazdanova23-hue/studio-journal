@@ -218,6 +218,55 @@ function isRosterKey(key) {
   return key === 'roster:employees';
 }
 
+// Хранилище — это просто пары ключ→JSON-строка, сервер не разбирает содержимое большинства
+// ключей. Но для двух самых «дорогих» ключей (общий список задач и общий список проектов) есть
+// смысл проверить даже на этом уровне: не даём одним запросом стереть чужую задачу/чужой проект
+// в обход правил, которые интерфейс и так соблюдает (это не полноценная замена переработки
+// хранения на отдельные проверяемые запросы для каждого действия, а точечная защита от
+// злоупотребления самым разрушительным — массовым/чужим удалением).
+function parseJsonArray(raw) {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
+function findDisallowedDeletion(key, oldRaw, newRaw, employee) {
+  if (isPrivilegedRole(employee.role)) return null;
+  if (key !== 'tasks:work' && key !== 'tasks:projects') return null;
+  if (oldRaw === undefined) return null; // ключа ещё не было — нечего защищать
+  const oldArr = parseJsonArray(oldRaw);
+  const newArr = parseJsonArray(newRaw);
+  if (!oldArr || !newArr) return null; // не похоже на ожидаемый формат — не наша забота
+  const newIds = new Set(newArr.filter(x => x && x.id).map(x => x.id));
+  const removed = oldArr.filter(x => x && x.id && !newIds.has(x.id));
+  if (!removed.length) return null;
+  if (key === 'tasks:projects') {
+    return 'Удалять проекты может только Руководитель или Ассистент';
+  }
+  // key === 'tasks:work': удалить задачу может только тот, кто её поставил (или Руководитель/Ассистент).
+  // Удаление задачи вместе с подзадачами (и серии повторяющихся задач) — обычное дело в
+  // интерфейсе, а подзадача/копия из серии не обязана иметь того же автора буквально в поле
+  // creatorId — поэтому разрешаем удаление и тогда, когда сам автор есть где-то по цепочке
+  // родителей среди удаляемых задач (именно так это и работает в интерфейсе).
+  function creatorChainIncludes(task, employeeId) {
+    let current = task;
+    const seen = new Set();
+    while (current) {
+      if (current.creatorId === employeeId) return true;
+      if (!current.parentId || seen.has(current.id)) return false;
+      seen.add(current.id);
+      current = oldArr.find(t => t.id === current.parentId);
+    }
+    return false;
+  }
+  const forbidden = removed.find(t => !creatorChainIncludes(t, employee.id));
+  if (forbidden) return 'Удалить задачу может только тот, кто её поставил — либо Руководитель или Ассистент';
+  return null;
+}
+
 // ---------- публично: список сотрудников (без паролей) ----------
 app.get('/api/employees', (req, res) => {
   const list = getEmployees().map(e => ({ id: e.id, name: e.name, role: e.role, hasPassword: !!store.credentials[e.id] }));
@@ -312,6 +361,10 @@ app.put('/api/storage/:key', requireAuth, (req, res) => {
   if (isRosterKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Изменять список сотрудников может только Руководитель или Ассистент' });
   }
+  const deletionError = findDisallowedDeletion(key, store.kv[key], value, req.employee);
+  if (deletionError) {
+    return res.status(403).json({ error: deletionError });
+  }
   store.kv[key] = value;
   persist();
   res.json({ ok: true });
@@ -324,6 +377,12 @@ app.delete('/api/storage/:key', requireAuth, (req, res) => {
   }
   if (isRosterKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Изменять список сотрудников может только Руководитель или Ассистент' });
+  }
+  // Полное удаление ключа с общим списком задач/проектов стёрло бы вообще всё сразу — тот же
+  // риск, что и при точечном удалении через PUT, только хуже, так что для него действует то же
+  // правило (и приложение само никогда не удаляет эти ключи целиком, только перезаписывает).
+  if ((key === 'tasks:work' || key === 'tasks:projects') && !isPrivilegedRole(req.employee.role)) {
+    return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
   delete store.kv[key];
   persist();

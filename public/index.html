@@ -824,6 +824,8 @@ const state = {
   bulkSelectedIds:new Set(),
   taskFilterBlockId:{work:null, personal:null},
   overviewApprovedCollapsed:false,
+  overviewOverdueCollapsed:false,
+  taskHideOverdue:false,
   taskFilterProjectIds:{work:new Set(), personal:new Set()},
   taskFilterNoProject:{work:false, personal:false},
   taskFilterStatus:'all',
@@ -1612,6 +1614,17 @@ function findVacationConflict(assigneeId, deadline){
     }
   }
   return null;
+}
+// Пересекаются ли по времени два интервала. Событие без времени окончания считаем «точкой» —
+// конфликт только если она попадает внутрь чужого интервала (или совпадает с чужой точкой).
+function timeRangesOverlap(aStart, aEnd, bStart, bEnd){
+  const as = aStart || '00:00', ae = aEnd || aStart || '23:59';
+  const bs = bStart || '00:00', be = bEnd || bStart || '23:59';
+  const aIsPoint = as===ae, bIsPoint = bs===be;
+  if(aIsPoint && bIsPoint) return as===bs;
+  if(aIsPoint) return as>=bs && as<be;
+  if(bIsPoint) return bs>=as && bs<ae;
+  return as<be && bs<ae;
 }
 function canSeeEvent(e){
   // Отпуска — видны всем (информационно, не требует участия).
@@ -2682,7 +2695,13 @@ function renderOverview(root){
           const groupLabel = (label)=>`<div class="subtitle" style="margin:14px 0 6px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">${label}</div>`;
           let html = '';
           if(reworkList.length) html += groupLabel(`↩️ Возвращено на доработку (${reworkList.length})`) + `<div style="border:1px solid var(--brick);border-radius:10px;padding:2px;margin-bottom:10px;">${reworkList.map(taskRow).join('')}</div>`;
-          if(overdueList.length) html += groupLabel(`⚠️ Просрочено (${overdueList.length})`) + overdueList.map(taskRow).join('');
+          if(overdueList.length) html += `
+            <div class="row-between" style="align-items:baseline;margin:14px 0 6px;">
+              <div class="subtitle" style="margin:0;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">⚠️ Просрочено (${overdueList.length})</div>
+              <button type="button" class="btn ghost small" id="toggleOverdueList">${state.overviewOverdueCollapsed?'Показать':'Скрыть'}</button>
+            </div>
+            ${state.overviewOverdueCollapsed ? '' : overdueList.map(taskRow).join('')}
+          `;
           if(todayList.length) html += groupLabel(`Сегодня (${todayList.length})`) + todayList.map(taskRow).join('');
           if(upcomingList.length) html += groupLabel(`Предстоящие (${upcomingList.length})`) + upcomingList.map(taskRow).join('');
           if(noDeadlineList.length) html += groupLabel(`Без дедлайна (${noDeadlineList.length})`) + noDeadlineList.map(taskRow).join('');
@@ -2705,6 +2724,11 @@ function renderOverview(root){
   const toggleApprovedBtn = document.getElementById('toggleApprovedList');
   if(toggleApprovedBtn) toggleApprovedBtn.onclick=()=>{
     state.overviewApprovedCollapsed = !state.overviewApprovedCollapsed;
+    render();
+  };
+  const toggleOverdueBtn = document.getElementById('toggleOverdueList');
+  if(toggleOverdueBtn) toggleOverdueBtn.onclick=()=>{
+    state.overviewOverdueCollapsed = !state.overviewOverdueCollapsed;
     render();
   };
   const createdTodayCard = document.getElementById('createdTodayCard');
@@ -3318,12 +3342,41 @@ function openEventModal(id, presetDate){
         if(!proceed) return;
       }
     }
+    // Проверка «двойной брони»: тот же сотрудник не может быть участником двух событий,
+    // которые идут в одно и то же время в один день. На события «на весь день» (отпуска,
+    // дни рождения) это не распространяется — там конкретное время не имеет значения.
+    // datesToCheck — даты, на которые сохраняется это событие (может быть несколько, если это
+    // повторяющаяся серия или применение изменений ко всей серии); excludeIds — id событий,
+    // которые сейчас перезаписываются, чтобы событие не конфликтовало само с собой.
+    async function confirmNoDoubleBooking(datesToCheck, excludeIds){
+      if(isAllDayCategory(category) || !emp.length) return true;
+      const excludeSet = new Set(excludeIds);
+      let conflicts = [];
+      datesToCheck.forEach(d=>{
+        state.events.concat(state.personalEvents)
+          .filter(e=>!excludeSet.has(e.id) && e.date===d && !isAllDayCategory(e.category))
+          .forEach(e=>{
+            const shared = (e.employeeIds||[]).filter(eid=>emp.includes(eid));
+            if(!shared.length) return;
+            if(!timeRangesOverlap(data.startTime, data.endTime, e.startTime, e.endTime)) return;
+            shared.forEach(empId=>{
+              conflicts.push(`• ${empName(empId)} уже занят(а): «${e.title}» (${fmtDate(d)}${e.startTime?', '+e.startTime:''}${e.endTime?'–'+e.endTime:''})`);
+            });
+          });
+      });
+      conflicts = [...new Set(conflicts)];
+      if(!conflicts.length) return true;
+      const shown = conflicts.slice(0,8).join('\n');
+      const more = conflicts.length>8 ? `\n…и ещё ${conflicts.length-8}` : '';
+      return await showConfirm(`⚠️ Пересечение по времени с другим событием:\n${shown}${more}\n\nВсё равно сохранить?`, 'Всё равно сохранить');
+    }
     const repeatType = repeatEl ? repeatEl.value : 'none';
     if(!existing && repeatType!=='none'){
       const untilVal = document.getElementById('f_repeat_until').value || data.date;
       const weekdaySet = new Set(Array.from(document.querySelectorAll('#f_weekdays .cat-chip:not(.off)')).map(c=>parseInt(c.dataset.wd,10)));
       let dates = generateRecurrenceDates(data.date, repeatType, weekdaySet, untilVal, 300);
       if(!dates.length) dates = [data.date];
+      if(!(await confirmNoDoubleBooking(dates, []))) return;
       const seriesId = uid();
       const newEvts = dates.map(d=>({...data, id: uid()+d, date: d, seriesId}));
       // Каждая ветка сохранения — своей вложенной именованной функцией, чтобы при неудаче кнопка
@@ -3341,6 +3394,7 @@ function openEventModal(id, presetDate){
       return;
     } else if(existing){
       if(existingPersonal !== newPersonal){
+        if(!(await confirmNoDoubleBooking([data.date], [existing.id]))) return;
         // moved between personal/work — remove from old store, add to new
         async function saveMovedEvent(){
           const beforeOld = eventsFor(existingPersonal);
@@ -3364,6 +3418,12 @@ function openEventModal(id, presetDate){
       } else if(existing.seriesId){
         const choice = await showSeriesEditChoice();
         if(!choice) return;
+        if(choice==='one'){
+          if(!(await confirmNoDoubleBooking([data.date], [existing.id]))) return;
+        } else {
+          const seriesEvts = eventsFor(newPersonal).filter(e=>e.seriesId===existing.seriesId);
+          if(!(await confirmNoDoubleBooking(seriesEvts.map(e=>e.date), seriesEvts.map(e=>e.id)))) return;
+        }
         async function saveSeriesEdit(){
           const before = eventsFor(newPersonal);
           if(choice==='one'){
@@ -3383,6 +3443,7 @@ function openEventModal(id, presetDate){
         }
         if(!(await saveSeriesEdit())) return;
       } else {
+        if(!(await confirmNoDoubleBooking([data.date], [existing.id]))) return;
         async function saveSimpleEventEdit(){
           const before = eventsFor(newPersonal);
           setEventsFor(newPersonal, before.map(e=>e.id===existing.id?data:e));
@@ -3394,6 +3455,7 @@ function openEventModal(id, presetDate){
         if(!(await saveSimpleEventEdit())) return;
       }
     } else {
+      if(!(await confirmNoDoubleBooking([data.date], []))) return;
       async function saveNewEvent(){
         const before = eventsFor(newPersonal);
         setEventsFor(newPersonal, before.concat([data]));
@@ -3599,6 +3661,7 @@ function renderTaskBoard(el, personal){
       <button class="cat-chip ${state.taskFilterPeriod==='all'?'':'off'}" data-period="all">Все</button>
       <button class="cat-chip ${state.taskFilterPeriod==='week'?'':'off'}" data-period="week">На этой неделе</button>
       <button class="cat-chip ${state.taskFilterPeriod==='month'?'':'off'}" data-period="month">В этом месяце</button>
+      <button class="cat-chip ${state.taskHideOverdue?'':'off'}" id="hideOverdueChip" style="${state.taskHideOverdue?'border-color:var(--brick);color:var(--brick);':''}">🙈 Скрыть просроченные</button>
     </div>
     <div id="delegatedSummary"></div>
     <div id="bulkActionBar"></div>
@@ -3693,6 +3756,8 @@ function renderTaskBoard(el, personal){
   const createdDateInput = el.querySelector('#filtCreatedDate');
   if(createdDateInput) createdDateInput.onchange=(e)=>{ state.taskFilterCreatedDate = e.target.value || todayISO(); render(); };
   el.querySelectorAll('[data-period]').forEach(b=>b.onclick=()=>{ state.taskFilterPeriod=b.dataset.period; render(); });
+  const hideOverdueChip = el.querySelector('#hideOverdueChip');
+  if(hideOverdueChip) hideOverdueChip.onclick=()=>{ state.taskHideOverdue = !state.taskHideOverdue; render(); };
 
   const viewMode = personal ? 'assigned' : state.taskViewMode;
   let list = tasksFor(personal).slice();
@@ -3704,6 +3769,12 @@ function renderTaskBoard(el, personal){
   }
   if(state.taskFilterStatus!=='all') list = list.filter(t=>t.status===state.taskFilterStatus);
   if(state.taskFilterPriority!=='all') list = list.filter(t=>(t.priority||'med')===state.taskFilterPriority);
+  if(state.taskHideOverdue){
+    // Просроченная — дедлайн уже прошёл, а задача ещё не «Готово» (и не на проверке/отменена —
+    // это отдельные статусы, для которых «просрочено» не так важно показывать/скрывать).
+    const today = todayISO();
+    list = list.filter(t=>!(t.deadline && t.deadline<today && t.status==='progress'));
+  }
   if(state.taskSortBy==='created'){
     // Режим «Поставленные» — показываем только задачи, созданные ровно в выбранный день,
     // независимо от дедлайна (фильтр «Срок» в этом режиме не применяется).
@@ -5321,9 +5392,12 @@ function computeReportTasks(){
 }
 // Задачи, которые должны были закрыться к концу периода (дедлайн уже наступил), но всё ещё не "Готово".
 // Удобно для еженедельной планёрки — сразу видно, что не сделано.
+// Раньше здесь дополнительно отсеивались подзадачи (!t.parentId) — из-за этого просроченная
+// невыполненная подзадача просто пропадала из отчёта, хотя тот же список «Готово» подзадачи не
+// исключает. Убрали лишний фильтр, чтобы отчёт не терял часть задач.
 function computeNotDoneTasks(){
   return state.tasksWork.filter(t=>
-    t.status!=='done' && !t.parentId && t.deadline && t.deadline<=state.reportEnd &&
+    t.status!=='done' && t.deadline && t.deadline<=state.reportEnd &&
     (state.reportEmployee==='all' || t.assigneeId===state.reportEmployee)
   );
 }

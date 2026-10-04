@@ -40,19 +40,47 @@ async function streamToString(stream) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+// Не даём запросу к S3 висеть бесконечно: если сеть/хранилище подвисли (не ответили ни успехом,
+// ни ошибкой), через указанное время считаем попытку неудачной, вместо того чтобы ждать вечно —
+// иначе из-за одного зависшего запроса "крутилка" сохранения (или даже запуск сервера) не
+// заканчивалась бы вообще никогда.
+function withTimeout(promise, ms) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve({ timedOut: true }); } }, ms);
+    promise.then(
+      (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ timedOut: false, value: v }); } },
+      (e) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ timedOut: false, error: e }); } }
+    );
+  });
+}
+const S3_TIMEOUT_MS = 10000;
+
 async function loadStoreFromBackend() {
   if (USE_S3) {
-    try {
-      const res = await s3Client.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY }));
-      const raw = await streamToString(res.Body);
-      const parsed = JSON.parse(raw);
-      return { kv: parsed.kv || {}, credentials: parsed.credentials || {} };
-    } catch (e) {
+    const outcome = await withTimeout(
+      s3Client.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY })),
+      S3_TIMEOUT_MS
+    );
+    if (outcome.timedOut) {
+      console.error(`Не удалось прочитать данные из S3: не ответил за ${S3_TIMEOUT_MS}мс — начинаем с пустого хранилища.`);
+      return { kv: {}, credentials: {} };
+    }
+    const e = outcome.error;
+    if (e) {
       if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) {
         console.log('В S3 ещё нет сохранённых данных — начинаем с пустого хранилища.');
       } else {
         console.error('Не удалось прочитать данные из S3, начинаем с пустого хранилища:', e.message);
       }
+      return { kv: {}, credentials: {} };
+    }
+    try {
+      const raw = await streamToString(outcome.value.Body);
+      const parsed = JSON.parse(raw);
+      return { kv: parsed.kv || {}, credentials: parsed.credentials || {} };
+    } catch (e2) {
+      console.error('Не удалось разобрать данные из S3, начинаем с пустого хранилища:', e2.message);
       return { kv: {}, credentials: {} };
     }
   }
@@ -136,17 +164,26 @@ let writeQueue = Promise.resolve();
 // т.ч. обработчики PUT/DELETE ниже) об этом не знал и отвечал браузеру "ok:true" в любом случае —
 // из-за этого сбой записи в S3 выглядел для сотрудника как "сохранилось", а после перезапуска
 // сервера (деплой, технический рестарт) данные, которые реально не долетели до S3, пропадали.
+// withTimeout()/S3_TIMEOUT_MS объявлены выше, рядом с loadStoreFromBackend — не даём записи
+// висеть бесконечно по той же причине (иначе "крутилка" сохранения не кончалась бы никогда,
+// и все последующие сохранения вставали бы в очередь позади зависшего).
 function persist() {
   writeQueue = writeQueue.then(async () => {
     const body = JSON.stringify(store);
     if (USE_S3) {
-      try {
-        await s3Client.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY, Body: body, ContentType: 'application/json' }));
-        return true;
-      } catch (e) {
-        console.error('Ошибка сохранения данных в S3:', e.message);
+      const outcome = await withTimeout(
+        s3Client.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY, Body: body, ContentType: 'application/json' })),
+        S3_TIMEOUT_MS
+      );
+      if (outcome.timedOut) {
+        console.error(`Ошибка сохранения данных в S3: не ответил за ${S3_TIMEOUT_MS}мс (похоже, зависло соединение)`);
         return false;
       }
+      if (outcome.error) {
+        console.error('Ошибка сохранения данных в S3:', outcome.error.message);
+        return false;
+      }
+      return true;
     }
     return await new Promise((resolve) => {
       const tmpPath = FALLBACK_PATH + '.tmp';

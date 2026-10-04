@@ -481,7 +481,11 @@ function handleSessionExpired(){
   if(state.sessionExpiredHandled) return;
   state.sessionExpiredHandled = true;
   state.loggedInEmployee = null;
-  renderLoginScreen('Сессия истекла — войдите снова.');
+  // Закрываем любое открытое модальное окно (форму задачи и т.п.) — иначе человек может не
+  // заметить экран входа под ним и продолжать жать «Сохранить», которое будет молча не работать.
+  const modalRoot = document.getElementById('modalRoot');
+  if(modalRoot) modalRoot.innerHTML = '';
+  renderLoginScreen('Сессия истекла — войдите снова. Несохранённые изменения нужно будет повторить после входа.');
 }
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
@@ -6048,6 +6052,8 @@ function openDataModal(){
   const modal = document.getElementById('modalRoot');
   let autoBackups = null; // null = ещё грузится
   let frequentBackups = null;
+  let emailBackupStatus = null;
+  let emailBackupSending = false;
   function body(){
     const allTrash = state.trash.slice().sort((a,b)=>b.deletedAt-a.deletedAt);
     const personalTrashRows = personalAccessAllowed() ? state.personalTrash.slice().sort((a,b)=>b.deletedAt-a.deletedAt) : [];
@@ -6071,6 +6077,16 @@ function openDataModal(){
               <div class="actions"><button class="btn ghost small" data-download-autobackup="${b.key}">⬇️ Скачать</button></div>
             </div>
           `).join('') : `<p class="subtitle" style="margin:0;">Снимков пока нет — первый появится в течение пары минут после запуска сервера</p>`);
+    const emailBackupHtml = !hasRole('Руководитель','Ассистент')
+      ? ''
+      : emailBackupStatus===null
+        ? `<p class="subtitle" style="margin:0;">Загрузка…</p>`
+        : (!emailBackupStatus.enabled
+          ? `<p class="subtitle" style="margin:0;">Не настроено — чтобы включить, задайте в переменных окружения RESEND_API_KEY и BACKUP_EMAIL_TO</p>`
+          : `
+            <p class="subtitle" style="margin:0 0 10px;">Включено — ежедневно отправляется на ${escapeHtml(emailBackupStatus.to||'')}</p>
+            <button class="btn ghost small" id="sendEmailBackupNow" ${emailBackupSending?'disabled':''}>${emailBackupSending?'Отправка...':'📧 Отправить сейчас'}</button>
+          `);
     return `
       <div class="overlay" id="ov">
         <div class="modal" style="max-width:520px;">
@@ -6098,6 +6114,13 @@ function openDataModal(){
           <p class="subtitle" style="margin:0 0 10px;">Дополнительно — снимок каждые 15 минут, на случай если что-то потерялось только что и не хочется ждать завтрашнего бэкапа. Хранится последние 48 часов.</p>
           <div class="item-list" style="margin-bottom:20px;max-height:260px;overflow-y:auto;">
             ${frequentBackupsHtml}
+          </div>
+          ` : ''}
+
+          ${hasRole('Руководитель','Ассистент') ? `
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Резервная копия на почту</h4>
+          <div style="margin-bottom:20px;">
+            ${emailBackupHtml}
           </div>
           ` : ''}
 
@@ -6247,6 +6270,19 @@ function openDataModal(){
         downloadTextFile(`${key.replace(/:/g,'-')}.json`, 'application/json', JSON.stringify(parsed.data||parsed, null, 2));
       }catch(e){ toast('Не удалось скачать бэкап'); }
     });
+    const sendEmailBackupBtn = document.getElementById('sendEmailBackupNow');
+    if(sendEmailBackupBtn) sendEmailBackupBtn.onclick=async ()=>{
+      emailBackupSending = true;
+      modal.innerHTML = body(); wire();
+      try{
+        const r = await fetch('/api/email-backup/send-now', {method:'POST', credentials:'same-origin'});
+        const data = await r.json().catch(()=>({}));
+        if(r.ok){ toast('Письмо с резервной копией отправлено'); }
+        else{ toast(data.error || 'Не удалось отправить письмо'); }
+      }catch(e){ toast('Не удалось отправить письмо'); }
+      emailBackupSending = false;
+      modal.innerHTML = body(); wire();
+    };
   }
   wire();
   if(hasRole('Руководитель','Ассистент')){
@@ -6254,6 +6290,10 @@ function openDataModal(){
       .then(r=>r.ok?r.json():{backups:[],frequentBackups:[]})
       .then(data=>{ autoBackups = data.backups||[]; frequentBackups = data.frequentBackups||[]; modal.innerHTML = body(); wire(); })
       .catch(()=>{ autoBackups = []; frequentBackups = []; modal.innerHTML = body(); wire(); });
+    fetch('/api/email-backup/status', {credentials:'same-origin'})
+      .then(r=>r.ok?r.json():{enabled:false})
+      .then(data=>{ emailBackupStatus = data; modal.innerHTML = body(); wire(); })
+      .catch(()=>{ emailBackupStatus = {enabled:false}; modal.innerHTML = body(); wire(); });
   }
 }
 

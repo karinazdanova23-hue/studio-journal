@@ -34,6 +34,24 @@ if (USE_S3) {
   if (!fs.existsSync(FALLBACK_DIR)) fs.mkdirSync(FALLBACK_DIR, { recursive: true });
 }
 
+// ---------- резервная копия на почту (независимый "второй карман" на случай новых сюрпризов
+// с S3 — присылается раз в день целиком на email, тем же способом, каким человек сам может
+// скачать "Резервную копию" из интерфейса) ----------
+// Используем Resend (https://resend.com) — так же, как уже настроено в других приложениях
+// Карины — вместо SMTP: проще (не нужен пароль приложения Gmail), те же переменные окружения.
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const BACKUP_EMAIL_TO = process.env.BACKUP_EMAIL_TO;
+// Resend без подтверждённого домена разрешает отправлять только с onboarding@resend.dev —
+// этого достаточно для бэкапа самому себе. Если в другом приложении уже настроен свой домен,
+// можно переопределить через BACKUP_EMAIL_FROM.
+const BACKUP_EMAIL_FROM = process.env.BACKUP_EMAIL_FROM || 'Единый журнал <onboarding@resend.dev>';
+const EMAIL_BACKUP_ENABLED = !!(RESEND_API_KEY && BACKUP_EMAIL_TO);
+if (EMAIL_BACKUP_ENABLED) {
+  console.log(`Резервная копия на почту: включена, будет отправляться на ${BACKUP_EMAIL_TO} через Resend.`);
+} else {
+  console.warn('[ВНИМАНИЕ] Резервная копия на почту выключена — не заданы RESEND_API_KEY/BACKUP_EMAIL_TO в переменных окружения.');
+}
+
 async function streamToString(stream) {
   const chunks = [];
   for await (const chunk of stream) chunks.push(chunk);
@@ -56,6 +74,17 @@ function withTimeout(promise, ms) {
 }
 const S3_TIMEOUT_MS = 10000;
 
+// ВАЖНО (урок из реального инцидента с потерей данных): эта функция ДОЛЖНА различать два разных
+// случая —
+//   1) "в S3 точно ничего нет" (сервер только что создан, ключа не существует — NoSuchKey/404):
+//      это по-настоящему пустое хранилище, с ним safe работать как с первым запуском.
+//   2) "не получилось прочитать" (таймаут, сеть, неверные ключи доступа, повреждённый JSON):
+//      это НЕ означает, что данных нет — они могут быть целы, просто сейчас недоступны.
+// Раньше оба случая возвращали одинаковый пустой результат, и код выше (main()) не мог их
+// отличить — после сбоя чтения он считал это "первым запуском", создавал сотрудников по
+// умолчанию и тут же сохранял их, затирая реальные данные в S3. Теперь функция явно помечает
+// тип пустоты через `confirmedEmpty`, и только настоящий "первый запуск" разрешает сервену
+// создавать данные по умолчанию и писать поверх.
 async function loadStoreFromBackend() {
   if (USE_S3) {
     const outcome = await withTimeout(
@@ -63,35 +92,35 @@ async function loadStoreFromBackend() {
       S3_TIMEOUT_MS
     );
     if (outcome.timedOut) {
-      console.error(`Не удалось прочитать данные из S3: не ответил за ${S3_TIMEOUT_MS}мс — начинаем с пустого хранилища.`);
-      return { kv: {}, credentials: {} };
+      console.error(`Не удалось прочитать данные из S3: не ответил за ${S3_TIMEOUT_MS}мс.`);
+      return { kv: {}, credentials: {}, confirmedEmpty: false };
     }
     const e = outcome.error;
     if (e) {
       if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) {
-        console.log('В S3 ещё нет сохранённых данных — начинаем с пустого хранилища.');
-      } else {
-        console.error('Не удалось прочитать данные из S3, начинаем с пустого хранилища:', e.message);
+        console.log('В S3 ещё нет сохранённых данных — это действительно первый запуск.');
+        return { kv: {}, credentials: {}, confirmedEmpty: true };
       }
-      return { kv: {}, credentials: {} };
+      console.error('Не удалось прочитать данные из S3:', e.message);
+      return { kv: {}, credentials: {}, confirmedEmpty: false };
     }
     try {
       const raw = await streamToString(outcome.value.Body);
       const parsed = JSON.parse(raw);
-      return { kv: parsed.kv || {}, credentials: parsed.credentials || {} };
+      return { kv: parsed.kv || {}, credentials: parsed.credentials || {}, confirmedEmpty: false };
     } catch (e2) {
-      console.error('Не удалось разобрать данные из S3, начинаем с пустого хранилища:', e2.message);
-      return { kv: {}, credentials: {} };
+      console.error('Не удалось разобрать данные из S3 (файл повреждён или пуст):', e2.message);
+      return { kv: {}, credentials: {}, confirmedEmpty: false };
     }
   }
-  if (!fs.existsSync(FALLBACK_PATH)) return { kv: {}, credentials: {} };
+  if (!fs.existsSync(FALLBACK_PATH)) return { kv: {}, credentials: {}, confirmedEmpty: true };
   try {
     const raw = fs.readFileSync(FALLBACK_PATH, 'utf8');
     const parsed = JSON.parse(raw);
-    return { kv: parsed.kv || {}, credentials: parsed.credentials || {} };
+    return { kv: parsed.kv || {}, credentials: parsed.credentials || {}, confirmedEmpty: false };
   } catch (e) {
-    console.error('Не удалось прочитать файл данных, начинаем с пустого хранилища:', e.message);
-    return { kv: {}, credentials: {} };
+    console.error('Не удалось прочитать файл данных:', e.message);
+    return { kv: {}, credentials: {}, confirmedEmpty: false };
   }
 }
 
@@ -154,6 +183,78 @@ async function runFrequentBackup() {
     console.log(`Частый снимок создан: ${key}`);
   } catch (e) {
     console.error('Ошибка частого снимка:', e.message);
+  }
+}
+
+// ---------- email-бэкап (раз в день отдельно от S3 — "второй карман" на случай новых проблем
+// именно с S3/хранилищем) ----------
+// Собираем файл в ТОМ ЖЕ формате, что и кнопка "Скачать резервную копию" в интерфейсе
+// (exportAllData/importAllData на клиенте), чтобы в случае чего его можно было загрузить обратно
+// через "Восстановить из файла" без всякой ручной возни с форматом.
+function safeParseArray(raw) {
+  if (typeof raw !== 'string') return [];
+  try { const v = JSON.parse(raw); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+}
+function buildExportPayload() {
+  const kv = store.kv;
+  return {
+    app: 'studio-journal',
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    employees: safeParseArray(kv['roster:employees']),
+    events: safeParseArray(kv['calendar:events']),
+    tasksWork: safeParseArray(kv['tasks:work']),
+    projectsWork: safeParseArray(kv['tasks:projects']),
+    blocksWork: safeParseArray(kv['tasks:blocks']),
+    ideaBankWork: safeParseArray(kv['tasks:ideabank']),
+    checklistsWork: safeParseArray(kv['tasks:checklists']),
+    quickIdeasWork: safeParseArray(kv['tasks:quickideas']),
+    fundsEntries: safeParseArray(kv['funds:ledger']),
+    trash: safeParseArray(kv['trash:items']),
+    // Личные данные сотрудников (зашифрованные на клиенте) переносим как есть, без расшифровки —
+    // сервер и так их содержимое не видит.
+    personalBlobRaw: kv['tasks:personal:blob'] || undefined,
+    personalSalt: kv['tasks:personal:salt'] || undefined,
+  };
+}
+async function sendBackupEmail(trigger) {
+  if (!EMAIL_BACKUP_ENABLED) return { ok: false, error: 'email-бэкап не настроен (нет RESEND_API_KEY/BACKUP_EMAIL_TO)' };
+  try {
+    const payload = buildExportPayload();
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const taskCount = payload.tasksWork.length;
+    const projectCount = payload.projectsWork.length;
+    const empCount = payload.employees.length;
+    const fileContent = JSON.stringify(payload, null, 2);
+    const outcome = await withTimeout(
+      fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: BACKUP_EMAIL_FROM,
+          to: BACKUP_EMAIL_TO,
+          subject: `Единый журнал — резервная копия за ${dateStr}`,
+          text: `Автоматическая резервная копия данных «Единого журнала».\n\nСотрудников: ${empCount}\nПроектов: ${projectCount}\nЗадач: ${taskCount}\n\nЧтобы восстановить: откройте приложение (под Руководителем/Ассистентом) → значок 🗄️ в шапке → «Восстановить из файла» → выберите приложенный файл.\n\nЭто автоматическое письмо (${trigger || 'по расписанию'}), отвечать на него не нужно.`,
+          attachments: [{
+            filename: `studio-journal-backup-${dateStr}.json`,
+            content: Buffer.from(fileContent, 'utf8').toString('base64'),
+          }],
+        }),
+      }),
+      S3_TIMEOUT_MS
+    );
+    if (outcome.timedOut) throw new Error(`Resend не ответил за ${S3_TIMEOUT_MS}мс`);
+    if (outcome.error) throw outcome.error;
+    const r = outcome.value;
+    if (!r.ok) {
+      const errText = await r.text().catch(() => '');
+      throw new Error(`Resend вернул ${r.status}: ${errText}`);
+    }
+    console.log(`Резервная копия отправлена на почту (${BACKUP_EMAIL_TO}).`);
+    return { ok: true };
+  } catch (e) {
+    console.error('Ошибка отправки резервной копии на почту:', e.message);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -489,6 +590,22 @@ app.get('/api/auto-backups', requireAuth, (req, res) => {
   res.json({ backups: list, frequentBackups: frequentList });
 });
 
+// ---------- email-бэкап: статус и ручная отправка "прямо сейчас" (только Руководитель/Ассистент) ----------
+app.get('/api/email-backup/status', requireAuth, (req, res) => {
+  if (!isPrivilegedRole(req.employee.role)) {
+    return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
+  }
+  res.json({ enabled: EMAIL_BACKUP_ENABLED, to: EMAIL_BACKUP_ENABLED ? BACKUP_EMAIL_TO : null });
+});
+app.post('/api/email-backup/send-now', requireAuth, async (req, res) => {
+  if (!isPrivilegedRole(req.employee.role)) {
+    return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
+  }
+  const result = await sendBackupEmail('отправлено вручную из приложения');
+  if (!result.ok) return res.status(500).json({ error: result.error || 'Не удалось отправить письмо' });
+  res.json({ ok: true });
+});
+
 // ---------- статика (сам интерфейс) ----------
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
@@ -504,10 +621,29 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Единый журнал: сервер запущен на порту ${PORT} (слушает 0.0.0.0), данные ещё загружаются...`);
 });
 
-(async function main() {
-  store = await loadStoreFromBackend();
+// Повторяем загрузку, пока не получим НАДЁЖНЫЙ результат — либо реальные данные, либо честно
+// подтверждённую пустоту (confirmedEmpty: true, т.е. в хранилище точно ничего нет — настоящий
+// первый запуск). Сбой чтения (таймаут, сеть и т.п.) НЕ считается поводом ни продолжать, ни тем
+// более создавать/сохранять данные по умолчанию — так 4 октября 2026 были случайно стёрты
+// реальные данные (сбойное чтение было принято за "ничего нет", сервер создал сотрудников по
+// умолчанию и тут же сохранил их поверх настоящих). Теперь при сбое сервер просто пробует снова.
+async function loadStoreReliably() {
+  let attempt = 0;
+  while (true) {
+    attempt++;
+    const result = await loadStoreFromBackend();
+    const hasData = Object.keys(result.kv).length > 0 || Object.keys(result.credentials).length > 0;
+    if (hasData || result.confirmedEmpty) return result;
+    console.error(`Загрузка данных не удалась (попытка ${attempt}) — данные хранилища НЕ считаем пустыми, пробуем снова через 5с, сервер пока не принимает запросы.`);
+    await new Promise(r => setTimeout(r, 5000));
+  }
+}
 
-  // Сеем список ролей по умолчанию при самом первом запуске, чтобы было кого выбрать при входе
+(async function main() {
+  store = await loadStoreReliably();
+
+  // Сеем список ролей по умолчанию ТОЛЬКО при подтверждённом первом запуске (см. loadStoreReliably
+  // выше) — именно это различие и было источником потери данных 4 октября 2026.
   if (!store.kv['roster:employees']) {
     const DEFAULT_ROLES = ['Руководитель', 'Ассистент', 'Маркетолог', 'Старший администратор', 'Менеджер', 'Администратор 1 смена', 'Администратор 2 смена'];
     const employees = DEFAULT_ROLES.map((role, i) => ({ id: `emp-seed-${i}-${Date.now()}`, name: role, role }));
@@ -525,4 +661,10 @@ app.listen(PORT, '0.0.0.0', () => {
   // Частые снимки — каждые 15 минут (первый почти сразу после старта)
   setTimeout(runFrequentBackup, 90 * 1000);
   setInterval(runFrequentBackup, FREQUENT_BACKUP_INTERVAL_MS);
+  // Email-бэкап: раз в день, независимо от S3-бэкапов выше (отдельный "второй карман" —
+  // письмо уходит сразу на почту и оседает там, не завися от того, что происходит с S3).
+  if (EMAIL_BACKUP_ENABLED) {
+    setTimeout(() => sendBackupEmail('ежедневная отправка'), 120 * 1000);
+    setInterval(() => sendBackupEmail('ежедневная отправка'), 24 * 60 * 60 * 1000);
+  }
 })();

@@ -131,24 +131,30 @@ async function runFrequentBackup() {
 
 // Пишем по очереди (без параллельных записей), чтобы не гонять одновременные PUT
 let writeQueue = Promise.resolve();
+// persist() теперь возвращает true/false — реально ли данные записались в хранилище (S3 или
+// локальный файл). Раньше ошибка записи просто логировалась на сервере, а вызывающий код (в
+// т.ч. обработчики PUT/DELETE ниже) об этом не знал и отвечал браузеру "ok:true" в любом случае —
+// из-за этого сбой записи в S3 выглядел для сотрудника как "сохранилось", а после перезапуска
+// сервера (деплой, технический рестарт) данные, которые реально не долетели до S3, пропадали.
 function persist() {
   writeQueue = writeQueue.then(async () => {
     const body = JSON.stringify(store);
     if (USE_S3) {
       try {
         await s3Client.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY, Body: body, ContentType: 'application/json' }));
+        return true;
       } catch (e) {
         console.error('Ошибка сохранения данных в S3:', e.message);
+        return false;
       }
-      return;
     }
-    await new Promise((resolve) => {
+    return await new Promise((resolve) => {
       const tmpPath = FALLBACK_PATH + '.tmp';
       fs.writeFile(tmpPath, body, (err) => {
-        if (err) { console.error('Ошибка записи данных:', err.message); return resolve(); }
+        if (err) { console.error('Ошибка записи данных:', err.message); return resolve(false); }
         fs.rename(tmpPath, FALLBACK_PATH, (err2) => {
-          if (err2) console.error('Ошибка сохранения данных:', err2.message);
-          resolve();
+          if (err2) { console.error('Ошибка сохранения данных:', err2.message); return resolve(false); }
+          resolve(true);
         });
       });
     });
@@ -304,7 +310,7 @@ app.get('/api/me', (req, res) => {
 // - После бутстрапа:
 //     * Руководитель/Ассистент могут задать/сбросить пароль ЛЮБОГО сотрудника без старого пароля.
 //     * Сотрудник может сменить СВОЙ пароль, но должен указать текущий (если он уже задан).
-app.post('/api/employees/:id/password', (req, res) => {
+app.post('/api/employees/:id/password', async (req, res) => {
   const targetId = req.params.id;
   const target = findEmployee(targetId);
   if (!target) return res.status(404).json({ error: 'Сотрудник не найден' });
@@ -331,12 +337,20 @@ app.post('/api/employees/:id/password', (req, res) => {
   }
 
   if (!newPassword) {
+    const oldHash = store.credentials[targetId];
     delete store.credentials[targetId];
-    persist();
+    if (!(await persist())) {
+      if (oldHash !== undefined) store.credentials[targetId] = oldHash;
+      return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
+    }
     return res.json({ ok: true, removed: true });
   }
+  const oldHash = store.credentials[targetId];
   store.credentials[targetId] = bcrypt.hashSync(newPassword, 10);
-  persist();
+  if (!(await persist())) {
+    if (oldHash === undefined) delete store.credentials[targetId]; else store.credentials[targetId] = oldHash;
+    return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
+  }
   res.json({ ok: true });
 });
 
@@ -351,7 +365,7 @@ app.get('/api/storage/:key', requireAuth, (req, res) => {
   res.json({ key, value });
 });
 
-app.put('/api/storage/:key', requireAuth, (req, res) => {
+app.put('/api/storage/:key', requireAuth, async (req, res) => {
   const key = req.params.key;
   const { value } = req.body || {};
   if (typeof value !== 'string') return res.status(400).json({ error: 'value должен быть строкой' });
@@ -365,12 +379,20 @@ app.put('/api/storage/:key', requireAuth, (req, res) => {
   if (deletionError) {
     return res.status(403).json({ error: deletionError });
   }
+  // Важно: сохраняем старое значение и дожидаемся РЕАЛЬНОЙ записи в хранилище (S3/диск), прежде
+  // чем отвечать браузеру "ok". Если запись не удалась — откатываем в памяти и честно сообщаем об
+  // ошибке, а не делаем вид, что всё сохранилось (раньше именно так терялись изменения).
+  const oldValue = store.kv[key];
   store.kv[key] = value;
-  persist();
+  const saved = await persist();
+  if (!saved) {
+    if (oldValue === undefined) delete store.kv[key]; else store.kv[key] = oldValue;
+    return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
+  }
   res.json({ ok: true });
 });
 
-app.delete('/api/storage/:key', requireAuth, (req, res) => {
+app.delete('/api/storage/:key', requireAuth, async (req, res) => {
   const key = req.params.key;
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
@@ -384,8 +406,14 @@ app.delete('/api/storage/:key', requireAuth, (req, res) => {
   if ((key === 'tasks:work' || key === 'tasks:projects') && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
+  const oldValue = store.kv[key];
+  const hadValue = Object.prototype.hasOwnProperty.call(store.kv, key);
   delete store.kv[key];
-  persist();
+  const saved = await persist();
+  if (!saved) {
+    if (hadValue) store.kv[key] = oldValue;
+    return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
+  }
   res.json({ ok: true });
 });
 

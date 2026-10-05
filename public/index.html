@@ -1125,6 +1125,45 @@ async function importAllData(payload){
     await sSet('settings:personalMigrated', '', true);
   }
 }
+// Точечное безопасное восстановление: добавляет блоки/проекты по названию (payload:
+// {type:'studio-journal-blocks-projects', blocks:[name,...], projects:[{name, block}, ...]}),
+// пропуская те, что уже есть по имени (без учёта регистра/пробелов) — чтобы не плодить дубли и
+// не трогать ничего другого (задачи, сотрудников, календарь, финансы остаются как есть).
+async function importProjectsAndBlocksOnly(payload){
+  const norm = s => (s||'').trim().toLowerCase();
+  const existingBlockNames = new Set(state.blocksWork.map(b=>norm(b.name)));
+  const nameToBlockId = {};
+  state.blocksWork.forEach(b=>{ nameToBlockId[norm(b.name)] = b.id; });
+
+  let addedBlocks = 0, addedProjects = 0, skipped = 0;
+  const newBlocks = [];
+  (payload.blocks||[]).forEach(name=>{
+    const key = norm(name);
+    if(!key || existingBlockNames.has(key)){ if(key) skipped++; return; }
+    const b = {id:uid(), name:String(name).trim()};
+    newBlocks.push(b);
+    existingBlockNames.add(key);
+    nameToBlockId[key] = b.id;
+    addedBlocks++;
+  });
+  state.blocksWork = state.blocksWork.concat(newBlocks);
+
+  const existingProjectNames = new Set(state.projectsWork.map(p=>norm(p.name)));
+  const newProjects = [];
+  (payload.projects||[]).forEach(p=>{
+    const key = norm(p.name);
+    if(!key || existingProjectNames.has(key)){ if(key) skipped++; return; }
+    const blockId = p.block ? (nameToBlockId[norm(p.block)] || null) : null;
+    newProjects.push({id:uid(), name:String(p.name).trim(), blockId});
+    existingProjectNames.add(key);
+    addedProjects++;
+  });
+  state.projectsWork = state.projectsWork.concat(newProjects);
+
+  await saveBlocksWork();
+  await saveProjectsWork();
+  return { addedBlocks, addedProjects, skipped };
+}
 async function applyIdeaToProject(idea){
   await refreshProjectsAndBlocksFromServer();
   const projects = projectsFor(false);
@@ -6103,6 +6142,15 @@ function openDataModal(){
           </div>
           <div class="note" style="margin-bottom:20px;">Восстановление из файла заменит текущие рабочие данные (задачи, проекты, календарь, финансы, сотрудников).</div>
 
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Восстановить только блоки и проекты</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Безопасный точечный импорт: добавляет недостающие блоки и проекты по названию (если такое название уже есть — пропускает, дублей не будет). Задачи, сотрудники, календарь и финансы не затрагивает.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+            <label class="btn ghost" style="cursor:pointer;">
+              📥 Восстановить блоки и проекты
+              <input type="file" id="importProjectsBlocksFile" accept="application/json" style="display:none;">
+            </label>
+          </div>
+
           <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Автоматические бэкапы</h4>
           <p class="subtitle" style="margin:0 0 10px;">Сервер сам сохраняет полный снимок раз в сутки, независимо от того, зашёл кто-то в приложение или нет. Хранится последние 14 дней.</p>
           <div class="item-list" style="margin-bottom:20px;">
@@ -6235,6 +6283,20 @@ function openDataModal(){
         toast('Данные восстановлены');
       }catch(err){
         toast('Не удалось прочитать файл — проверьте, что это корректная резервная копия');
+      }
+    };
+    document.getElementById('importProjectsBlocksFile').onchange=async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      try{
+        const text = await file.text();
+        const payload = JSON.parse(text);
+        if(payload.type!=='studio-journal-blocks-projects'){ toast('Файл не похож на файл блоков и проектов'); return; }
+        const result = await importProjectsAndBlocksOnly(payload);
+        modal.innerHTML = body(); wire(); render();
+        toast(`Добавлено: блоков ${result.addedBlocks}, проектов ${result.addedProjects}${result.skipped?` (пропущено как уже существующие: ${result.skipped})`:''}`);
+      }catch(err){
+        toast('Не удалось прочитать файл — проверьте, что это корректный файл блоков и проектов');
       }
     };
     modal.querySelectorAll('[data-restore-personal-archive-task]').forEach(b=>b.onclick=async ()=>{

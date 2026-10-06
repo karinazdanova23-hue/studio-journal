@@ -299,6 +299,11 @@
   }
   .modal h3{font-family:'Space Grotesk',sans-serif;margin:0 0 16px;color:var(--indigo-dark);font-size:18px;}
   .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+  /* Верхняя панель окна: заголовок + главные кнопки. Закреплена сверху, чтобы кнопки были под рукой
+     даже когда внутри длинный список задач/полей — не нужно листать вниз. */
+  .modal-topbar{position:sticky;top:0;z-index:3;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:-24px -24px 16px;padding:16px 24px 12px;border-bottom:1px solid var(--paper-line);border-radius:14px 14px 0 0;}
+  .modal-topbar h3{margin:0;}
+  .modal-topbar-btns{display:flex;gap:8px;flex-wrap:wrap;}
   .lock-icon{font-size:34px;text-align:center;margin-bottom:10px;}
   .note{font-size:12px;color:var(--ink-soft);background:#FAF8F2;border:1px solid var(--paper-line);border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.5;}
 
@@ -358,6 +363,7 @@
     .field-row .field{min-width:130px;}
     .filters select{min-width:0;flex:1 1 140px;}
     .modal{padding:18px;}
+    .modal-topbar{margin:-18px -18px 14px;padding:14px 18px 10px;}
     .reminder-panel{right:8px;left:8px;width:auto;max-width:none;}
     .sum-card{min-width:100px;}
     .ledger-summary{gap:8px;}
@@ -846,6 +852,7 @@ const state = {
   personalProjects:[],
   calFilters: {event:true, planning:true, meeting:true, vacation:true, birthday:true, personal:true},
   calEmployeeFilters: {},
+  calOwnerFilter: {}, // «чьи события показывать» в календаре: {employeeId:true}; пусто — как обычно
   browserNotify:false,
   notifiedEventKeys:new Set(),
   lastSummaryDate:null,
@@ -1691,6 +1698,27 @@ function canSeeEvent(e){
 function allVisibleEvents(){
   const sharedVisible = state.events.filter(e=>e.category!=='personal' && canSeeEvent(e));
   return sharedVisible.concat(personalAccessAllowed() ? state.personalEvents : []);
+}
+// Кто может выбирать, чьи события показывать в календаре (остальные видят только свои — как раньше).
+function canPickEventOwners(){
+  return hasRole('Руководитель','Ассистент','Старший администратор');
+}
+function selectedEventOwnerIds(){
+  if(!canPickEventOwners()) return [];
+  return state.employees.filter(e=>state.calOwnerFilter[e.id]).map(e=>e.id);
+}
+// События для календаря и окна дня. Если выбраны сотрудники — показываем события, где участвует
+// любой из них (даже если вы сами не участник); отпуска и дни рождения видны всем как и раньше.
+// Если никто не выбран — обычная логика видимости (allVisibleEvents).
+function calendarVisibleEvents(){
+  const ids = selectedEventOwnerIds();
+  if(!ids.length) return allVisibleEvents();
+  const shared = state.events.filter(e=>{
+    if(e.category==='personal') return false;
+    if(e.category==='vacation' || e.category==='birthday') return true;
+    return (e.employeeIds||[]).some(id=>ids.includes(id));
+  });
+  return shared.concat(personalAccessAllowed() ? state.personalEvents : []);
 }
 function isPersonalEvent(id){ return state.personalEvents.some(e=>e.id===id); }
 async function refreshPersonalArchiveFromServer(){
@@ -2855,7 +2883,8 @@ function renderCalendar(root){
   for(let d=1; d<=daysInMonth; d++) cells.push(d);
 
   const eventsByDate = {};
-  allVisibleEvents().filter(e=>state.calFilters[e.category]!==false).forEach(e=>{ (eventsByDate[e.date]=eventsByDate[e.date]||[]).push(e); });
+  calendarVisibleEvents().filter(e=>state.calFilters[e.category]!==false).forEach(e=>{ (eventsByDate[e.date]=eventsByDate[e.date]||[]).push(e); });
+  const ownerIds = selectedEventOwnerIds();
 
   const activeEmpIds = state.employees.filter(e=>state.calEmployeeFilters[e.id]).map(e=>e.id);
   const tasksByDate = {};
@@ -2869,7 +2898,7 @@ function renderCalendar(root){
     <div class="row-between">
       <div>
         <h2 class="section-title">Общий календарь</h2>
-        <p class="subtitle">${hasRole('Руководитель') && state.calendarFullView ? 'Полное расписание — видны все планёрки, встречи и события' : 'Показаны только те планёрки, встречи и события, где вы участвуете'}</p>
+        <p class="subtitle">${ownerIds.length ? 'Показаны планёрки, встречи и события: '+ownerIds.map(empName).map(escapeHtml).join(', ') : (hasRole('Руководитель') && state.calendarFullView ? 'Полное расписание — видны все планёрки, встречи и события' : 'Показаны только те планёрки, встречи и события, где вы участвуете')}</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         ${hasRole('Руководитель') ? `<button class="btn ghost" id="toggleFullScheduleBtn">${state.calendarFullView?'👁 Скрыть до моих':'🔭 Показать общее расписание'}</button>` : ''}
@@ -2884,6 +2913,18 @@ function renderCalendar(root){
       `).join('')}
     </div>
     ${!personalAccessAllowed()?`<div class="note" id="calPersonalNote" style="margin-bottom:16px;">🔒 «Личные дела Карины» видны только Руководителю и Ассистенту. <button class="btn ghost small" id="calUnlockBtn" style="margin-left:6px;">🙋 Войти</button></div>`:''}
+    ${canPickEventOwners() ? `
+    <div class="row-between" style="margin-bottom:6px;">
+      <p class="subtitle" style="margin:0;">Чьи события и мероприятия показывать${ownerIds.length?'':' (ничего не выбрано — ваши как обычно)'}:</p>
+      ${ownerIds.length?`<button class="btn ghost small" id="ownerFilterReset">Сбросить</button>`:''}
+    </div>
+    <div class="cat-filters" id="ownerFilters" style="margin-bottom:18px;">
+      ${state.employees.map(e=>`
+        <button class="cat-chip ${state.calOwnerFilter[e.id]?'':'off'}" data-owner="${e.id}">
+          <span class="dot" style="background:${employeeColor(e.id)};"></span>${escapeHtml(e.name)}
+        </button>
+      `).join('') || `<span class="subtitle" style="margin:0;">Сначала добавьте сотрудников</span>`}
+    </div>` : ''}
     <div class="row-between" style="margin-bottom:6px;">
       <p class="subtitle" style="margin:0;">Показать задачи на календаре:</p>
     </div>
@@ -2945,6 +2986,16 @@ function renderCalendar(root){
       render();
     };
   });
+  root.querySelectorAll('#ownerFilters .cat-chip').forEach(chip=>{
+    chip.onclick=()=>{
+      const empId = chip.dataset.owner;
+      if(state.calOwnerFilter[empId]) delete state.calOwnerFilter[empId];
+      else state.calOwnerFilter[empId] = true;
+      render();
+    };
+  });
+  const ownerResetBtn = document.getElementById('ownerFilterReset');
+  if(ownerResetBtn) ownerResetBtn.onclick=()=>{ state.calOwnerFilter = {}; render(); };
   root.querySelectorAll('#empFilters .cat-chip').forEach(chip=>{
     chip.onclick=()=>{
       const empId = chip.dataset.emp;
@@ -2970,7 +3021,7 @@ async function saveEventDeletion(personal, before, updated, evObj, isSeries){
 function openDayModal(iso){
   if(state.dayModalIso !== iso){ state.dayDoneExpanded = false; }
   state.dayModalIso = iso;
-  const evts = allVisibleEvents().filter(e=>e.date===iso).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
+  const evts = calendarVisibleEvents().filter(e=>e.date===iso).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
   const dayTasks = state.tasksWork.concat(personalAccessAllowed()?state.personalTasks:[]).filter(t=>t.deadline===iso);
   const activeTasks = dayTasks.filter(t=>t.status!=='done').sort((a,b)=> (b.seriesId?1:0) - (a.seriesId?1:0));
   const doneTasks = dayTasks.filter(t=>t.status==='done');
@@ -2979,7 +3030,13 @@ function openDayModal(iso){
   modal.innerHTML = `
     <div class="overlay" id="ov">
       <div class="modal" style="max-width:520px;">
-        <h3>${fmtDate(iso)}</h3>
+        <div class="modal-topbar">
+          <h3>${fmtDate(iso)}</h3>
+          <div class="modal-topbar-btns">
+            <button class="btn" id="addForDay">+ Добавить событие</button>
+            <button class="btn ghost" id="closeDayModal">Закрыть</button>
+          </div>
+        </div>
         <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">События</h4>
         <div class="item-list" style="margin-bottom:16px;">
           ${evts.length? evts.map(e=>`
@@ -3015,10 +3072,6 @@ function openDayModal(iso){
         <div class="item-list" id="dayTaskListDone" style="margin:10px 0 16px;${state.dayDoneExpanded?'':'display:none;'}">
           ${doneTasks.map(t=>taskItemHtml(t, isPersonalTaskFn(t.id))).join('')}
         </div>` : ''}
-        <div class="modal-actions">
-          <button class="btn ghost" id="closeDayModal">Закрыть</button>
-          <button class="btn" id="addForDay">+ Добавить событие</button>
-        </div>
       </div>
     </div>`;
   document.getElementById('closeDayModal').onclick=()=>{ state.dayModalIso=null; closeModal(); };
@@ -3130,7 +3183,13 @@ function openEventModal(id, presetDate){
   modal.innerHTML = `
     <div class="overlay" id="ov">
       <div class="modal">
-        <h3>${existing?'Изменить событие':'Новое событие'}</h3>
+        <div class="modal-topbar">
+          <h3>${existing?'Изменить событие':'Новое событие'}</h3>
+          <div class="modal-topbar-btns">
+            <button class="btn ghost" id="cancelEvt">Отмена</button>
+            <button class="btn" id="saveEvt">Сохранить</button>
+          </div>
+        </div>
         <div class="field"><label>Название</label><input id="f_title" value="${existing?escapeHtml(existing.title):''}" placeholder="Например: Совещание с мастерами"></div>
         <div class="field-row">
           <div class="field"><label>Дата</label><input type="date" id="f_date" value="${existing?existing.date:(presetDate||todayISO())}"></div>
@@ -3231,10 +3290,6 @@ function openEventModal(id, presetDate){
           <input type="date" id="f_repeat_until">
         </div>
         ` : (existing.seriesId ? `<div class="note">🔁 Это событие — часть повторяющейся серии. При сохранении можно применить изменения только к этой дате или сразу ко всей серии.</div>` : '')}
-        <div class="modal-actions">
-          <button class="btn ghost" id="cancelEvt">Отмена</button>
-          <button class="btn" id="saveEvt">Сохранить</button>
-        </div>
       </div>
     </div>`;
   document.getElementById('cancelEvt').onclick=closeModal;

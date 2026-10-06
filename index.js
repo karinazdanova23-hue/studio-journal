@@ -15,10 +15,16 @@ const S3_SECRET_KEY = process.env.S3_SECRET_KEY;
 const S3_ENDPOINT = process.env.S3_ENDPOINT || 'https://s3.twcstorage.ru';
 const S3_REGION = process.env.S3_REGION || 'ru-1';
 const S3_OBJECT_KEY = 'store.json';
+// Снимки (бэкапы) лежат в ОТДЕЛЬНОМ объекте. Раньше они были внутри store.json, а каждый снимок —
+// полная копия всех данных (до ~200 копий), поэтому файл раздувался, и каждое сохранение задачи
+// закачивало в S3 сотни килобайт/мегабайты ради одной галочки — отсюда долгие сохранения.
+const S3_BACKUPS_KEY = 'store-backups.json';
+function isBackupKey(k) { return k.startsWith('backup:'); }
 const USE_S3 = !!(S3_BUCKET && S3_ACCESS_KEY && S3_SECRET_KEY);
 
 const FALLBACK_DIR = process.env.DATA_DIR || path.join(os.tmpdir(), 'studio-journal-data');
 const FALLBACK_PATH = path.join(FALLBACK_DIR, 'store.json');
+const FALLBACK_BACKUPS_PATH = path.join(FALLBACK_DIR, 'store-backups.json');
 
 let s3Client = null;
 if (USE_S3) {
@@ -74,54 +80,74 @@ function withTimeout(promise, ms) {
 }
 const S3_TIMEOUT_MS = 10000;
 
-// ВАЖНО (урок из реального инцидента с потерей данных): эта функция ДОЛЖНА различать два разных
-// случая —
-//   1) "в S3 точно ничего нет" (сервер только что создан, ключа не существует — NoSuchKey/404):
-//      это по-настоящему пустое хранилище, с ним safe работать как с первым запуском.
-//   2) "не получилось прочитать" (таймаут, сеть, неверные ключи доступа, повреждённый JSON):
-//      это НЕ означает, что данных нет — они могут быть целы, просто сейчас недоступны.
-// Раньше оба случая возвращали одинаковый пустой результат, и код выше (main()) не мог их
-// отличить — после сбоя чтения он считал это "первым запуском", создавал сотрудников по
-// умолчанию и тут же сохранял их, затирая реальные данные в S3. Теперь функция явно помечает
-// тип пустоты через `confirmedEmpty`, и только настоящий "первый запуск" разрешает сервену
-// создавать данные по умолчанию и писать поверх.
-async function loadStoreFromBackend() {
+// Читает один JSON-объект хранилища (S3-ключ или локальный файл). Возвращает одно из трёх:
+//   {state:'ok', parsed}  — прочитали и разобрали;
+//   {state:'missing'}     — объекта точно нет (NoSuchKey/404 или файла нет);
+//   {state:'error'}       — не получилось прочитать (таймаут, сеть, битый JSON) — НЕ значит "пусто".
+async function readJsonObject(s3Key, filePath) {
   if (USE_S3) {
     const outcome = await withTimeout(
-      s3Client.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY })),
+      s3Client.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: s3Key })),
       S3_TIMEOUT_MS
     );
     if (outcome.timedOut) {
-      console.error(`Не удалось прочитать данные из S3: не ответил за ${S3_TIMEOUT_MS}мс.`);
-      return { kv: {}, credentials: {}, confirmedEmpty: false };
+      console.error(`Не удалось прочитать "${s3Key}" из S3: не ответил за ${S3_TIMEOUT_MS}мс.`);
+      return { state: 'error' };
     }
     const e = outcome.error;
     if (e) {
-      if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) {
-        console.log('В S3 ещё нет сохранённых данных — это действительно первый запуск.');
-        return { kv: {}, credentials: {}, confirmedEmpty: true };
-      }
-      console.error('Не удалось прочитать данные из S3:', e.message);
-      return { kv: {}, credentials: {}, confirmedEmpty: false };
+      if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) return { state: 'missing' };
+      console.error(`Не удалось прочитать "${s3Key}" из S3:`, e.message);
+      return { state: 'error' };
     }
     try {
       const raw = await streamToString(outcome.value.Body);
-      const parsed = JSON.parse(raw);
-      return { kv: parsed.kv || {}, credentials: parsed.credentials || {}, confirmedEmpty: false };
+      return { state: 'ok', parsed: JSON.parse(raw) };
     } catch (e2) {
-      console.error('Не удалось разобрать данные из S3 (файл повреждён или пуст):', e2.message);
-      return { kv: {}, credentials: {}, confirmedEmpty: false };
+      console.error(`Не удалось разобрать "${s3Key}" из S3 (файл повреждён или пуст):`, e2.message);
+      return { state: 'error' };
     }
   }
-  if (!fs.existsSync(FALLBACK_PATH)) return { kv: {}, credentials: {}, confirmedEmpty: true };
+  if (!fs.existsSync(filePath)) return { state: 'missing' };
   try {
-    const raw = fs.readFileSync(FALLBACK_PATH, 'utf8');
-    const parsed = JSON.parse(raw);
-    return { kv: parsed.kv || {}, credentials: parsed.credentials || {}, confirmedEmpty: false };
+    return { state: 'ok', parsed: JSON.parse(fs.readFileSync(filePath, 'utf8')) };
   } catch (e) {
-    console.error('Не удалось прочитать файл данных:', e.message);
-    return { kv: {}, credentials: {}, confirmedEmpty: false };
+    console.error(`Не удалось прочитать файл данных "${filePath}":`, e.message);
+    return { state: 'error' };
   }
+}
+
+// ВАЖНО (урок из реального инцидента с потерей данных): эта функция ДОЛЖНА различать два разных
+// случая —
+//   1) "в хранилище точно ничего нет" (ключа не существует — NoSuchKey/404): это по-настоящему
+//      пустое хранилище, с ним safe работать как с первым запуском.
+//   2) "не получилось прочитать" (таймаут, сеть, неверные ключи доступа, повреждённый JSON):
+//      это НЕ означает, что данных нет — они могут быть целы, просто сейчас недоступны.
+// Явно помечаем тип пустоты через `confirmedEmpty`; только настоящий "первый запуск" разрешает
+// серверу создавать данные по умолчанию и писать поверх.
+// Данные лежат в ДВУХ объектах: основной (store.json — живые данные и пароли) и отдельный файл
+// со снимками (store-backups.json). Ненадёжное чтение ЛЮБОГО из них считается сбоем — иначе, не
+// прочитав снимки, сервер потом записал бы новый файл снимков поверх старого и потерял их.
+async function loadStoreFromBackend() {
+  const live = await readJsonObject(S3_OBJECT_KEY, FALLBACK_PATH);
+  const backups = await readJsonObject(S3_BACKUPS_KEY, FALLBACK_BACKUPS_PATH);
+  if (live.state === 'error' || backups.state === 'error') {
+    return { kv: {}, credentials: {}, confirmedEmpty: false, legacyBackupsInLive: false };
+  }
+  if (live.state === 'missing' && backups.state === 'missing') {
+    console.log('В хранилище ещё нет сохранённых данных — это действительно первый запуск.');
+    return { kv: {}, credentials: {}, confirmedEmpty: true, legacyBackupsInLive: false };
+  }
+  const liveKv = (live.parsed && live.parsed.kv) || {};
+  const backupsKv = (backups.parsed && backups.parsed.kv) || {};
+  // Старый формат: снимки лежали прямо в store.json. Их надо сперва перенести в отдельный файл.
+  const legacyBackupsInLive = Object.keys(liveKv).some(isBackupKey);
+  return {
+    kv: Object.assign({}, backupsKv, liveKv),
+    credentials: (live.parsed && live.parsed.credentials) || {},
+    confirmedEmpty: false,
+    legacyBackupsInLive,
+  };
 }
 
 let store = { kv: {}, credentials: {} };
@@ -152,7 +178,7 @@ async function runAutoBackup() {
         if (dateStr < cutoffStr) delete store.kv[k];
       }
     });
-    await persist();
+    await saveBackups();
     console.log(`Автоматический бэкап создан: ${key}`);
   } catch (e) {
     console.error('Ошибка автоматического бэкапа:', e.message);
@@ -166,20 +192,31 @@ async function runAutoBackup() {
 const FREQUENT_BACKUP_PREFIX = 'backup:freq:';
 const FREQUENT_BACKUP_INTERVAL_MS = 15 * 60 * 1000;
 const FREQUENT_BACKUP_RETENTION_MS = 48 * 60 * 60 * 1000;
+// Не делаем новый снимок, если с прошлого снимка ничего не менялось: раньше каждые 15 минут
+// (даже ночью) добавлялась ещё одна полная копия одних и тех же данных.
+let lastFrequentSig = null;
 async function runFrequentBackup() {
   try {
     const now = new Date();
     const key = FREQUENT_BACKUP_PREFIX + now.toISOString();
-    store.kv[key] = JSON.stringify({ takenAt: now.toISOString(), data: snapshotOfStore() });
+    const snapshot = snapshotOfStore();
+    const sig = require('crypto').createHash('sha1').update(JSON.stringify(snapshot)).digest('hex');
+    let changed = false;
+    if (sig !== lastFrequentSig) {
+      store.kv[key] = JSON.stringify({ takenAt: now.toISOString(), data: snapshot });
+      lastFrequentSig = sig;
+      changed = true;
+    }
     const cutoffMs = now.getTime() - FREQUENT_BACKUP_RETENTION_MS;
     Object.keys(store.kv).forEach(k => {
       if (k.startsWith(FREQUENT_BACKUP_PREFIX)) {
         const tsStr = k.slice(FREQUENT_BACKUP_PREFIX.length);
         const ts = Date.parse(tsStr);
-        if (!ts || ts < cutoffMs) delete store.kv[k];
+        if (!ts || ts < cutoffMs) { delete store.kv[k]; changed = true; }
       }
     });
-    await persist();
+    if (!changed) return;
+    await saveBackups();
     console.log(`Частый снимок создан: ${key}`);
   } catch (e) {
     console.error('Ошибка частого снимка:', e.message);
@@ -258,46 +295,99 @@ async function sendBackupEmail(trigger) {
   }
 }
 
-// Пишем по очереди (без параллельных записей), чтобы не гонять одновременные PUT
-let writeQueue = Promise.resolve();
-// persist() теперь возвращает true/false — реально ли данные записались в хранилище (S3 или
-// локальный файл). Раньше ошибка записи просто логировалась на сервере, а вызывающий код (в
-// т.ч. обработчики PUT/DELETE ниже) об этом не знал и отвечал браузеру "ok:true" в любом случае —
-// из-за этого сбой записи в S3 выглядел для сотрудника как "сохранилось", а после перезапуска
-// сервера (деплой, технический рестарт) данные, которые реально не долетели до S3, пропадали.
-// withTimeout()/S3_TIMEOUT_MS объявлены выше, рядом с loadStoreFromBackend — не даём записи
-// висеть бесконечно по той же причине (иначе "крутилка" сохранения не кончалась бы никогда,
-// и все последующие сохранения вставали бы в очередь позади зависшего).
-function persist() {
-  writeQueue = writeQueue.then(async () => {
-    const body = JSON.stringify(store);
-    if (USE_S3) {
-      const outcome = await withTimeout(
-        s3Client.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: S3_OBJECT_KEY, Body: body, ContentType: 'application/json' })),
-        S3_TIMEOUT_MS
-      );
-      if (outcome.timedOut) {
-        console.error(`Ошибка сохранения данных в S3: не ответил за ${S3_TIMEOUT_MS}мс (похоже, зависло соединение)`);
-        return false;
-      }
-      if (outcome.error) {
-        console.error('Ошибка сохранения данных в S3:', outcome.error.message);
-        return false;
-      }
-      return true;
+// Запись одного объекта хранилища (S3 или локальный файл). Возвращает true/false — реально ли
+// записалось. Не даём записи висеть бесконечно (иначе "крутилка" сохранения не кончалась бы никогда).
+async function writeJsonObject(s3Key, filePath, body, timeoutMs) {
+  if (USE_S3) {
+    const outcome = await withTimeout(
+      s3Client.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: s3Key, Body: body, ContentType: 'application/json' })),
+      timeoutMs
+    );
+    if (outcome.timedOut) {
+      console.error(`Ошибка сохранения "${s3Key}" в S3: не ответил за ${timeoutMs}мс (похоже, зависло соединение)`);
+      return false;
     }
-    return await new Promise((resolve) => {
-      const tmpPath = FALLBACK_PATH + '.tmp';
-      fs.writeFile(tmpPath, body, (err) => {
-        if (err) { console.error('Ошибка записи данных:', err.message); return resolve(false); }
-        fs.rename(tmpPath, FALLBACK_PATH, (err2) => {
-          if (err2) { console.error('Ошибка сохранения данных:', err2.message); return resolve(false); }
-          resolve(true);
-        });
+    if (outcome.error) {
+      console.error(`Ошибка сохранения "${s3Key}" в S3:`, outcome.error.message);
+      return false;
+    }
+    return true;
+  }
+  return await new Promise((resolve) => {
+    const tmpPath = filePath + '.tmp';
+    fs.writeFile(tmpPath, body, (err) => {
+      if (err) { console.error('Ошибка записи данных:', err.message); return resolve(false); }
+      fs.rename(tmpPath, filePath, (err2) => {
+        if (err2) { console.error('Ошибка сохранения данных:', err2.message); return resolve(false); }
+        resolve(true);
       });
     });
   });
-  return writeQueue;
+}
+
+// true — файл со снимками уже содержит ВСЕ снимки, что есть в памяти, и их можно не дублировать в
+// основном store.json. Пока false (например, сразу после перехода со старого формата, где снимки
+// лежали внутри store.json) основной файл по-прежнему пишется целиком, со снимками — так что при
+// любом сбое ничего не теряется.
+let backupsFilePersisted = false;
+
+// persist() возвращает true/false — реально ли данные записались в хранилище. Обработчики PUT/DELETE
+// дожидаются результата и при неудаче откатывают изменение (иначе сбой записи выглядел бы как
+// "сохранилось", а после рестарта данные пропадали).
+// Параллельные сохранения СКЛЕИВАЮТСЯ: пока идёт закачка, все новые вызовы ждут одну общую следующую
+// закачку (она берёт самое свежее состояние) — а не выстраиваются в очередь по одной полной закачке
+// на каждое нажатие. Это ускоряет сохранение, когда несколько человек работают одновременно.
+let persistTail = Promise.resolve();
+let persistPending = null;
+async function doPersist() {
+  const kv = {};
+  for (const k of Object.keys(store.kv)) {
+    if (backupsFilePersisted && isBackupKey(k)) continue; // снимки живут в отдельном файле
+    kv[k] = store.kv[k];
+  }
+  const body = JSON.stringify({ kv, credentials: store.credentials });
+  const t0 = Date.now();
+  const ok = await writeJsonObject(S3_OBJECT_KEY, FALLBACK_PATH, body, S3_TIMEOUT_MS);
+  const ms = Date.now() - t0;
+  if (ms > 1500) console.warn(`Медленное сохранение: ${Math.round(body.length / 1024)} КБ за ${ms}мс`);
+  return ok;
+}
+function persist() {
+  if (persistPending) return persistPending;
+  const run = persistTail.then(() => { persistPending = null; return doPersist(); });
+  persistPending = run;
+  persistTail = run.catch(() => {});
+  return run;
+}
+
+// Отдельный файл со снимками. Пишется только когда снимок реально создан/удалён по сроку — а не при
+// каждом сохранении задачи — и своей очередью, чтобы долгая закачка снимков не задерживала
+// обычные сохранения. Тайм-аут больше: файл может быть крупным.
+const BACKUPS_TIMEOUT_MS = 45000;
+let backupsTail = Promise.resolve();
+function persistBackups() {
+  const run = backupsTail.then(async () => {
+    const kv = {};
+    for (const k of Object.keys(store.kv)) if (isBackupKey(k)) kv[k] = store.kv[k];
+    return await writeJsonObject(S3_BACKUPS_KEY, FALLBACK_BACKUPS_PATH, JSON.stringify({ kv }), BACKUPS_TIMEOUT_MS);
+  });
+  backupsTail = run.catch(() => {});
+  return run;
+}
+// Сохраняет снимки. Если файл снимков записан успешно — и мы ещё держали снимки в основном файле
+// (старый формат) — переписывает основной файл уже без них, чтобы он стал маленьким. Если запись
+// снимков не удалась, а основной файл их ещё содержит — пишем по-старому целиком, чтобы не потерять.
+async function saveBackups() {
+  const ok = await persistBackups();
+  if (ok) {
+    if (!backupsFilePersisted) {
+      backupsFilePersisted = true;
+      await persist();
+    }
+  } else if (!backupsFilePersisted) {
+    await persist();
+  }
+  return ok;
 }
 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me-in-production-please';
@@ -532,7 +622,7 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
   // ошибке, а не делаем вид, что всё сохранилось (раньше именно так терялись изменения).
   const oldValue = store.kv[key];
   store.kv[key] = value;
-  const saved = await persist();
+  const saved = await (isBackupKey(key) ? saveBackups() : persist());
   if (!saved) {
     if (oldValue === undefined) delete store.kv[key]; else store.kv[key] = oldValue;
     return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
@@ -557,7 +647,7 @@ app.delete('/api/storage/:key', requireAuth, async (req, res) => {
   const oldValue = store.kv[key];
   const hadValue = Object.prototype.hasOwnProperty.call(store.kv, key);
   delete store.kv[key];
-  const saved = await persist();
+  const saved = await (isBackupKey(key) ? saveBackups() : persist());
   if (!saved) {
     if (hadValue) store.kv[key] = oldValue;
     return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
@@ -640,7 +730,12 @@ async function loadStoreReliably() {
 }
 
 (async function main() {
-  store = await loadStoreReliably();
+  const loaded = await loadStoreReliably();
+  store = { kv: loaded.kv, credentials: loaded.credentials };
+  // Если снимки уже живут в отдельном файле (нет «старых» снимков внутри store.json) — основной файл
+  // можно сразу писать без них. Иначе (старый формат) сначала переносим снимки в отдельный файл —
+  // см. ниже, после запуска сервера — и только после УСПЕШНОЙ записи начинаем их из основного убирать.
+  backupsFilePersisted = !loaded.legacyBackupsInLive;
 
   // Сеем список ролей по умолчанию ТОЛЬКО при подтверждённом первом запуске (см. loadStoreReliably
   // выше) — именно это различие и было источником потери данных 4 октября 2026.
@@ -654,6 +749,15 @@ async function loadStoreReliably() {
 
   serverReady = true;
   console.log('Данные загружены, сервер готов к работе.');
+
+  // Переход со старого формата: переносим снимки из store.json в отдельный файл (в фоне, сервер уже
+  // принимает запросы). Пока перенос не удался, основной файл продолжает писаться целиком — ничего
+  // не теряется; после успеха он «худеет» до размера одних живых данных.
+  if (loaded.legacyBackupsInLive) {
+    saveBackups().then(ok => console.log(ok
+      ? 'Снимки перенесены в отдельный файл, основной файл данных теперь маленький.'
+      : 'Не удалось перенести снимки в отдельный файл — попробуем при следующем снимке.'));
+  }
 
   // Автобэкап: один раз вскоре после старта (на случай долгого простоя сервера), затем раз в сутки
   setTimeout(runAutoBackup, 60 * 1000);

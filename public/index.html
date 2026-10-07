@@ -1404,13 +1404,13 @@ async function loadAll(){
   const loadedValues = await loadValuesReliably();
   if(loadedValues === null) return false;
   const [emp, evt, tw, salt, fl, notifySetting, summaryDate, projWork, blocksWorkRaw, auditLogRaw, ideaBank, checklistsRaw, quickIdeasRaw, trashRaw, archTasksRaw, archEventsRaw, demoCleared, pTasksRaw, pProjectsRaw, pFundsRaw, pEventsRaw, pTrashRaw, pArchTasksRaw, pArchEventsRaw, personalMigrated] = loadedValues;
-  const DEFAULT_ROLES = ['Руководитель','Ассистент','Маркетолог','Старший администратор','Менеджер','Администратор 1 смена','Администратор 2 смена'];
+  const DEFAULT_ROLES = ['Руководитель','Ассистент','Маркетолог','Старший администратор','Менеджер','Администратор'];
   if(!emp){
     state.employees = DEFAULT_ROLES.map(role=>({id:uid(), name:role, role}));
     await sSet('roster:employees', JSON.stringify(state.employees), true);
   } else {
     state.employees = JSON.parse(emp);
-    const existingNames = state.employees.map(e=>e.name);
+    const existingNames = state.employees.map(e=>e.name).concat(state.employees.map(e=>e.role));
     const missing = DEFAULT_ROLES.filter(role=>!existingNames.includes(role));
     if(missing.length){
       state.employees = state.employees.concat(missing.map(role=>({id:uid(), name:role, role})));
@@ -2706,8 +2706,13 @@ function renderOverview(root){
     .filter(t=>t.createdDate===todayISO() && (canChooseWhoToView || t.creatorId===state.currentUserId))
     .slice().reverse() : [];
 
+  // Ключ сортировки по сроку: дата + время дедлайна; если время не указано — считаем концом дня,
+  // чтобы задачи «до 10:00» шли раньше задач «в течение дня».
+  const deadlineKey = t => (t.deadline||'9999-12-31') + ' ' + (t.deadlineTime||'23:59');
+  const byDeadline = (a,b)=>deadlineKey(a).localeCompare(deadlineKey(b)) || (a.title||'').localeCompare(b.title||'','ru');
   function taskRow(t){
     const overdue = t.deadline && t.deadline<todayISO();
+    const timePassed = !overdue && t.deadline===todayISO() && t.deadlineTime && t.deadlineTime < new Date().toTimeString().slice(0,5);
     const personal = state.personalTasks.some(pt=>pt.id===t.id);
     const canComplete = canCompleteTask(t, personal);
     return `<div class="item">
@@ -2717,7 +2722,7 @@ function renderOverview(root){
         <div class="meta">
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
           ${t.managementStage?`<span class="badge" style="background:var(--indigo-bg,rgba(51,80,125,0.12));color:var(--indigo);">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
-          ${t.deadline?`<span style="${overdue?'color:var(--brick);font-weight:600;':''}">до ${fmtDeadline(t)}</span>`:''}
+          ${t.deadline?`<span style="${(overdue||timePassed)?'color:var(--brick);font-weight:600;':''}">до ${fmtDeadline(t)}</span>`:''}
           ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
           ${t.creatorId?`<span>Поставил: ${escapeHtml(empName(t.creatorId))}</span>`:''}
         </div>
@@ -2823,12 +2828,11 @@ function renderOverview(root){
           const today = todayISO();
           // Возвращённые на доработку задачи выносим в отдельный блок над остальными —
           // чтобы их не теряли среди обычных незавершённых задач — и не дублируем ниже.
-          const reworkList = allOpen.filter(t=>t.status==='progress' && t.reworkNote)
-            .sort((a,b)=>(a.deadline||'').localeCompare(b.deadline||''));
+          const reworkList = allOpen.filter(t=>t.status==='progress' && t.reworkNote).sort(byDeadline);
           const restOpen = allOpen.filter(t=>!(t.status==='progress' && t.reworkNote));
-          const overdueList = restOpen.filter(t=>t.deadline && t.deadline<today).sort((a,b)=>a.deadline.localeCompare(b.deadline));
-          const todayList = restOpen.filter(t=>t.deadline===today);
-          const upcomingList = restOpen.filter(t=>t.deadline && t.deadline>today).sort((a,b)=>a.deadline.localeCompare(b.deadline));
+          const overdueList = restOpen.filter(t=>t.deadline && t.deadline<today).sort(byDeadline);
+          const todayList = restOpen.filter(t=>t.deadline===today).sort(byDeadline);
+          const upcomingList = restOpen.filter(t=>t.deadline && t.deadline>today).sort(byDeadline);
           const noDeadlineList = restOpen.filter(t=>!t.deadline);
           const groupLabel = (label)=>`<div class="subtitle" style="margin:14px 0 6px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">${label}</div>`;
           let html = '';

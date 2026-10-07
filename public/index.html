@@ -1410,12 +1410,8 @@ async function loadAll(){
     await sSet('roster:employees', JSON.stringify(state.employees), true);
   } else {
     state.employees = JSON.parse(emp);
-    const existingNames = state.employees.map(e=>e.name).concat(state.employees.map(e=>e.role));
-    const missing = DEFAULT_ROLES.filter(role=>!existingNames.includes(role));
-    if(missing.length){
-      state.employees = state.employees.concat(missing.map(role=>({id:uid(), name:role, role})));
-      await sSet('roster:employees', JSON.stringify(state.employees), true);
-    }
+    // Список сотрудников больше не «достраивается» ролями по умолчанию: раньше удалённый профиль
+    // (например, «Администратор 1 смена») возвращался при следующем открытии страницы.
   }
   state.events = evt ? JSON.parse(evt) : [];
   if(state.events.some(e=>e.category==='training')){
@@ -1938,6 +1934,17 @@ function employeeColor(id){
 function hasOpenSubtasks(t, personal){
   if(!t || !t.id) return false;
   return tasksFor(personal).some(c=>c.parentId===t.id && c.status!=='done');
+}
+// Значок «есть подзадачи»: показывает, сколько подзадач ещё не закрыто (пока они открыты,
+// саму задачу отметить выполненной нельзя).
+function subtasksBadgeHtml(t, personal){
+  if(!t || !t.id) return '';
+  const kids = tasksFor(personal).filter(c=>c.parentId===t.id);
+  if(!kids.length) return '';
+  const open = kids.filter(c=>c.status!=='done').length;
+  return open
+    ? `<span class="badge" style="background:rgba(176,74,46,0.12);color:var(--brick);" title="Пока подзадачи не выполнены, задачу нельзя отметить выполненной">🧩 подзадачи: не выполнено ${open} из ${kids.length}</span>`
+    : `<span class="badge" style="background:rgba(46,125,110,0.12);color:var(--teal);">🧩 подзадачи выполнены (${kids.length})</span>`;
 }
 function canCompleteTask(t, personal){
   if(!t) return true;
@@ -2661,6 +2668,14 @@ function render(){
 async function saveDoneToggle(id, personal, result, cb, task, afterSuccess){
   const fresh = await refreshTasksFromServer(personal);
   const before = fresh || tasksFor(personal);
+  // Последняя проверка уже по свежим данным: за время, пока вводился отчёт, кто-то мог добавить
+  // подзадачу или вернуть её на доработку.
+  if(before.some(c=>c.parentId===id && c.status!=='done')){
+    cb.checked = false;
+    toast('Внутри есть незавершённая подзадача — сначала закройте её.');
+    render();
+    return;
+  }
   const updated = before.map(t=>t.id===id?withStatusReview(t,result.comment,result.link,result.overdueReason):t);
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
@@ -2716,11 +2731,12 @@ function renderOverview(root){
     const personal = state.personalTasks.some(pt=>pt.id===t.id);
     const canComplete = canCompleteTask(t, personal);
     return `<div class="item">
-      <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-ov-done="${t.id}" data-ov-done-personal="${personal?'1':'0'}" ${t.status==='done'?'checked':''} title="${canComplete?'Отметить выполненной':whyCantComplete(t, personal)}">
+      <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-ov-done="${t.id}" data-ov-done-personal="${personal?'1':'0'}" ${t.status==='done'?'checked':''} ${canComplete?'':'disabled'} title="${canComplete?'Отметить выполненной':whyCantComplete(t, personal)}">
       <div class="main" style="cursor:pointer;" data-ov-task="${t.id}">
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="meta">
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
+          ${subtasksBadgeHtml(t, personal)}
           ${t.managementStage?`<span class="badge" style="background:var(--indigo-bg,rgba(51,80,125,0.12));color:var(--indigo);">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
           ${t.deadline?`<span style="${(overdue||timePassed)?'color:var(--brick);font-weight:600;':''}">до ${fmtDeadline(t)}</span>`:''}
           ${t.assigneeId?`<span>Исполнитель: ${escapeHtml(empName(t.assigneeId))}</span>`:''}
@@ -2881,6 +2897,11 @@ function renderOverview(root){
       const id = cb.dataset.ovDone;
       const personal = cb.dataset.ovDonePersonal==='1';
       const task = tasksFor(personal).find(t=>t.id===id);
+      if(cb.checked && !canCompleteTask(task, personal)){
+        cb.checked = false;
+        toast(whyCantComplete(task, personal));
+        return;
+      }
       if(cb.checked){
         const isOverdue = !!(task && task.deadline && task.deadline < todayISO());
         const result = await requestCompletionComment(task ? task.title : '', isOverdue);
@@ -3200,7 +3221,7 @@ function wireDayTaskActions(el, iso){
       const task = tasksFor(personal).find(t=>t.id===id);
       if(!canCompleteTask(task, personal)){
         cb.checked = !cb.checked;
-        toast(state.currentUserId ? `Отметить может только исполнитель${task&&task.assigneeId?': '+empName(task.assigneeId):''}` : 'Сначала выберите «Кто я?» в шапке');
+        toast(whyCantComplete(task, personal));
         return;
       }
       if(cb.checked){
@@ -3731,6 +3752,7 @@ function taskItemHtml(t, personal, opts){
           <span class="badge ${t.status||'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]}</span>
           ${t.managementStage?`<span class="badge" style="background:var(--indigo-bg,rgba(51,80,125,0.12));color:var(--indigo);">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
+          ${subtasksBadgeHtml(t, personal)}
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(personal,t.projectId))}</span>`:''}
           ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${opts.orphanParentName?`<span>⤷ подзадача: ${escapeHtml(opts.orphanParentName)}</span>`:''}
@@ -4168,7 +4190,7 @@ function wireTaskActions(el, personal){
       const task = tasksFor(personal).find(t=>t.id===id);
       if(!canCompleteTask(task, personal)){
         cb.checked = !cb.checked;
-        toast(state.currentUserId ? `Отметить может только исполнитель${task&&task.assigneeId?': '+empName(task.assigneeId):''}` : 'Сначала выберите «Кто я?» в шапке');
+        toast(whyCantComplete(task, personal));
         return;
       }
       if(cb.checked){

@@ -1136,6 +1136,29 @@ async function importAllData(payload){
 // {type:'studio-journal-blocks-projects', blocks:[name,...], projects:[{name, block}, ...]}),
 // пропуская те, что уже есть по имени (без учёта регистра/пробелов) — чтобы не плодить дубли и
 // не трогать ничего другого (задачи, сотрудников, календарь, финансы остаются как есть).
+// Безопасный точечный импорт ТОЛЬКО событий календаря (общих, не личных): сначала подтягивает
+// актуальный календарь с сервера, затем ДОБАВЛЯЕТ события из файла, которых там ещё нет (по id или по
+// сочетанию дата+время+название — дублей не будет). Ничего не удаляет и не перезаписывает; задач,
+// сотрудников, проектов и финансов не касается. При неудаче записи откатывает изменение.
+async function importEventsOnly(payload){
+  await refreshEventsFromServer(false);
+  const before = state.events;
+  const sig = e => [e.date, e.startTime||'', (e.title||'').trim().toLowerCase()].join('|');
+  const haveIds = new Set(before.map(e=>e.id));
+  const haveSigs = new Set(before.map(sig));
+  const toAdd = [];
+  let skipped = 0;
+  (payload.events||[]).forEach(e=>{
+    if(!e || !e.id || !e.title || !e.date) return;
+    if(haveIds.has(e.id) || haveSigs.has(sig(e))){ skipped++; return; }
+    toAdd.push(e); haveIds.add(e.id); haveSigs.add(sig(e));
+  });
+  if(!toAdd.length) return { added:0, skipped };
+  state.events = before.concat(toAdd);
+  const ok = await saveEvents();
+  if(!ok){ state.events = before; throw new Error('save-failed'); }
+  return { added: toAdd.length, skipped };
+}
 async function importProjectsAndBlocksOnly(payload){
   const norm = s => (s||'').trim().toLowerCase();
   const existingBlockNames = new Set(state.blocksWork.map(b=>norm(b.name)));
@@ -6206,6 +6229,15 @@ function openDataModal(){
             </label>
           </div>
 
+          <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Восстановить только события календаря</h4>
+          <p class="subtitle" style="margin:0 0 10px;">Безопасный точечный импорт: добавляет в календарь события из файла, которых там ещё нет (дублей не будет). Ничего не удаляет и не перезаписывает; задач, сотрудников и финансов не затрагивает.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+            <label class="btn ghost" style="cursor:pointer;">
+              📥 Восстановить события
+              <input type="file" id="importEventsFile" accept="application/json" style="display:none;">
+            </label>
+          </div>
+
           <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);margin:0 0 8px;">Автоматические бэкапы</h4>
           <p class="subtitle" style="margin:0 0 10px;">Сервер сам сохраняет полный снимок раз в сутки, независимо от того, зашёл кто-то в приложение или нет. Хранится последние 14 дней.</p>
           <div class="item-list" style="margin-bottom:20px;">
@@ -6352,6 +6384,26 @@ function openDataModal(){
         toast(`Добавлено: блоков ${result.addedBlocks}, проектов ${result.addedProjects}${result.skipped?` (пропущено как уже существующие: ${result.skipped})`:''}`);
       }catch(err){
         toast('Не удалось прочитать файл — проверьте, что это корректный файл блоков и проектов');
+      }
+    };
+    document.getElementById('importEventsFile').onchange=async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      let payload;
+      try{
+        payload = JSON.parse(await file.text());
+      }catch(err){
+        toast('Не удалось прочитать файл — проверьте, что это корректный файл событий'); return;
+      }
+      if(payload.type!=='studio-journal-events'){ toast('Файл не похож на файл событий календаря'); return; }
+      try{
+        const result = await importEventsOnly(payload);
+        modal.innerHTML = body(); wire(); render();
+        toast(result.added
+          ? `Добавлено событий: ${result.added}${result.skipped?` (пропущено как уже существующие: ${result.skipped})`:''}`
+          : `Новых событий нет — все ${result.skipped} уже есть в календаре`);
+      }catch(err){
+        toast('Не удалось сохранить события — ничего не изменено, попробуйте ещё раз');
       }
     };
     modal.querySelectorAll('[data-restore-personal-archive-task]').forEach(b=>b.onclick=async ()=>{

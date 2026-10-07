@@ -477,6 +477,44 @@ function parseJsonArray(raw) {
     return null;
   }
 }
+// Защита от «записали пусто поверх данных» (так 7 октября пропал календарь: страница после сбоя
+// чтения приняла «не прочиталось» за «пусто» и сохранила []). Для списков, потеря которых катастрофична:
+//  - заменить непустой список (>=5 записей) на пустой можно только с заголовком X-Confirm-Empty: 1
+//    (его ставит сама страница в осознанных действиях: восстановление из файла, удаление последнего);
+//  - список сотрудников нельзя подменить целиком (ни один прежний id не остался) без подтверждения;
+//  - при заметном сокращении (>=10 записей и >=30%) заранее делается снимок до изменения;
+//  - любое сокращение на 3+ и каждый отказ пишутся в журнал сервера (кто, что, с какого браузера).
+const SHRINK_GUARDED_KEYS = new Set(['calendar:events', 'tasks:work', 'tasks:projects', 'tasks:blocks',
+  'roster:employees', 'personal:events', 'personal:tasks', 'personal:projects']);
+function checkShrinkGuard(key, oldRaw, newRaw, req) {
+  if (!SHRINK_GUARDED_KEYS.has(key)) return null;
+  const oldArr = parseJsonArray(oldRaw);
+  const newArr = parseJsonArray(newRaw);
+  if (!oldArr || !newArr) return null;
+  const confirmed = req.get('x-confirm-empty') === '1';
+  const who = `${req.employee.name} (${req.employee.role})`;
+  const ua = String(req.get('user-agent') || '').slice(0, 120);
+  let problem = null;
+  if (newArr.length === 0 && oldArr.length >= 5 && !confirmed) {
+    problem = `Похоже на случайное стирание всего списка (было ${oldArr.length}, стало 0) — запись отклонена. Обновите страницу; данные на сервере не тронуты.`;
+  } else if (key === 'roster:employees' && oldArr.length >= 2 && !confirmed) {
+    const newIds = new Set(newArr.map(e => e && e.id));
+    if (!oldArr.some(e => e && newIds.has(e.id))) {
+      problem = 'Похоже на подмену всего списка сотрудников (ни один прежний сотрудник не остался) — запись отклонена. Обновите страницу.';
+    }
+  }
+  if (problem) {
+    console.warn(`[отказ] ${key}: ${oldArr.length} → ${newArr.length}; ${who}; UA=${ua}`);
+    return problem;
+  }
+  const removed = oldArr.length - newArr.length;
+  if (removed >= 3) console.warn(`[изменение] ${key}: ${oldArr.length} → ${newArr.length}; ${who}; UA=${ua}`);
+  if (removed >= 10 && removed >= oldArr.length * 0.3) {
+    // снимок состояния ДО этой записи (store.kv ещё старый); не ждём — запись в S3 идёт в фоне
+    runFrequentBackup().catch(e => console.error('pre-change backup failed', e && e.message));
+  }
+  return null;
+}
 function findDisallowedDeletion(key, oldRaw, newRaw, employee) {
   if (isPrivilegedRole(employee.role)) return null;
   if (key !== 'tasks:work' && key !== 'tasks:projects') return null;
@@ -617,6 +655,8 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
   if (deletionError) {
     return res.status(403).json({ error: deletionError });
   }
+  const shrinkError = checkShrinkGuard(key, store.kv[key], value, req);
+  if (shrinkError) return res.status(409).json({ error: shrinkError });
   // Важно: сохраняем старое значение и дожидаемся РЕАЛЬНОЙ записи в хранилище (S3/диск), прежде
   // чем отвечать браузеру "ok". Если запись не удалась — откатываем в памяти и честно сообщаем об
   // ошибке, а не делаем вид, что всё сохранилось (раньше именно так терялись изменения).

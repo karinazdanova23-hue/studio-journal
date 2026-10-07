@@ -777,35 +777,34 @@ async function mergeAdminShiftProfiles() {
   try {
     const employees = parseJsonArray(store.kv['roster:employees']);
     if (!employees) return;
-    const OLD1 = 'Администратор 1 смена', OLD2 = 'Администратор 2 смена';
-    const first = employees.find(e => e && e.role === OLD1);
-    const second = employees.find(e => e && e.role === OLD2);
-    if (!first && !second) return;
+    const NAMES = new Set(['Администратор 1 смена', 'Администратор 2 смена', 'Администратор']);
+    const isAdminProfile = e => e && (NAMES.has(e.role) || NAMES.has(e.name));
+    const group = employees.filter(isAdminProfile);
+    const alreadyClean = group.length === 1 && group[0].role === 'Администратор';
+    if (group.length === 0 || alreadyClean) return;
     await runFrequentBackup();
-    const keep = first || second;
-    const drop = first && second ? second : null;
+    // Остаётся профиль, у которого уже есть пароль (иначе — первый по списку).
+    const keep = group.find(e => store.credentials[e.id] !== undefined) || group[0];
+    const drops = group.filter(e => e !== keep);
     const oldKv = {};
     const oldCreds = { ...store.credentials };
-    const newEmployees = employees.filter(e => e !== drop).map(e => {
+    const newEmployees = employees.filter(e => !drops.includes(e)).map(e => {
       if (e !== keep) return e;
-      return { ...e, role: 'Администратор', name: (e.name === OLD1 || e.name === OLD2) ? 'Администратор' : e.name };
+      return { ...e, role: 'Администратор', name: NAMES.has(e.name) ? 'Администратор' : e.name };
     });
     oldKv['roster:employees'] = store.kv['roster:employees'];
     store.kv['roster:employees'] = JSON.stringify(newEmployees);
-    if (drop) {
+    drops.forEach(drop => {
       Object.keys(store.kv).forEach(k => {
         if (k === 'roster:employees' || k.startsWith('backup:')) return;
         const v = store.kv[k];
         if (typeof v === 'string' && v.includes(drop.id)) {
-          oldKv[k] = v;
+          if (!(k in oldKv)) oldKv[k] = v;
           store.kv[k] = v.split(drop.id).join(keep.id);
         }
       });
-      if (store.credentials[drop.id] !== undefined) {
-        if (store.credentials[keep.id] === undefined) store.credentials[keep.id] = store.credentials[drop.id];
-        delete store.credentials[drop.id];
-      }
-    }
+      delete store.credentials[drop.id];
+    });
     const ok = await persist();
     if (!ok) {
       Object.keys(oldKv).forEach(k => { store.kv[k] = oldKv[k]; });
@@ -813,7 +812,7 @@ async function mergeAdminShiftProfiles() {
       console.error('Объединение профилей администраторов не удалось сохранить — оставлено как было, попробуем при следующем запуске.');
       return;
     }
-    console.log(`Профили администраторов объединены в один: «${newEmployees.find(e => e.id === keep.id).name}» (ссылок переписано в ключах: ${Object.keys(oldKv).length - 1}).`);
+    console.log(`Профили администраторов объединены в один: «${newEmployees.find(e => e.id === keep.id).name}» (удалено дублей: ${drops.length}, ключей данных обновлено: ${Object.keys(oldKv).length - 1}).`);
   } catch (e) {
     console.error('Ошибка объединения профилей администраторов:', e && e.message);
   }

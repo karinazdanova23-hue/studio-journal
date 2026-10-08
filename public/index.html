@@ -1279,7 +1279,7 @@ async function applyChecklistToTasks(checklist){
   const parentTask = {
     id: uid(),
     title: checklist.name,
-    description: `Чек-лист «${checklist.name}».`,
+    description: checklist.description ? checklist.description : `Чек-лист «${checklist.name}».`,
     projectId: null,
     parentId: null,
     assigneeId: null,
@@ -1937,6 +1937,10 @@ function hasOpenSubtasks(t, personal){
 }
 // Значок «есть подзадачи»: показывает, сколько подзадач ещё не закрыто (пока они открыты,
 // саму задачу отметить выполненной нельзя).
+// Пометка «чек-лист» у задач и подзадач, созданных из чек-листа.
+function checklistBadgeHtml(t){
+  return (t && t.fromChecklist) ? `<span class="badge" style="background:rgba(51,80,125,0.12);color:var(--indigo);" title="Создана из чек-листа">📋 чек-лист</span>` : '';
+}
 function subtasksBadgeHtml(t, personal){
   if(!t || !t.id) return '';
   const kids = tasksFor(personal).filter(c=>c.parentId===t.id);
@@ -2736,6 +2740,7 @@ function renderOverview(root){
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="meta">
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
+          ${checklistBadgeHtml(t)}
           ${subtasksBadgeHtml(t, personal)}
           ${t.managementStage?`<span class="badge" style="background:var(--indigo-bg,rgba(51,80,125,0.12));color:var(--indigo);">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
           ${t.deadline?`<span style="${(overdue||timePassed)?'color:var(--brick);font-weight:600;':''}">до ${fmtDeadline(t)}</span>`:''}
@@ -3385,7 +3390,8 @@ function openEventModal(id, presetDate){
       </div>
     </div>`;
   document.getElementById('cancelEvt').onclick=closeModal;
-  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+  document.getElementById('ov').setAttribute('data-guard-close','1');
+  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') confirmCloseModal(); };
   document.getElementById('f_format').onchange=(e)=>{
     const isOnline = e.target.value==='online';
     document.getElementById('f_location_wrap').style.display = isOnline?'none':'';
@@ -3752,6 +3758,7 @@ function taskItemHtml(t, personal, opts){
           <span class="badge ${t.status||'progress'}">${STATUSES[t.status] || STATUSES.progress}</span>
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]}</span>
           ${t.managementStage?`<span class="badge" style="background:var(--indigo-bg,rgba(51,80,125,0.12));color:var(--indigo);">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
+          ${checklistBadgeHtml(t)}
           ${subtasksBadgeHtml(t, personal)}
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(personal,t.projectId))}</span>`:''}
           ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
@@ -4313,7 +4320,12 @@ function renderPersonalTasks(el){
   renderTaskBoard(el.querySelector('#persBoard'), true);
 }
 
-function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
+function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
+  opts = opts || {};
+  // Постановка главной задачи из чек-листа: название и описание подтягиваются из чек-листа,
+  // шаги становятся подзадачами (их можно поправить кнопкой «Редактировать подзадачи»).
+  const checklist = opts.checklist || null;
+  const draftSubs = checklist ? (checklist.items||[]).map(t=>({title:t, description:'—', assigneeId:'', deadline:'', deadlineTime:''})) : null;
   const source = tasksFor(personal);
   const existing = id ? source.find(t=>t.id===id) : null;
   const parentId = existing ? (existing.parentId||null) : (presetParentId||null);
@@ -4349,12 +4361,12 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
   modal.innerHTML = `
     <div class="overlay" id="ov">
       <div class="modal">
-        <h3>${existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':'Новая задача')}${personal?' · личная':''}</h3>
+        <h3>${existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':(checklist?'Новая задача из чек-листа':'Новая задача'))}${personal?' · личная':''}</h3>
         ${existing && !editable?`<div class="note">Эту задачу вам поставили не вы сами, поэтому менять её нельзя — можно только посмотреть. Изменить может тот, кто её поставил (если задача отмечена как «самостоятельно поставленная»), либо Руководитель/Ассистент.</div>`:''}
         <div id="t_formWrap" style="${editable?'':'pointer-events:none;opacity:.6;'}">
         ${parentId?`<div class="note">Подзадача для: <strong>${escapeHtml(parentTask?parentTask.title:'')}</strong></div>`:''}
         <div class="field"><label>Название *</label><input id="t_title" value="${existing?escapeHtml(existing.title):escapeHtml(presetTitle||'')}"></div>
-        <div class="field"><label>Описание *</label><textarea id="t_desc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
+        <div class="field"><label>Описание *</label><textarea id="t_desc" rows="${checklist?4:2}">${existing?escapeHtml(existing.description||''):escapeHtml(opts.description||'')}</textarea></div>
         <div class="field"><label>Ссылки (необязательно)</label>
           <div id="t_links_list">
             ${(taskLinks(existing).length?taskLinks(existing):['']).map(l=>`
@@ -4443,7 +4455,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
           <label>Что сделано? *</label>
           <textarea id="t_completion_comment" rows="2" placeholder="Опишите, что было сделано">${existing?escapeHtml(existing.completionComment||''):''}</textarea>
         </div>
-        ${!existing && !parentId ? `
+        ${!existing && !parentId && !checklist ? `
         <div class="field"><label>Повтор</label>
           <select id="t_repeat">
             <option value="none">Не повторять</option>
@@ -4474,6 +4486,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
         </div>
         </div>
         <div class="modal-actions">
+          ${(draftSubs || (existing && !parentId && source.some(c=>c.parentId===existing.id)))?`<button class="btn ghost" id="editSubtasks" style="margin-right:auto;">🧩 Редактировать подзадачи (${draftSubs ? draftSubs.length : source.filter(c=>c.parentId===existing.id).length})</button>`:''}
           ${existing?`<button class="btn danger" id="deleteTask" style="${canDeleteTask(existing,personal)?'':'opacity:.4;'}" title="${canDeleteTask(existing,personal)?'Удалить задачу':whyCantDelete(existing)}">Удалить</button>`:''}
           <button class="btn ghost" id="cancelTask">${editable?'Отмена':'Закрыть'}</button>
           ${editable?`<button class="btn" id="saveTask">Сохранить</button>`:''}
@@ -4481,7 +4494,12 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       </div>
     </div>`;
   document.getElementById('cancelTask').onclick=closeModal;
-  document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+  if(editable){
+    document.getElementById('ov').setAttribute('data-guard-close','1');
+    document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') confirmCloseModal(); };
+  } else {
+    document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') closeModal(); };
+  }
   // Несколько ссылок к задаче: каждая строка — своё поле, можно добавлять и убирать.
   // Последнюю оставшуюся строку не удаляем целиком (чтобы поле не пропадало из формы), а просто очищаем.
   function wireLinkRows(){
@@ -4514,6 +4532,34 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       render();
     };
   }
+
+  // Текущие значения главной задачи — от них «наследуются» пустые поля подзадач.
+  function mainFormValues(){
+    const a = document.getElementById('t_assignee');
+    return {
+      assigneeId: a ? a.value : '',
+      deadline: document.getElementById('t_deadline').value || '',
+      deadlineTime: document.getElementById('t_deadlineTime').value || '',
+    };
+  }
+  const editSubBtn = document.getElementById('editSubtasks');
+  if(editSubBtn) editSubBtn.onclick=()=>{
+    if(draftSubs){
+      openSubtasksEditor({
+        heading: `Подзадачи чек-листа «${checklist.name}»`,
+        personal, rows: draftSubs.map((r,i)=>({...r, key:'d'+i})), mainValues: mainFormValues, allowAdd: true, readonly: !editable,
+        onSave: async (rows)=>{ draftSubs.length = 0; rows.forEach(r=>draftSubs.push({title:r.title, description:r.description, assigneeId:r.assigneeId, deadline:r.deadline, deadlineTime:r.deadlineTime})); editSubBtn.textContent = `🧩 Редактировать подзадачи (${draftSubs.length})`; return true; },
+      });
+    } else {
+      const kids = tasksFor(personal).filter(c=>c.parentId===existing.id).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+      openSubtasksEditor({
+        heading: `Подзадачи: «${existing.title}»`,
+        personal, mainValues: null, allowAdd: false, parentTask: existing,
+        rows: kids.map(c=>({key:c.id, title:c.title, description:c.description||'', assigneeId:c.assigneeId||'', deadline:c.deadline||'', deadlineTime:c.deadlineTime||'', readonly: !canEditTask(c, personal)})),
+        onSave: (rows)=>saveExistingSubtasks(personal, existing, rows),
+      });
+    }
+  };
 
   function handleProjectSelectPurchases(pid){
     const isPurchases = !!(purchasesProject && pid===purchasesProject.id);
@@ -4732,6 +4778,14 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
         return;
       }
     }
+    if(draftSubs){
+      for(const r of draftSubs){
+        const eff = r.deadline || deadline;
+        if(!r.title.trim()){ toast('У одной из подзадач пустое название — откройте «Редактировать подзадачи»'); return; }
+        if(eff > deadline){ toast(`Дедлайн подзадачи «${r.title}» не может быть позже дедлайна главной задачи`); return; }
+        if(eff < createdDate){ toast(`Дедлайн подзадачи «${r.title}» не может быть раньше даты постановки`); return; }
+      }
+    }
     if(statusVal==='done' && (!existing || existing.status!=='done')){
       const effectiveAssignee = personal ? null : assigneeId;
       const wouldBeTask = {assigneeId: effectiveAssignee, id: existing?existing.id:undefined};
@@ -4792,6 +4846,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       comments: existing ? (existing.comments||[]) : [],
       sortOrder: existing ? (existing.sortOrder||0) : 0,
       selfAssigned: document.getElementById('t_self_assigned') ? document.getElementById('t_self_assigned').checked : !!(existing && existing.selfAssigned),
+      fromChecklist: existing ? !!existing.fromChecklist : !!draftSubs,
     };
 
     // Список задач — общий, и его сохраняют вперемешку с разных устройств/вкладок. Подтягиваем
@@ -4856,6 +4911,18 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       const arr = tasksFor(personal);
       const beforeTasks = arr;
       let toSave = existing ? arr.map(t=>t.id===existing.id?data:t) : arr.concat([data]);
+      if(draftSubs && !existing){
+        // Пустые поля подзадачи = как у главной: исполнитель, дедлайн (и время).
+        toSave = toSave.concat(draftSubs.map((r,i)=>({
+          id: uid()+i, title: r.title.trim(), description: (r.description||'').trim() || '—', link:'', links:[],
+          projectId: data.projectId, blockId: data.blockId, parentId: data.id,
+          assigneeId: r.assigneeId || data.assigneeId, creatorId: data.creatorId, createdDate: data.createdDate,
+          deadline: r.deadline || data.deadline, deadlineTime: r.deadline ? (r.deadlineTime||'') : (r.deadlineTime || data.deadlineTime || ''),
+          priority: data.priority, managementStage: null, status: 'progress', completedAt: null, completionComment: '', completionLink: '',
+          eventId: data.eventId, purchaseAmount: null, purchaseStore: '', purchaseExpenseId: null, seriesId: null,
+          overdueReason: '', reworkNote: '', approvedAt: null, approvedBy: null, comments: [], sortOrder: i, selfAssigned: data.selfAssigned, fromChecklist: true,
+        })));
+      }
       // Если у самой задачи (не подзадачи) поменялся проект или блок — подтягиваем все подзадачи следом.
       if(existing && !data.parentId && (existing.projectId!==data.projectId || existing.blockId!==data.blockId)){
         function collectDescendantIds(rootId, list){
@@ -4872,15 +4939,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
       const ok = await persistTasksFor(personal);
       if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(saveTaskMain); return; }
       if(!existing){
-        logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}`);
+        logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}${draftSubs?` (из чек-листа, подзадач: ${draftSubs.length})`:''}`);
       } else if(existing.deadline !== data.deadline){
         logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDeadline(existing):'—'} → ${data.deadline?fmtDeadline(data):'—'}`);
       }
       if(chosenStatus==='done' && (!existing || existing.status!=='done')){
         await maybeOfferPurchaseExpense(data, personal);
       }
+      if(draftSubs){
+        state.taskSubtab = 'work';
+        state.taskFilterProjectIds.work = new Set();
+        state.taskFilterNoProject.work = false;
+      }
       closeModal(); render();
-      toast('Задача сохранена');
+      toast(draftSubs ? `Задача создана с подзадачами: ${draftSubs.length}` : 'Задача сохранена');
       if(!existing){
         notifySelfSaved('✅ Задача создана', data.title);
         if(onDone) onDone();
@@ -4888,6 +4960,110 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone){
     }
     await saveTaskMain();
   };
+}
+
+// Редактор подзадач: список подзадач с полями «название, описание, исполнитель, дедлайн, время».
+// cfg.mainValues — функция, отдающая текущие значения главной задачи (для режима «пусто = как у главной»);
+// null — режим редактирования уже сохранённых подзадач (там все поля обязательны).
+function openSubtasksEditor(cfg){
+  const inherit = !!cfg.mainValues;
+  const employees = state.employees.filter(e=>!cfg.personal || e.role==='Руководитель' || e.role==='Ассистент');
+  let rows = cfg.rows.map(r=>({...r}));
+  const ov = document.createElement('div');
+  ov.className = 'overlay'; ov.style.zIndex = 210;
+  document.body.appendChild(ov);
+  function hint(){
+    if(!inherit) return '';
+    const m = cfg.mainValues();
+    const who = m.assigneeId ? empName(m.assigneeId) : 'не выбран';
+    return `<p class="subtitle" style="margin:0 0 10px;">Пустые поля подзадачи берутся из главной задачи: исполнитель — ${escapeHtml(who)}, дедлайн — ${m.deadline?escapeHtml(fmtDate(m.deadline))+(m.deadlineTime?', '+escapeHtml(m.deadlineTime):''):'пока не указан'}. Описание по умолчанию — «—».</p>`;
+  }
+  function rowHtml(r, i){
+    const dis = r.readonly ? 'disabled' : '';
+    return `<div class="item" data-sub-row="${i}" style="display:block;margin-bottom:10px;">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <span class="subtitle" style="margin:0;">${i+1}.</span>
+        <input class="sub-title" value="${escapeHtml(r.title)}" placeholder="Название подзадачи" style="flex:1;" ${dis}>
+        ${cfg.allowAdd && !r.readonly ? `<button type="button" class="btn danger small" data-sub-remove="${i}" title="Убрать подзадачу">✕</button>` : ''}
+      </div>
+      <textarea class="sub-desc" rows="2" placeholder="Описание" ${dis}>${escapeHtml(r.description||'')}</textarea>
+      <div class="field-row" style="margin-top:6px;">
+        <div class="field"><label>Исполнитель</label>
+          <select class="sub-assignee" ${dis}>
+            <option value="">${inherit?'— как у главной задачи —':'— выберите —'}</option>
+            ${employees.map(e=>`<option value="${e.id}" ${r.assigneeId===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Дедлайн${inherit?' (пусто — как у главной)':''}</label><input type="date" class="sub-deadline" value="${escapeHtml(r.deadline||'')}" ${dis}></div>
+        <div class="field"><label>Время</label><input type="time" class="sub-time" value="${escapeHtml(r.deadlineTime||'')}" ${dis}></div>
+      </div>
+    </div>`;
+  }
+  function collect(){
+    ov.querySelectorAll('[data-sub-row]').forEach(el=>{
+      const i = +el.dataset.subRow;
+      if(!rows[i] || rows[i].readonly) return;
+      rows[i].title = el.querySelector('.sub-title').value;
+      rows[i].description = el.querySelector('.sub-desc').value;
+      rows[i].assigneeId = el.querySelector('.sub-assignee').value;
+      rows[i].deadline = el.querySelector('.sub-deadline').value;
+      rows[i].deadlineTime = el.querySelector('.sub-time').value;
+    });
+  }
+  function draw(){
+    ov.innerHTML = `<div class="modal" style="max-width:640px;">
+      <h3>${escapeHtml(cfg.heading)}</h3>
+      ${hint()}
+      <div id="subRows">${rows.map(rowHtml).join('') || '<p class="subtitle">Подзадач нет</p>'}</div>
+      ${cfg.allowAdd ? '<button type="button" class="btn ghost small" id="subAdd">+ Добавить подзадачу</button>' : ''}
+      <div class="modal-actions">
+        <button class="btn ghost" id="subCancel">Отмена</button>
+        ${cfg.readonly ? '' : '<button class="btn" id="subDone">Готово</button>'}
+      </div>
+    </div>`;
+    ov.querySelectorAll('[data-sub-remove]').forEach(b=>b.onclick=()=>{ collect(); rows.splice(+b.dataset.subRemove,1); draw(); });
+    const add = ov.querySelector('#subAdd');
+    if(add) add.onclick=()=>{ collect(); rows.push({key:'n'+Date.now(), title:'', description:'—', assigneeId:'', deadline:'', deadlineTime:''}); draw(); };
+    ov.querySelector('#subCancel').onclick=()=>ov.remove();
+    const done = ov.querySelector('#subDone');
+    if(done) done.onclick=async ()=>{
+      collect();
+      if(rows.some(r=>!r.readonly && !r.title.trim())){ toast('У каждой подзадачи должно быть название'); return; }
+      const ok = await cfg.onSave(rows.filter(r=>r.readonly || true));
+      if(ok){ ov.remove(); }
+    };
+  }
+  draw();
+}
+// Сохранение правок уже существующих подзадач (из окна «Редактировать подзадачи»).
+async function saveExistingSubtasks(personal, parent, rows){
+  for(const r of rows){
+    if(r.readonly) continue;
+    if(!r.description.trim()){ toast(`У подзадачи «${r.title}» не заполнено описание`); return false; }
+    if(!personal && !r.assigneeId){ toast(`У подзадачи «${r.title}» не выбран исполнитель`); return false; }
+    if(!r.deadline){ toast(`У подзадачи «${r.title}» не указан дедлайн`); return false; }
+    if(parent.deadline && r.deadline > parent.deadline){ toast(`Дедлайн подзадачи «${r.title}» не может быть позже дедлайна задачи (до ${fmtDeadline(parent)})`); return false; }
+    const orig = tasksFor(personal).find(t=>t.id===r.key);
+    if(orig && orig.createdDate && r.deadline < orig.createdDate){ toast(`Дедлайн подзадачи «${r.title}» не может быть раньше даты постановки`); return false; }
+  }
+  await refreshTasksFromServer(personal);
+  const before = tasksFor(personal);
+  const changes = [];
+  const updated = before.map(t=>{
+    const r = rows.find(x=>x.key===t.id && !x.readonly);
+    if(!r) return t;
+    const next = {...t, title:r.title.trim(), description:r.description.trim(), assigneeId:r.assigneeId||null, deadline:r.deadline, deadlineTime:r.deadlineTime||'',
+      overdueReason: t.deadline===r.deadline ? (t.overdueReason||'') : ''};
+    if(t.deadline!==next.deadline || (t.deadlineTime||'')!==next.deadlineTime) changes.push(`«${next.title}»: ${t.deadline?fmtDeadline(t):'—'} → ${fmtDeadline(next)}`);
+    return next;
+  });
+  setTasksFor(personal, updated);
+  const ok = await persistTasksFor(personal);
+  if(!ok){ setTasksFor(personal, before); saveFailedToast(()=>saveExistingSubtasks(personal, parent, rows)); return false; }
+  changes.forEach(c=>logAudit('deadline_changed', c));
+  toast('Подзадачи сохранены');
+  render();
+  return true;
 }
 
 function openProjectsModal(personal, presetBlockId){
@@ -5360,6 +5536,7 @@ function openChecklistsModal(){
               <div class="item">
                 <div class="main">
                   <div class="title">${escapeHtml(cl.name)}</div>
+                  ${cl.description?`<div class="desc">${linkifyEscaped(cl.description)}</div>`:''}
                   <div class="meta"><span>${(cl.items||[]).length} пункт(ов)</span></div>
                 </div>
                 <div class="actions">
@@ -5393,9 +5570,8 @@ function openChecklistsModal(){
     modal.querySelectorAll('[data-apply-checklist]').forEach(b=>b.onclick=async ()=>{
       const cl = state.checklistsWork.find(c=>c.id===b.dataset.applyChecklist);
       if(!cl) return;
-      if(!(await showConfirm(`Создать задачу «${cl.name}» с ${(cl.items||[]).length} подзадачами?`, 'Добавить'))) return;
-      await applyChecklistToTasks(cl);
-      closeModal(); render();
+      state.taskSubtab = 'work';
+      openTaskModal(null, false, null, cl.name, null, {checklist: cl, description: cl.description||''});
     });
   }
   wire();
@@ -5417,6 +5593,7 @@ function openChecklistEditModal(checklistId, onDone){
     <div class="modal">
       <h3>${existing?'Изменить чек-лист':'Новый чек-лист'}</h3>
       <div class="field"><label>Название процесса (станет главной задачей)</label><input id="cl_name" value="${existing?escapeHtml(existing.name):''}" placeholder="Например: Открытие студии утром"></div>
+      <div class="field"><label>Описание — образ результата (попадёт в описание главной задачи)</label><textarea id="cl_desc" rows="3" placeholder="Каким должен быть результат: например, студия открыта вовремя, свет и музыка включены, зал готов к приёму гостей">${existing?escapeHtml(existing.description||''):''}</textarea></div>
       <label style="display:block;margin-bottom:6px;">Шаги (станут подзадачами)</label>
       <div id="cl_item_rows">${itemRowsHtml(initialItems)}</div>
       <button type="button" class="btn ghost small" id="addClItemRow">+ Добавить шаг</button>
@@ -5447,13 +5624,14 @@ function openChecklistEditModal(checklistId, onDone){
   ov.querySelector('#cancelCl').onclick=finish;
   ov.querySelector('#saveCl').onclick=async ()=>{
     const name = ov.querySelector('#cl_name').value.trim();
+    const description = ov.querySelector('#cl_desc').value.trim();
     if(!name){ toast('Введите название процесса'); return; }
     const items = Array.from(rowsWrap.querySelectorAll('.cl-item-input')).map(i=>i.value.trim()).filter(Boolean);
     await refreshChecklistsFromServer();
     if(existing){
-      state.checklistsWork = state.checklistsWork.map(c=>c.id===existing.id?{...c, name, items}:c);
+      state.checklistsWork = state.checklistsWork.map(c=>c.id===existing.id?{...c, name, description, items}:c);
     } else {
-      state.checklistsWork = state.checklistsWork.concat([{id:uid(), name, items}]);
+      state.checklistsWork = state.checklistsWork.concat([{id:uid(), name, description, items}]);
     }
     await saveChecklists();
     toast('Чек-лист сохранён');
@@ -6672,7 +6850,23 @@ function openEditEmployeeModal(empId, onDone){
 
 /* ---------------- modal helpers ---------------- */
 function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
-document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeModal(); });
+// Окна создания/редактирования задачи и события нельзя закрыть случайным кликом мимо окна или
+// клавишей Esc — сначала спрашиваем «Закрыть?». Кнопка «Отмена» закрывает сразу, без вопроса.
+let closeConfirmOpen = false;
+async function confirmCloseModal(){
+  if(closeConfirmOpen) return;
+  closeConfirmOpen = true;
+  try{
+    if(await showConfirm('Закрыть окно без сохранения?\nВведённые данные пропадут.', 'Закрыть')) closeModal();
+  } finally { closeConfirmOpen = false; }
+}
+document.addEventListener('keydown', (e)=>{
+  if(e.key!=='Escape') return;
+  if(document.querySelector('body > .overlay')) return; // открыто окно подтверждения — Esc относится к нему
+  const guarded = document.querySelector('#modalRoot #ov[data-guard-close]');
+  if(guarded){ confirmCloseModal(); return; }
+  closeModal();
+});
 
 function staffAccessAllowed(){
   return hasRole('Руководитель','Ассистент');

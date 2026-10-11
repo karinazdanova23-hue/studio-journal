@@ -173,7 +173,12 @@
   .item .main{flex:1;min-width:0;}
   .item .title{font-weight:600;font-size:14.5px;margin-bottom:3px;overflow-wrap:anywhere;word-break:break-word;}
   .item .meta{font-size:12px;color:var(--ink-soft);display:flex;gap:10px;flex-wrap:wrap;overflow-wrap:anywhere;}
-  .item .desc{font-size:13px;color:var(--ink-soft);margin-top:5px;overflow-wrap:anywhere;word-break:break-word;}
+  .item .desc{font-size:13px;color:var(--ink-soft);margin-top:5px;overflow-wrap:anywhere;word-break:break-word;white-space:pre-line;}
+  button.is-busy{opacity:.55;cursor:progress;}
+  #scrollTopBtn{position:fixed;right:18px;bottom:22px;width:46px;height:46px;border-radius:50%;border:none;background:var(--indigo,#33507d);color:#fff;font-size:22px;line-height:1;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,0.28);z-index:40;opacity:0;pointer-events:none;transform:translateY(10px);transition:opacity .2s,transform .2s;}
+  #scrollTopBtn.show{opacity:.92;pointer-events:auto;transform:none;}
+  #scrollTopBtn:hover{opacity:1;}
+  textarea.autogrow{min-height:60px;max-height:60vh;resize:vertical;overflow-y:auto;}
   .item .actions{display:flex;gap:6px;flex-wrap:wrap;}
   .task-check{width:19px;height:19px;flex:none;margin-top:2px;accent-color:var(--teal);cursor:pointer;}
   .task-check-locked{opacity:.45;cursor:not-allowed;}
@@ -424,7 +429,12 @@ function updateSavingIndicator(){
 //   {status:'failed'}      — не удалось прочитать (сервер перезапускается, сеть, 5xx) — это НЕ «пусто».
 // Раньше в обоих случаях возвращался null, и при сбое чтения страница принимала это за «данных нет» и
 // сама записывала пустые списки поверх настоящих (так 7 октября пропал весь календарь).
+let readsInFlight = 0;
 async function sGetState(key, shared){
+  readsInFlight++;
+  try{ return await sGetStateInner(key, shared); } finally { readsInFlight--; }
+}
+async function sGetStateInner(key, shared){
   if(shared === false){
     try{
       const v = window.localStorage.getItem('lj:'+key);
@@ -979,7 +989,7 @@ async function performTaskDeletion(personal, targetTask){
     setTasksFor(personal, beforeTasks.filter(t=>!idsSet.includes(t.id)));
     const ok = await withConfirmEmpty(()=>persistTasksFor(personal)); // человек сам подтвердил удаление
     if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(saveTaskDeletionTail); return false; }
-    logAudit('task_deleted', `«${targetTask.title}»${idsSet.length>1?` (вместе с подзадачами, всего ${idsSet.length})`:''}`);
+    if(!personal) logAudit('task_deleted', `«${targetTask.title}»${idsSet.length>1?` (вместе с подзадачами, всего ${idsSet.length})`:''}`);
     return true;
   }
   return await saveTaskDeletionTail();
@@ -1933,7 +1943,7 @@ function employeeColor(id){
 // подзадача не закрыта, саму задачу нельзя отмечать выполненной.
 function hasOpenSubtasks(t, personal){
   if(!t || !t.id) return false;
-  return tasksFor(personal).some(c=>c.parentId===t.id && c.status!=='done');
+  return tasksFor(personal).some(c=>c.parentId===t.id && c.status!=='done' && c.status!=='review');
 }
 // Значок «есть подзадачи»: показывает, сколько подзадач ещё не закрыто (пока они открыты,
 // саму задачу отметить выполненной нельзя).
@@ -1989,18 +1999,19 @@ function canEditTask(t, personal){
   // Руководитель и Ассистент могут редактировать любую рабочую задачу — например, чтобы
   // разнести существующие задачи по блокам и проектам, даже если ставил их не он.
   if(hasRole('Руководитель','Ассистент')) return true;
-  // Остальные сотрудники могут редактировать только задачи, отмеченные как «самостоятельно
-  // поставленные», и только если они сами их поставили или являются исполнителем.
-  return !!t.selfAssigned && (state.currentUserId === t.creatorId || state.currentUserId === t.assigneeId);
+  // Любой постановщик может редактировать задачу, которую сам поставил (в том числе после сохранения).
+  if(t.creatorId && state.currentUserId === t.creatorId) return true;
+  // Исполнитель может править только «самостоятельно поставленные» задачи.
+  return !!t.selfAssigned && state.currentUserId === t.assigneeId;
 }
 function whyCantEdit(t){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
-  return 'Редактировать можно только задачи, отмеченные как «самостоятельно поставленные», которые вы сами поставили или выполняете — либо Руководителю/Ассистенту.';
+  return `Редактировать задачу может только тот, кто её поставил${t&&t.creatorId?' — '+empName(t.creatorId):''}, либо Руководитель/Ассистент.`;
 }
 function whyCantComplete(t, personal){
   if(!state.currentUserId) return 'Сначала укажите, кто вы — кнопка «🙋 Кто я?» в шапке.';
   if(t && t.assigneeId && !(state.currentUserId === t.assigneeId)) return `Отметить выполненной может только исполнитель — ${empName(t.assigneeId)}.`;
-  if(hasOpenSubtasks(t, personal)) return 'Внутри есть незавершённая подзадача (или подзадача, вернувшаяся на доработку) — сначала закройте её.';
+  if(hasOpenSubtasks(t, personal)) return 'Внутри есть незавершённая подзадача (или подзадача, вернувшаяся на доработку) — сначала выполните её и отправьте на проверку.';
   return `Отметить выполненной может только исполнитель — ${empName(t&&t.assigneeId)}.`;
 }
 function withStatus(t, newStatus, comment, completionLink, overdueReason){
@@ -2012,7 +2023,8 @@ function withStatus(t, newStatus, comment, completionLink, overdueReason){
 // Исключение: если человек поставил задачу сам себе (постановщик = исполнитель), проверять
 // самого себя бессмысленно — задача сразу становится "Готово".
 function withStatusReview(t, comment, completionLink, overdueReason){
-  if(t.creatorId && t.assigneeId && t.creatorId===t.assigneeId){
+  const kidsOnReview = state.tasksWork.concat(state.personalTasks).some(c=>c.parentId===t.id && c.status==='review');
+  if(t.creatorId && t.assigneeId && t.creatorId===t.assigneeId && !kidsOnReview){
     return withStatus(t, 'done', comment, completionLink, overdueReason);
   }
   return {...t, status:'review', completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), overdueReason: overdueReason!==undefined ? overdueReason : (t.overdueReason||''), reworkNote:''};
@@ -2035,6 +2047,7 @@ async function approveTask(personal, id){
   const before = tasksFor(personal);
   const target = before.find(t=>t.id===id);
   if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
+  if(before.some(c=>c.parentId===id && c.status!=='done')){ toast('Сначала примите все подзадачи — потом можно принять главную задачу.'); return; }
   const updated = before.map(t=>t.id===id?{...t, status:'done', completedAt:todayISO(), reworkNote:'', approvedAt:todayISO(), approvedBy:state.currentUserId}:t);
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
@@ -2077,10 +2090,22 @@ async function reworkTaskSave(personal, id, note, deadline){
   const target = before.find(t=>t.id===id);
   if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
   const newDeadline = deadline || target.deadline;
-  const updated = before.map(t=>t.id===id?{...t, status:'progress', completedAt:null, deadline:newDeadline,
-    // Если дедлайн при возврате на доработку поменялся — старая причина просрочки больше не актуальна.
-    overdueReason: newDeadline!==t.deadline ? '' : (t.overdueReason||''),
-    reworkNote: note || 'Постановщик вернул задачу на доработку'}:t);
+  const reworkText = note || 'Постановщик вернул задачу на доработку';
+  const updated = before.map(t=>{
+    if(t.id===id) return {...t, status:'progress', completedAt:null, deadline:newDeadline,
+      // Если дедлайн при возврате на доработку поменялся — старая причина просрочки больше не актуальна.
+      overdueReason: newDeadline!==t.deadline ? '' : (t.overdueReason||''),
+      reworkNote: reworkText};
+    // Не приняли подзадачу — главная задача (если она сдана на проверку) тоже возвращается на доработку.
+    if(target.parentId && t.id===target.parentId && (t.status==='review' || t.status==='done')){
+      return {...t, status:'progress', completedAt:null, approvedAt:null, approvedBy:null, reworkNote:`Подзадача «${target.title}» возвращена на доработку: ${reworkText}`};
+    }
+    // Не приняли главную задачу — её подзадачи, ещё стоящие на проверке, тоже возвращаются на доработку.
+    if(t.parentId===id && t.status==='review'){
+      return {...t, status:'progress', completedAt:null, reworkNote:`Главная задача возвращена на доработку: ${reworkText}`};
+    }
+    return t;
+  });
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
   if(!ok){ setTasksFor(personal, before); saveFailedToast(()=>reworkTaskSave(personal, id, note, deadline)); return; }
@@ -2674,9 +2699,9 @@ async function saveDoneToggle(id, personal, result, cb, task, afterSuccess){
   const before = fresh || tasksFor(personal);
   // Последняя проверка уже по свежим данным: за время, пока вводился отчёт, кто-то мог добавить
   // подзадачу или вернуть её на доработку.
-  if(before.some(c=>c.parentId===id && c.status!=='done')){
+  if(before.some(c=>c.parentId===id && c.status!=='done' && c.status!=='review')){
     cb.checked = false;
-    toast('Внутри есть незавершённая подзадача — сначала закройте её.');
+    toast('Внутри есть незавершённая подзадача — сначала выполните её и отправьте на проверку.');
     render();
     return;
   }
@@ -2691,7 +2716,13 @@ async function saveDoneToggle(id, personal, result, cb, task, afterSuccess){
 async function saveUndoneToggle(id, personal, cb, afterSuccess){
   const fresh = await refreshTasksFromServer(personal);
   const before = fresh || tasksFor(personal);
-  setTasksFor(personal, before.map(t=>t.id===id?withStatus(t,'progress'):t));
+  const undoTarget = before.find(t=>t.id===id);
+  setTasksFor(personal, before.map(t=>{
+    if(t.id===id) return withStatus(t,'progress');
+    // Подзадачу вернули в работу — главная задача, сданная на проверку, тоже возвращается в работу.
+    if(undoTarget && undoTarget.parentId===t.id && t.status==='review') return withStatus(t,'progress');
+    return t;
+  }));
   const ok = await persistTasksFor(personal);
   if(!ok){ setTasksFor(personal, before); cb.checked=true; saveFailedToast(()=>saveUndoneToggle(id, personal, cb, afterSuccess)); return; }
   render();
@@ -2729,15 +2760,39 @@ function renderOverview(root){
   // чтобы задачи «до 10:00» шли раньше задач «в течение дня».
   const deadlineKey = t => (t.deadline||'9999-12-31') + ' ' + (t.deadlineTime||'23:59');
   const byDeadline = (a,b)=>deadlineKey(a).localeCompare(deadlineKey(b)) || (a.title||'').localeCompare(b.title||'','ru');
-  function taskRow(t){
+  // Подзадачи одной задачи внутри блока идут в том же порядке, что внутри самой задачи
+  // (порядок шагов: sortOrder, затем срок). Остальные задачи остаются отсортированными по сроку.
+  const orderSiblings = (list0)=>{
+    // Если в блоке есть и сама задача, и её подзадачи — подзадачи идут сразу под ней, в порядке шагов.
+    const inList = new Set(list0.map(t=>t.id));
+    const siblingCmp = (a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
+    const emit = (t, acc)=>{
+      acc.push(t);
+      list0.filter(c=>c.parentId===t.id).sort(siblingCmp).forEach(c=>emit(c, acc));
+      return acc;
+    };
+    const list = [];
+    list0.forEach(t=>{ if(!(t.parentId && inList.has(t.parentId))) emit(t, list); });
+    const out = list.slice();
+    const byParent = {};
+    out.forEach((t,i)=>{ if(t.parentId){ (byParent[t.parentId] = byParent[t.parentId]||[]).push(i); } });
+    Object.values(byParent).forEach(idxs=>{
+      if(idxs.length<2) return;
+      const sorted = idxs.map(i=>out[i]).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999'));
+      idxs.forEach((pos,k)=>{ out[pos] = sorted[k]; });
+    });
+    return out;
+  };
+  function taskRow(t, depth){
+    depth = depth||0;
     const overdue = t.deadline && t.deadline<todayISO();
     const timePassed = !overdue && t.deadline===todayISO() && t.deadlineTime && t.deadlineTime < new Date().toTimeString().slice(0,5);
     const personal = state.personalTasks.some(pt=>pt.id===t.id);
     const canComplete = canCompleteTask(t, personal);
-    return `<div class="item">
+    return `<div class="item"${depth?` style="margin-left:${depth*22}px;border-left:2px solid var(--paper-line);"`:''}>
       <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-ov-done="${t.id}" data-ov-done-personal="${personal?'1':'0'}" ${t.status==='done'?'checked':''} ${canComplete?'':'disabled'} title="${canComplete?'Отметить выполненной':whyCantComplete(t, personal)}">
       <div class="main" style="cursor:pointer;" data-ov-task="${t.id}">
-        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="title">${depth?'↳ ':''}${escapeHtml(t.title)}</div>
         <div class="meta">
           <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
           ${checklistBadgeHtml(t)}
@@ -2849,25 +2904,48 @@ function renderOverview(root){
           const today = todayISO();
           // Возвращённые на доработку задачи выносим в отдельный блок над остальными —
           // чтобы их не теряли среди обычных незавершённых задач — и не дублируем ниже.
-          const reworkList = allOpen.filter(t=>t.status==='progress' && t.reworkNote).sort(byDeadline);
-          const restOpen = allOpen.filter(t=>!(t.status==='progress' && t.reworkNote));
-          const overdueList = restOpen.filter(t=>t.deadline && t.deadline<today).sort(byDeadline);
-          const todayList = restOpen.filter(t=>t.deadline===today).sort(byDeadline);
-          const upcomingList = restOpen.filter(t=>t.deadline && t.deadline>today).sort(byDeadline);
-          const noDeadlineList = restOpen.filter(t=>!t.deadline);
+          // Подзадачи показываем сразу под главной задачей (в порядке шагов). Блок, в который попадает
+          // задача с подзадачами, определяется самым срочным из её пунктов; блоки сортируются по сроку и времени.
+          const openIds = new Set(allOpen.map(t=>t.id));
+          const siblingCmp = (x,y)=>((x.sortOrder||0)-(y.sortOrder||0)) || byDeadline(x,y);
+          const flatten = (t, depth, acc)=>{
+            acc.push({t, depth});
+            allOpen.filter(c=>c.parentId===t.id).sort(siblingCmp).forEach(c=>flatten(c, depth+1, acc));
+            return acc;
+          };
+          const clusters = allOpen
+            .filter(t=>!(t.parentId && openIds.has(t.parentId)))
+            .map(root=>{
+              const items = flatten(root, 0, []);
+              const key = items.map(x=>deadlineKey(x.t)).sort()[0];
+              return {items, key,
+                rework: items.some(x=>x.t.status==='progress' && x.t.reworkNote),
+                overdue: items.some(x=>x.t.deadline && x.t.deadline<today),
+                today: items.some(x=>x.t.deadline===today),
+                dated: items.some(x=>x.t.deadline)};
+            })
+            .sort((x,y)=>x.key.localeCompare(y.key) || (x.items[0].t.title||'').localeCompare(y.items[0].t.title||'','ru'));
+          const pick = (fn)=>clusters.filter(fn);
+          const reworkC = pick(c=>c.rework);
+          const overdueC = pick(c=>!c.rework && c.overdue);
+          const todayC = pick(c=>!c.rework && !c.overdue && c.today);
+          const upcomingC = pick(c=>!c.rework && !c.overdue && !c.today && c.dated);
+          const noDeadlineC = pick(c=>!c.rework && !c.dated);
+          const count = (cs)=>cs.reduce((n,c)=>n+c.items.length,0);
+          const rowsOf = (cs)=>cs.map(c=>c.items.map(x=>taskRow(x.t, x.depth)).join('')).join('');
           const groupLabel = (label)=>`<div class="subtitle" style="margin:14px 0 6px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">${label}</div>`;
           let html = '';
-          if(reworkList.length) html += groupLabel(`↩️ Возвращено на доработку (${reworkList.length})`) + `<div style="border:1px solid var(--brick);border-radius:10px;padding:2px;margin-bottom:10px;">${reworkList.map(taskRow).join('')}</div>`;
-          if(overdueList.length) html += `
+          if(reworkC.length) html += groupLabel(`↩️ Возвращено на доработку (${count(reworkC)})`) + `<div style="border:1px solid var(--brick);border-radius:10px;padding:2px;margin-bottom:10px;">${rowsOf(reworkC)}</div>`;
+          if(overdueC.length) html += `
             <div class="row-between" style="align-items:baseline;margin:14px 0 6px;">
-              <div class="subtitle" style="margin:0;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">⚠️ Просрочено (${overdueList.length})</div>
+              <div class="subtitle" style="margin:0;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">⚠️ Просрочено (${count(overdueC)})</div>
               <button type="button" class="btn ghost small" id="toggleOverdueList">${state.overviewOverdueCollapsed?'Показать':'Скрыть'}</button>
             </div>
-            ${state.overviewOverdueCollapsed ? '' : overdueList.map(taskRow).join('')}
+            ${state.overviewOverdueCollapsed ? '' : rowsOf(overdueC)}
           `;
-          if(todayList.length) html += groupLabel(`Сегодня (${todayList.length})`) + todayList.map(taskRow).join('');
-          if(upcomingList.length) html += groupLabel(`Предстоящие (${upcomingList.length})`) + upcomingList.map(taskRow).join('');
-          if(noDeadlineList.length) html += groupLabel(`Без дедлайна (${noDeadlineList.length})`) + noDeadlineList.map(taskRow).join('');
+          if(todayC.length) html += groupLabel(`Сегодня (${count(todayC)})`) + rowsOf(todayC);
+          if(upcomingC.length) html += groupLabel(`Предстоящие (${count(upcomingC)})`) + rowsOf(upcomingC);
+          if(noDeadlineC.length) html += groupLabel(`Без дедлайна (${count(noDeadlineC)})`) + rowsOf(noDeadlineC);
           return html || `<p class="subtitle" style="margin:0;">Открытых задач нет 🎉</p>`;
         })()}
       </div>
@@ -3112,7 +3190,7 @@ async function saveEventDeletion(personal, before, updated, evObj, isSeries){
   setEventsFor(personal, updated);
   const ok = await withConfirmEmpty(()=>persistEventsFor(personal)); // человек сам подтвердил удаление
   if(!ok){ setEventsFor(personal, before); saveFailedToast(()=>saveEventDeletion(personal, before, updated, evObj, isSeries)); return; }
-  if(evObj) logAudit('event_deleted', `«${evObj.title}»${isSeries?' (вся серия)':''}`);
+  if(evObj && !personal) logAudit('event_deleted', `«${evObj.title}»${isSeries?' (вся серия)':''}`);
   closeModal(); render();
 }
 function openDayModal(iso){
@@ -4362,11 +4440,11 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
     <div class="overlay" id="ov">
       <div class="modal">
         <h3>${existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':(checklist?'Новая задача из чек-листа':'Новая задача'))}${personal?' · личная':''}</h3>
-        ${existing && !editable?`<div class="note">Эту задачу вам поставили не вы сами, поэтому менять её нельзя — можно только посмотреть. Изменить может тот, кто её поставил (если задача отмечена как «самостоятельно поставленная»), либо Руководитель/Ассистент.</div>`:''}
+        ${existing && !editable?`<div class="note">Эту задачу поставили не вы, поэтому менять её нельзя — можно только посмотреть. Изменить может тот, кто её поставил, либо Руководитель/Ассистент.</div>`:''}
         <div id="t_formWrap" style="${editable?'':'pointer-events:none;opacity:.6;'}">
         ${parentId?`<div class="note">Подзадача для: <strong>${escapeHtml(parentTask?parentTask.title:'')}</strong></div>`:''}
         <div class="field"><label>Название *</label><input id="t_title" value="${existing?escapeHtml(existing.title):escapeHtml(presetTitle||'')}"></div>
-        <div class="field"><label>Описание *</label><textarea id="t_desc" rows="${checklist?4:2}">${existing?escapeHtml(existing.description||''):escapeHtml(opts.description||'')}</textarea></div>
+        <div class="field"><label>Описание *</label><textarea id="t_desc" class="autogrow" rows="${checklist?4:3}">${existing?escapeHtml(existing.description||''):escapeHtml(opts.description||'')}</textarea></div>
         <div class="field"><label>Ссылки (необязательно)</label>
           <div id="t_links_list">
             ${(taskLinks(existing).length?taskLinks(existing):['']).map(l=>`
@@ -4453,7 +4531,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
         </div>
         <div class="field" id="t_completion_wrap" style="${existing&&existing.status==='done'?'':'display:none;'}">
           <label>Что сделано? *</label>
-          <textarea id="t_completion_comment" rows="2" placeholder="Опишите, что было сделано">${existing?escapeHtml(existing.completionComment||''):''}</textarea>
+          <textarea id="t_completion_comment" class="autogrow" rows="4" placeholder="Опишите, что было сделано">${existing?escapeHtml(existing.completionComment||''):''}</textarea>
         </div>
         ${!existing && !parentId && !checklist ? `
         <div class="field"><label>Повтор</label>
@@ -4575,8 +4653,19 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
     handleProjectSelectPurchases(document.getElementById('t_project').value);
   }
 
+  // Длинные тексты (описание, отчёт «Что сделано?») показываем целиком: поле растёт по содержимому.
+  function autosizeTextareas(){
+    document.querySelectorAll('#modalRoot textarea.autogrow').forEach(ta=>{
+      if(!ta.offsetParent) return; // скрытое поле измерить нельзя — подгоним, когда оно появится
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight + 2, window.innerHeight*0.6) + 'px';
+    });
+  }
+  document.querySelectorAll('#modalRoot textarea.autogrow').forEach(ta=>ta.addEventListener('input', autosizeTextareas));
+  autosizeTextareas();
   document.getElementById('t_status').onchange=(e)=>{
     document.getElementById('t_completion_wrap').style.display = e.target.value==='done' ? '' : 'none';
+    autosizeTextareas();
   };
 
   const repeatEl = document.getElementById('t_repeat');
@@ -4939,9 +5028,9 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
       const ok = await persistTasksFor(personal);
       if(!ok){ setTasksFor(personal, beforeTasks); saveFailedToast(saveTaskMain); return; }
       if(!existing){
-        logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}${draftSubs?` (из чек-листа, подзадач: ${draftSubs.length})`:''}`);
+        if(!personal) logAudit('task_created', `«${data.title}»${data.assigneeId?` для ${empName(data.assigneeId)}`:''}${draftSubs?` (из чек-листа, подзадач: ${draftSubs.length})`:''}`);
       } else if(existing.deadline !== data.deadline){
-        logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDeadline(existing):'—'} → ${data.deadline?fmtDeadline(data):'—'}`);
+        if(!personal) logAudit('deadline_changed', `«${data.title}»: ${existing.deadline?fmtDeadline(existing):'—'} → ${data.deadline?fmtDeadline(data):'—'}`);
       }
       if(chosenStatus==='done' && (!existing || existing.status!=='done')){
         await maybeOfferPurchaseExpense(data, personal);
@@ -5060,7 +5149,7 @@ async function saveExistingSubtasks(personal, parent, rows){
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
   if(!ok){ setTasksFor(personal, before); saveFailedToast(()=>saveExistingSubtasks(personal, parent, rows)); return false; }
-  changes.forEach(c=>logAudit('deadline_changed', c));
+  if(!personal) changes.forEach(c=>logAudit('deadline_changed', c));
   toast('Подзадачи сохранены');
   render();
   return true;
@@ -5195,7 +5284,7 @@ function openProjectsModal(personal, presetBlockId){
       setProjectsFor(personal, before.concat([newProj]));
       const ok = await persistProjectsFor(personal);
       if(!ok){ setProjectsFor(personal, before); saveFailedToast(retry); return; }
-      logAudit('project_created', `«${name}»${blockIdForProj?` — блок «${blockName(blockIdForProj)}»`:''}`);
+      if(!personal) logAudit('project_created', `«${name}»${blockIdForProj?` — блок «${blockName(blockIdForProj)}»`:''}`);
       notifySelfSaved('✅ Проект создан', name);
       quickBlockId = null;
       modal.innerHTML = body(); wire(); render();
@@ -5305,7 +5394,7 @@ function openProjectsModal(personal, presetBlockId){
         const ok1 = await persistProjectsFor(personal);
         const ok2 = personal ? true : await saveTasksWork();
         if(!ok1 || !ok2){ setProjectsFor(personal, beforeProjects); setTasksFor(personal, beforeTasks); saveFailedToast(saveProjDeletion); return; }
-        if(doomedProj) logAudit('project_deleted', `«${doomedProj.name}»`);
+        if(doomedProj && !personal) logAudit('project_deleted', `«${doomedProj.name}»`);
         if(state.taskFilterProjectIds[selKey]) state.taskFilterProjectIds[selKey].delete(pid);
         modal.innerHTML = body(); wire(); render();
       }
@@ -6926,6 +7015,51 @@ async function startApp(){
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('/sw.js').catch(()=>{});
   }
+})();
+
+/* ---------- защита от повторных нажатий ----------
+   Пока сохранение после нажатия кнопки не завершилось (тост «сохранено» / «не удалось сохранить»),
+   повторное нажатие той же кнопки игнорируется — иначе задача/доход/событие создаются дважды. */
+(function(){
+  const GUARDED = 'button.btn:not(.ghost), button[data-approve-task], button[data-rework-task]';
+  const isGuarded = (b)=> b && b.matches(GUARDED) && !(b.classList.contains('small') && b.classList.contains('danger'));
+  const netBusy = ()=> pendingSaveCount + readsInFlight > 0;
+  let warnedAt = 0;
+  document.addEventListener('click', (e)=>{
+    const btn = e.target.closest && e.target.closest('button');
+    if(!isGuarded(btn)) return;
+    if(btn.dataset.busy){
+      e.preventDefault(); e.stopImmediatePropagation();
+      if(Date.now()-warnedAt>1500){ warnedAt = Date.now(); toast('Подождите — идёт сохранение…'); }
+      return;
+    }
+    btn.dataset.busy = '1';
+    btn.classList.add('is-busy');
+    const started = Date.now();
+    let quiet = 0;
+    const timer = setInterval(()=>{
+      quiet = netBusy() ? 0 : quiet+1;
+      // отпускаем кнопку, когда обмен с сервером завершён (две проверки подряд) и прошло минимум 0.5 с;
+      // страховка — не дольше 30 с, чтобы кнопка не «зависла» навсегда
+      if((quiet>=2 && Date.now()-started>500) || Date.now()-started>30000){
+        clearInterval(timer);
+        delete btn.dataset.busy;
+        btn.classList.remove('is-busy');
+      }
+    }, 150);
+  }, true);
+})();
+
+/* ---------- кнопка «наверх» ---------- */
+(function(){
+  const btn = document.createElement('button');
+  btn.id = 'scrollTopBtn'; btn.type = 'button'; btn.title = 'Наверх'; btn.setAttribute('aria-label','Наверх');
+  btn.textContent = '↑';
+  document.body.appendChild(btn);
+  const update = ()=>btn.classList.toggle('show', (window.scrollY || document.documentElement.scrollTop) > 400);
+  window.addEventListener('scroll', update, {passive:true});
+  btn.onclick = ()=>window.scrollTo({top:0, behavior:'smooth'});
+  update();
 })();
 </script>
 </body>

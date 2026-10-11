@@ -453,7 +453,100 @@ function requireAuth(req, res, next) {
 function isPrivilegedRole(role) {
   return role === 'Руководитель' || role === 'Ассистент';
 }
+// ---------- видимость задач по оргструктуре ----------
+// Руководитель и Ассистент видят все задачи. Остальные — только свои (где они исполнитель или постановщик)
+// и задачи своих подчинённых: Старший администратор — задачи Администраторов, РОП — задачи Менеджеров.
+// Сервер сам отфильтровывает список при чтении и аккуратно «вшивает» правки обратно при записи, поэтому
+// чужие задачи (и комментарии внутри них) недоступны даже через запрос в обход интерфейса.
+const TASK_LIST_KEYS = new Set(['tasks:work', 'archive:tasks']);
+function isRop(role) { return /^(роп|руководитель отдела продаж)$/i.test(String(role || '').trim()); }
+function isSubordinateRole(managerRole, subRole) {
+  const m = String(managerRole || '').trim(), r = String(subRole || '').trim();
+  if (m === 'Старший администратор') return /^администратор/i.test(r);
+  if (isRop(m)) return /менеджер/i.test(r) && !isRop(r);
+  return false;
+}
+function makeTaskVisibility(employee) {
+  if (isPrivilegedRole(employee.role)) return () => true;
+  const byId = {};
+  getEmployees().forEach(e => { if (e && e.id) byId[e.id] = e; });
+  return (t) => {
+    if (!t) return false;
+    if (t.assigneeId === employee.id || t.creatorId === employee.id) return true;
+    const a = t.assigneeId ? byId[t.assigneeId] : null;
+    return !!(a && isSubordinateRole(employee.role, a.role));
+  };
+}
+// Сводит список, который прислал браузер (видит только «своё»), с полным списком на сервере: невидимые
+// задачи остаются как были и на своих местах, видимые заменяются присланными.
+function mergeVisibleTasks(oldAll, visible, clientArr) {
+  const hiddenIds = new Set(oldAll.filter(t => t && !visible(t)).map(t => t.id));
+  const incoming = clientArr.filter(t => t && t.id && !hiddenIds.has(t.id));
+  const merged = [];
+  let k = 0;
+  oldAll.forEach(t => {
+    if (t && !hiddenIds.has(t.id)) { if (k < incoming.length) merged.push(incoming[k++]); }
+    else merged.push(t);
+  });
+  while (k < incoming.length) merged.push(incoming[k++]);
+  return merged;
+}
 // Ключи, которые может читать/писать только Руководитель/Ассистент
+// ---------- личные данные: у каждого сотрудника своё закрытое пространство ----------
+// Страница по-прежнему обращается к ключам personal:tasks, personal:events и т. д., но сервер сам подменяет
+// их на personal:<id сотрудника>:tasks … — id берётся из сессии, поэтому прочитать или записать чужие личные
+// данные нельзя (даже Руководителю или Ассистенту). Из снимков (бэкапов) чужие личные данные при выдаче вырезаются.
+const PERSONAL_LEGACY_RE = /^personal:(tasks|projects|funds|events|trash|archiveTasks|archiveEvents)$/;
+function personalKeyFor(key, empId) {
+  return key.startsWith('personal:') ? `personal:${empId}:${key.slice('personal:'.length)}` : key;
+}
+function getLeaderId() {
+  const emps = parseJsonArray(store.kv['roster:employees']) || [];
+  const leader = emps.find(e => e && e.role === 'Руководитель');
+  return leader ? leader.id : null;
+}
+function stripForeignPersonal(rawSnapshot, empId) {
+  // Из снимка убираем все личные данные, кроме собственных сотрудника (и «старых» общих — только Руководителю).
+  try {
+    const parsed = JSON.parse(rawSnapshot);
+    if (!parsed || typeof parsed !== 'object' || !parsed.data) return rawSnapshot;
+    const leaderId = getLeaderId();
+    Object.keys(parsed.data).forEach(k => {
+      if (!k.startsWith('personal:')) return;
+      const mine = k.startsWith(`personal:${empId}:`) || (PERSONAL_LEGACY_RE.test(k) && empId === leaderId);
+      if (!mine) delete parsed.data[k];
+    });
+    return JSON.stringify(parsed);
+  } catch (e) {
+    return JSON.stringify({ error: 'не удалось подготовить снимок' });
+  }
+}
+// Разовый перенос прежних общих личных данных к Руководителю (по решению владельца студии).
+async function migratePersonalToLeader() {
+  try {
+    const legacyKeys = Object.keys(store.kv).filter(k => PERSONAL_LEGACY_RE.test(k));
+    if (!legacyKeys.length) return;
+    const leaderId = getLeaderId();
+    if (!leaderId) { console.error('Перенос личных данных: не найден Руководитель — пропускаем.'); return; }
+    await runFrequentBackup();
+    const old = {};
+    legacyKeys.forEach(k => {
+      const target = personalKeyFor(k, leaderId);
+      old[k] = store.kv[k];
+      if (store.kv[target] === undefined) store.kv[target] = store.kv[k];
+      delete store.kv[k];
+    });
+    const ok = await persist();
+    if (!ok) {
+      legacyKeys.forEach(k => { store.kv[k] = old[k]; delete store.kv[personalKeyFor(k, leaderId)]; });
+      console.error('Перенос личных данных не удалось сохранить — оставлено как было, попробуем при следующем запуске.');
+      return;
+    }
+    console.log(`Личные данные перенесены к Руководителю (ключей: ${legacyKeys.length}).`);
+  } catch (e) {
+    console.error('Ошибка переноса личных данных:', e && e.message);
+  }
+}
 function isRestrictedKey(key) {
   return key.startsWith('funds:') || key.startsWith('personal:') || key.startsWith('backup:') || key.startsWith('audit:');
 }
@@ -636,14 +729,19 @@ app.get('/api/storage/:key', requireAuth, (req, res) => {
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
-  const value = store.kv[key];
+  let value = store.kv[personalKeyFor(key, req.employee.id)];
   if (value === undefined) return res.status(404).json({ error: 'not found' });
+  if (TASK_LIST_KEYS.has(key) && !isPrivilegedRole(req.employee.role)) {
+    const arr = parseJsonArray(value);
+    if (arr) value = JSON.stringify(arr.filter(makeTaskVisibility(req.employee)));
+  }
+  if (key.startsWith('backup:')) value = stripForeignPersonal(value, req.employee.id);
   res.json({ key, value });
 });
 
 app.put('/api/storage/:key', requireAuth, async (req, res) => {
   const key = req.params.key;
-  const { value } = req.body || {};
+  let { value } = req.body || {};
   if (typeof value !== 'string') return res.status(400).json({ error: 'value должен быть строкой' });
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
@@ -651,20 +749,35 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
   if (isRosterKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Изменять список сотрудников может только Руководитель или Ассистент' });
   }
-  const deletionError = findDisallowedDeletion(key, store.kv[key], value, req.employee);
+  const realKey = personalKeyFor(key, req.employee.id);
+  // Для обычных сотрудников список задач приходит «урезанным» (только видимое им) — сверяем с видимой частью
+  // старого списка, а перед записью вшиваем правки в полный список.
+  let oldForChecks = store.kv[realKey];
+  if (TASK_LIST_KEYS.has(key) && !isPrivilegedRole(req.employee.role)) {
+    const oldAll = parseJsonArray(store.kv[realKey]);
+    const clientArr = parseJsonArray(value);
+    if (!clientArr) return res.status(400).json({ error: 'ожидался список задач' });
+    const visible = makeTaskVisibility(req.employee);
+    if (oldAll) {
+      oldForChecks = JSON.stringify(oldAll.filter(visible));
+      req.mergedTasksValue = JSON.stringify(mergeVisibleTasks(oldAll, visible, clientArr));
+    }
+  }
+  const deletionError = findDisallowedDeletion(key, oldForChecks, value, req.employee);
   if (deletionError) {
     return res.status(403).json({ error: deletionError });
   }
-  const shrinkError = checkShrinkGuard(key, store.kv[key], value, req);
+  const shrinkError = checkShrinkGuard(key, oldForChecks, value, req);
+  if (!shrinkError && req.mergedTasksValue) value = req.mergedTasksValue;
   if (shrinkError) return res.status(409).json({ error: shrinkError });
   // Важно: сохраняем старое значение и дожидаемся РЕАЛЬНОЙ записи в хранилище (S3/диск), прежде
   // чем отвечать браузеру "ok". Если запись не удалась — откатываем в памяти и честно сообщаем об
   // ошибке, а не делаем вид, что всё сохранилось (раньше именно так терялись изменения).
-  const oldValue = store.kv[key];
-  store.kv[key] = value;
+  const oldValue = store.kv[realKey];
+  store.kv[realKey] = value;
   const saved = await (isBackupKey(key) ? saveBackups() : persist());
   if (!saved) {
-    if (oldValue === undefined) delete store.kv[key]; else store.kv[key] = oldValue;
+    if (oldValue === undefined) delete store.kv[realKey]; else store.kv[realKey] = oldValue;
     return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
   }
   res.json({ ok: true });
@@ -684,12 +797,13 @@ app.delete('/api/storage/:key', requireAuth, async (req, res) => {
   if ((key === 'tasks:work' || key === 'tasks:projects') && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
-  const oldValue = store.kv[key];
-  const hadValue = Object.prototype.hasOwnProperty.call(store.kv, key);
-  delete store.kv[key];
+  const realKey = personalKeyFor(key, req.employee.id);
+  const oldValue = store.kv[realKey];
+  const hadValue = Object.prototype.hasOwnProperty.call(store.kv, realKey);
+  delete store.kv[realKey];
   const saved = await (isBackupKey(key) ? saveBackups() : persist());
   if (!saved) {
-    if (hadValue) store.kv[key] = oldValue;
+    if (hadValue) store.kv[realKey] = oldValue;
     return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
   }
   res.json({ ok: true });
@@ -779,9 +893,12 @@ async function mergeAdminShiftProfiles() {
     if (!employees) return;
     const NAMES = new Set(['Администратор 1 смена', 'Администратор 2 смена', 'Администратор']);
     const isAdminProfile = e => e && (NAMES.has(e.role) || NAMES.has(e.name));
+    // Работаем только если остались старые профили «1 смена»/«2 смена». Одиночный или несколько
+    // профилей «Администратор» (добавленных вручную позже) не трогаем.
+    const OLD1 = 'Администратор 1 смена', OLD2 = 'Администратор 2 смена';
+    const hasOld = employees.some(e => e && (e.role === OLD1 || e.role === OLD2 || e.name === OLD1 || e.name === OLD2));
+    if (!hasOld) return;
     const group = employees.filter(isAdminProfile);
-    const alreadyClean = group.length === 1 && group[0].role === 'Администратор';
-    if (group.length === 0 || alreadyClean) return;
     await runFrequentBackup();
     // Остаётся профиль, у которого уже есть пароль (иначе — первый по списку).
     const keep = group.find(e => store.credentials[e.id] !== undefined) || group[0];
@@ -837,6 +954,7 @@ async function mergeAdminShiftProfiles() {
   }
 
   await mergeAdminShiftProfiles();
+  await migratePersonalToLeader();
 
   serverReady = true;
   console.log('Данные загружены, сервер готов к работе.');

@@ -497,7 +497,13 @@ function mergeVisibleTasks(oldAll, visible, clientArr) {
 // их на personal:<id сотрудника>:tasks … — id берётся из сессии, поэтому прочитать или записать чужие личные
 // данные нельзя (даже Руководителю или Ассистенту). Из снимков (бэкапов) чужие личные данные при выдаче вырезаются.
 const PERSONAL_LEGACY_RE = /^personal:(tasks|projects|funds|events|trash|archiveTasks|archiveEvents)$/;
-function personalKeyFor(key, empId) {
+// Исключение: личные ФИНАНСЫ Руководителя общие с Ассистентом — Ассистент работает с теми же записями
+// (по решению владельца студии). Личные задачи, события и т. д. по-прежнему закрыты от всех, кроме хозяина.
+function personalKeyFor(key, empId, role) {
+  if (key === 'personal:funds' && role === 'Ассистент') {
+    const leaderId = getLeaderId();
+    if (leaderId) return `personal:${leaderId}:funds`;
+  }
   return key.startsWith('personal:') ? `personal:${empId}:${key.slice('personal:'.length)}` : key;
 }
 function getLeaderId() {
@@ -505,7 +511,7 @@ function getLeaderId() {
   const leader = emps.find(e => e && e.role === 'Руководитель');
   return leader ? leader.id : null;
 }
-function stripForeignPersonal(rawSnapshot, empId) {
+function stripForeignPersonal(rawSnapshot, empId, role) {
   // Из снимка убираем все личные данные, кроме собственных сотрудника (и «старых» общих — только Руководителю).
   try {
     const parsed = JSON.parse(rawSnapshot);
@@ -513,7 +519,7 @@ function stripForeignPersonal(rawSnapshot, empId) {
     const leaderId = getLeaderId();
     Object.keys(parsed.data).forEach(k => {
       if (!k.startsWith('personal:')) return;
-      const mine = k.startsWith(`personal:${empId}:`) || (PERSONAL_LEGACY_RE.test(k) && empId === leaderId);
+      const mine = k.startsWith(`personal:${empId}:`) || (role === 'Ассистент' && k === `personal:${leaderId}:funds`) || (PERSONAL_LEGACY_RE.test(k) && empId === leaderId);
       if (!mine) delete parsed.data[k];
     });
     return JSON.stringify(parsed);
@@ -729,13 +735,13 @@ app.get('/api/storage/:key', requireAuth, (req, res) => {
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
-  let value = store.kv[personalKeyFor(key, req.employee.id)];
+  let value = store.kv[personalKeyFor(key, req.employee.id, req.employee.role)];
   if (value === undefined) return res.status(404).json({ error: 'not found' });
   if (TASK_LIST_KEYS.has(key) && !isPrivilegedRole(req.employee.role)) {
     const arr = parseJsonArray(value);
     if (arr) value = JSON.stringify(arr.filter(makeTaskVisibility(req.employee)));
   }
-  if (key.startsWith('backup:')) value = stripForeignPersonal(value, req.employee.id);
+  if (key.startsWith('backup:')) value = stripForeignPersonal(value, req.employee.id, req.employee.role);
   res.json({ key, value });
 });
 
@@ -749,7 +755,7 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
   if (isRosterKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Изменять список сотрудников может только Руководитель или Ассистент' });
   }
-  const realKey = personalKeyFor(key, req.employee.id);
+  const realKey = personalKeyFor(key, req.employee.id, req.employee.role);
   // Для обычных сотрудников список задач приходит «урезанным» (только видимое им) — сверяем с видимой частью
   // старого списка, а перед записью вшиваем правки в полный список.
   let oldForChecks = store.kv[realKey];
@@ -797,7 +803,7 @@ app.delete('/api/storage/:key', requireAuth, async (req, res) => {
   if ((key === 'tasks:work' || key === 'tasks:projects') && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
-  const realKey = personalKeyFor(key, req.employee.id);
+  const realKey = personalKeyFor(key, req.employee.id, req.employee.role);
   const oldValue = store.kv[realKey];
   const hadValue = Object.prototype.hasOwnProperty.call(store.kv, realKey);
   delete store.kv[realKey];

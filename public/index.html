@@ -866,13 +866,14 @@ const state = {
   reportStart:null,
   reportEnd:null,
   reportGroupBy:'employee',
+  reportMark:'all', // all | marked | unmarked — фильтр по отметке «отражать в отчёте»
   reportEmployee:'all',
   taskFilterEmployee:null,
   taskViewMode:'assigned',
   bulkSelectMode:false,
   bulkSelectedIds:new Set(),
   taskFilterBlockId:{work:null, personal:null},
-  overviewApprovedCollapsed:false,
+  overviewApprovedCollapsed:true,
   overviewOverdueCollapsed:false,
   taskHideOverdue:false,
   taskFilterProjectIds:{work:new Set(), personal:new Set()},
@@ -4508,6 +4509,12 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
           <label for="t_self_assigned" style="margin:0;cursor:pointer;">Самостоятельно поставленная задача (я сам(а) себе её поставил(а) — смогу редактировать её и дальше)</label>
         </div>
         `:''}
+        ${!personal?`
+        <div class="field" style="display:flex;align-items:center;gap:8px;flex-direction:row;">
+          <input type="checkbox" id="t_in_report" style="width:auto;" ${existing?(existing.inReport?'checked':''):(parentTask&&parentTask.inReport?'checked':'')}>
+          <label for="t_in_report" style="margin:0;cursor:pointer;">📌 Отражать в отчёте (при проверке отчётов такие задачи можно смотреть в первую очередь)</label>
+        </div>
+        `:''}
         <div class="field-row">
           <div class="field"><label>Дата постановки *</label><input type="date" id="t_createdDate" value="${existing?existing.createdDate||todayISO():todayISO()}"></div>
           <div class="field"><label>Дедлайн *</label><input type="date" id="t_deadline" value="${existing?existing.deadline||'':''}"></div>
@@ -4936,6 +4943,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
       sortOrder: existing ? (existing.sortOrder||0) : 0,
       selfAssigned: document.getElementById('t_self_assigned') ? document.getElementById('t_self_assigned').checked : !!(existing && existing.selfAssigned),
       fromChecklist: existing ? !!existing.fromChecklist : !!draftSubs,
+      inReport: document.getElementById('t_in_report') ? document.getElementById('t_in_report').checked : !!(existing && existing.inReport),
     };
 
     // Список задач — общий, и его сохраняют вперемешку с разных устройств/вкладок. Подтягиваем
@@ -5009,7 +5017,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
           deadline: r.deadline || data.deadline, deadlineTime: r.deadline ? (r.deadlineTime||'') : (r.deadlineTime || data.deadlineTime || ''),
           priority: data.priority, managementStage: null, status: 'progress', completedAt: null, completionComment: '', completionLink: '',
           eventId: data.eventId, purchaseAmount: null, purchaseStore: '', purchaseExpenseId: null, seriesId: null,
-          overdueReason: '', reworkNote: '', approvedAt: null, approvedBy: null, comments: [], sortOrder: i, selfAssigned: data.selfAssigned, fromChecklist: true,
+          overdueReason: '', reworkNote: '', approvedAt: null, approvedBy: null, comments: [], sortOrder: i, selfAssigned: data.selfAssigned, fromChecklist: true, inReport: data.inReport,
         })));
       }
       // Если у самой задачи (не подзадачи) поменялся проект или блок — подтягиваем все подзадачи следом.
@@ -5841,8 +5849,12 @@ function renderTaskAnalytics(el){
 }
 
 /* ================= REPORT (отчёт о выполненных задачах) ================= */
+function reportMarkOk(t){
+  return state.reportMark==='marked' ? !!t.inReport : state.reportMark==='unmarked' ? !t.inReport : true;
+}
 function computeReportTasks(){
   return state.tasksWork.filter(t=>
+    reportMarkOk(t) &&
     t.status==='done' && t.completedAt &&
     t.completedAt.slice(0,10) >= state.reportStart && t.completedAt.slice(0,10) <= state.reportEnd &&
     (state.reportEmployee==='all' || t.assigneeId===state.reportEmployee)
@@ -5855,6 +5867,7 @@ function computeReportTasks(){
 // исключает. Убрали лишний фильтр, чтобы отчёт не терял часть задач.
 function computeNotDoneTasks(){
   return state.tasksWork.filter(t=>
+    reportMarkOk(t) &&
     t.status!=='done' && t.deadline && t.deadline<=state.reportEnd &&
     (state.reportEmployee==='all' || t.assigneeId===state.reportEmployee)
   );
@@ -5897,8 +5910,9 @@ function renderTaskReport(el){
     const late = reportTaskWasLate(t);
     return `<div class="item">
       <div class="main">
-        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="title">${t.inReport?'📌 ':''}${escapeHtml(t.title)}</div>
         <div class="meta">
+          ${t.inReport?`<span class="badge" style="background:rgba(176,122,46,0.15);color:var(--ochre);">📌 в отчёт</span>`:''}
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
           ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
@@ -5916,8 +5930,9 @@ function renderTaskReport(el){
   function notDoneRowHtml(t){
     return `<div class="item">
       <div class="main">
-        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="title">${t.inReport?'📌 ':''}${escapeHtml(t.title)}</div>
         <div class="meta">
+          ${t.inReport?`<span class="badge" style="background:rgba(176,122,46,0.15);color:var(--ochre);">📌 в отчёт</span>`:''}
           ${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}
           ${t.blockId?`<span>📦 ${escapeHtml(blockName(t.blockId))}</span>`:''}
           ${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}
@@ -5944,7 +5959,7 @@ function renderTaskReport(el){
       tasks.forEach(t=>{ const key=t.assigneeId||'none'; (byEmp[key]=byEmp[key]||[]).push(t); });
       const groups = Object.entries(byEmp).map(([empId,ts])=>({
         label: empId==='none' ? 'Без исполнителя' : empName(empId),
-        tasks: ts.slice().sort((a,b)=>(a[sortKey]||'').localeCompare(b[sortKey]||'')),
+        tasks: ts.slice().sort((a,b)=>((state.reportMark==='all' ? (b.inReport?1:0)-(a.inReport?1:0) : 0) || (a[sortKey]||'').localeCompare(b[sortKey]||''))),
       })).sort((a,b)=>b.tasks.length-a.tasks.length);
       return groups.map(g=>groupBlock(g.label, g.tasks, rowFn)).join('');
     } else if(state.reportGroupBy==='project'){
@@ -5952,11 +5967,11 @@ function renderTaskReport(el){
       tasks.forEach(t=>{ const key=t.projectId||'none'; (byProj[key]=byProj[key]||[]).push(t); });
       const groups = Object.entries(byProj).map(([pid,ts])=>({
         label: pid==='none' ? 'Без проекта' : projectName(false,pid),
-        tasks: ts.slice().sort((a,b)=>(a[sortKey]||'').localeCompare(b[sortKey]||'')),
+        tasks: ts.slice().sort((a,b)=>((state.reportMark==='all' ? (b.inReport?1:0)-(a.inReport?1:0) : 0) || (a[sortKey]||'').localeCompare(b[sortKey]||''))),
       })).sort((a,b)=>b.tasks.length-a.tasks.length);
       return groups.map(g=>groupBlock(g.label, g.tasks, rowFn)).join('');
     } else {
-      const sorted = tasks.slice().sort((a,b)=>(a[sortKey]||'').localeCompare(b[sortKey]||''));
+      const sorted = tasks.slice().sort((a,b)=>((state.reportMark==='all' ? (b.inReport?1:0)-(a.inReport?1:0) : 0) || (a[sortKey]||'').localeCompare(b[sortKey]||'')));
       return groupBlock(null, sorted, rowFn);
     }
   }
@@ -6013,6 +6028,11 @@ function renderTaskReport(el){
       <button class="cat-chip ${state.reportGroupBy==='project'?'':'off'}" data-rep-group="project">По проекту</button>
       <button class="cat-chip ${state.reportGroupBy==='date'?'':'off'}" data-rep-group="date">По датам</button>
     </div>
+    <div class="cat-filters" style="margin-bottom:16px;">
+      <button class="cat-chip ${state.reportMark==='all'?'':'off'}" data-rep-mark="all">Все задачи (📌 сверху)</button>
+      <button class="cat-chip ${state.reportMark==='marked'?'':'off'}" data-rep-mark="marked">📌 Только отмеченные для отчёта</button>
+      <button class="cat-chip ${state.reportMark==='unmarked'?'':'off'}" data-rep-mark="unmarked">Без отметки</button>
+    </div>
     <div class="ledger-summary" style="margin-bottom:20px;">
       <div class="sum-card"><div class="label">Завершено</div><div class="val mono" style="color:var(--indigo);">${doneTasks.length}</div></div>
       <div class="sum-card spent"><div class="label">С опозданием</div><div class="val mono">${lateTasks.length}</div></div>
@@ -6051,18 +6071,23 @@ function renderTaskReport(el){
     }
     render();
   });
+  el.querySelectorAll('[data-rep-mark]').forEach(b=>b.onclick=()=>{
+    state.reportMark = b.dataset.repMark;
+    render();
+  });
   el.querySelectorAll('[data-rep-group]').forEach(b=>b.onclick=()=>{
     state.reportGroupBy = b.dataset.repGroup;
     render();
   });
 }
 function exportTaskReportCSV(){
-  const doneTasks = computeReportTasks().slice().sort((a,b)=>(a.completedAt||'').localeCompare(b.completedAt||''));
-  const notDoneTasks = computeNotDoneTasks().slice().sort((a,b)=>(a.deadline||'').localeCompare(b.deadline||''));
-  const header = ['Статус','Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка на результат','Ссылки'];
+  const doneTasks = computeReportTasks().slice().sort((a,b)=>(state.reportMark==='all'?(b.inReport?1:0)-(a.inReport?1:0):0) || (a.completedAt||'').localeCompare(b.completedAt||''));
+  const notDoneTasks = computeNotDoneTasks().slice().sort((a,b)=>(state.reportMark==='all'?(b.inReport?1:0)-(a.inReport?1:0):0) || (a.deadline||'').localeCompare(b.deadline||''));
+  const header = ['В отчёт','Статус','Задача','Проект','Исполнитель','Постановщик','Срок','Дата закрытия','Просрочено','Причина задержки','Комментарий о выполнении','Ссылка на результат','Ссылки'];
   const lines = [header.map(csvEscape).join(';')];
   doneTasks.forEach(t=>{
     lines.push([
+      t.inReport?'Да':'',
       'Готово',
       t.title,
       t.projectId?projectName(false,t.projectId):'',
@@ -6079,6 +6104,7 @@ function exportTaskReportCSV(){
   });
   notDoneTasks.forEach(t=>{
     lines.push([
+      t.inReport?'Да':'',
       'Не выполнено (' + (STATUSES[t.status]||t.status) + ')',
       t.title,
       t.projectId?projectName(false,t.projectId):'',

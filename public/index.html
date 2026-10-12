@@ -1542,6 +1542,10 @@ const AUDIT_ACTION_LABELS = {
   deadline_changed: 'Изменил(а) дедлайн',
   project_deleted: 'Удалил(а) проект',
   block_deleted: 'Удалил(а) блок',
+  project_archived: 'Отправил(а) проект в архив',
+  project_unarchived: 'Вернул(а) проект из архива',
+  block_archived: 'Отправил(а) блок в архив',
+  block_unarchived: 'Вернул(а) блок из архива',
   employee_added: 'Добавил(а) сотрудника',
   employee_deleted: 'Удалил(а) сотрудника',
   event_deleted: 'Удалил(а) событие',
@@ -1583,15 +1587,14 @@ async function savePersonalArchiveEvents(){ return await sSet('personal:archiveE
 
 /* ---------------- project/task helpers (work vs personal) ---------------- */
 function projectsFor(personal){ return personal ? state.personalProjects : state.projectsWork; }
-// Проект считается завершённым, когда в нём есть хотя бы одна задача и ВСЕ его задачи выполнены.
-// Ничего не хранится отдельно — это всегда вычисляется заново по актуальному списку задач,
-// поэтому снятие галочки с любой задачи мгновенно возвращает проект из архива обратно в активные.
+// Проект попадает в архив ТОЛЬКО по решению человека (флаг archived на самом проекте).
+// Выполнение всех задач проект в архив автоматически не отправляет.
 function projectTasksFor(personal, projectId){
   return tasksFor(personal).filter(t=>t.projectId===projectId);
 }
 function isProjectCompleted(personal, projectId){
-  const tasks = projectTasksFor(personal, projectId);
-  return tasks.length>0 && tasks.every(t=>t.status==='done');
+  const p = projectsFor(personal).find(x=>x.id===projectId);
+  return !!(p && p.archived);
 }
 function activeProjectsFor(personal){
   return projectsFor(personal).filter(p=>!isProjectCompleted(personal,p.id));
@@ -1618,8 +1621,31 @@ function directTasksInBlock(blockId){
   return state.tasksWork.filter(t=>t.blockId===blockId && !t.projectId);
 }
 function isBlockCompleted(blockId){
-  const tasks = tasksInBlock(blockId);
-  return tasks.length>0 && tasks.every(t=>t.status==='done');
+  const b = state.blocksWork.find(x=>x.id===blockId);
+  return !!(b && b.archived);
+}
+// Ручная отправка проекта/блока в архив и возврат обратно.
+async function setProjectArchived(personal, projectId, archived){
+  await refreshProjectsAndBlocksFromServer(personal);
+  const before = projectsFor(personal);
+  setProjectsFor(personal, before.map(p=>p.id===projectId ? {...p, archived: archived||undefined} : p));
+  const ok = await persistProjectsFor(personal);
+  if(!ok){ setProjectsFor(personal, before); saveFailedToast(()=>setProjectArchived(personal, projectId, archived)); return false; }
+  const pr = projectsFor(personal).find(p=>p.id===projectId);
+  if(!personal && pr) logAudit(archived?'project_archived':'project_unarchived', `«${pr.name}»`);
+  toast(archived ? 'Проект отправлен в архив' : 'Проект возвращён из архива');
+  return true;
+}
+async function setBlockArchived(blockId, archived){
+  await refreshProjectsAndBlocksFromServer();
+  const before = state.blocksWork;
+  state.blocksWork = before.map(b=>b.id===blockId ? {...b, archived: archived||undefined} : b);
+  const ok = await saveBlocksWork();
+  if(!ok){ state.blocksWork = before; saveFailedToast(()=>setBlockArchived(blockId, archived)); return false; }
+  const bl = state.blocksWork.find(b=>b.id===blockId);
+  if(bl) logAudit(archived?'block_archived':'block_unarchived', `«${bl.name}»`);
+  toast(archived ? 'Блок отправлен в архив' : 'Блок возвращён из архива');
+  return true;
 }
 function activeBlocksFor(){
   return state.blocksWork.filter(b=>!isBlockCompleted(b.id));
@@ -5180,6 +5206,7 @@ function openProjectsModal(personal, presetBlockId){
               <div class="main"><div class="title">${escapeHtml(b.name)}</div><div class="meta"><span>${projectsInBlock(b.id).length} проект(ов)</span></div></div>
               <div class="actions">
                 <button class="btn ghost small" data-quick-add-proj="${b.id}" title="Добавить проект сразу в этот блок">+ Проект</button>
+                <button class="btn ghost small" data-arch-block="${b.id}" title="${b.archived?'Вернуть из архива':'Отправить в архив'}">${b.archived?'↩ Из архива':'📥 В архив'}</button>
                 <button class="btn ghost small" data-rename-block="${b.id}">✎</button>
                 <button class="btn danger small" data-del-block="${b.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять блоки может только Руководитель или Ассистент'}">✕</button>
               </div>
@@ -5204,6 +5231,7 @@ function openProjectsModal(personal, presetBlockId){
             </select>
           ` : ''}
           <div class="actions">
+            <button class="btn ghost small" data-arch-proj="${p.id}" title="${p.archived?'Вернуть из архива':'Отправить в архив'}">${p.archived?'↩ Из архива':'📥 В архив'}</button>
             <button class="btn ghost small" data-rename-proj="${p.id}">✎</button>
             <button class="btn danger small" data-del-proj="${p.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять проекты может только Руководитель или Ассистент'}">✕</button>
           </div>
@@ -5326,6 +5354,20 @@ function openProjectsModal(personal, presetBlockId){
       }
       await runSync();
     };
+    modal.querySelectorAll('[data-arch-block]').forEach(b=>b.onclick=async ()=>{
+      const bid = b.dataset.archBlock;
+      const cur = state.blocksWork.find(x=>x.id===bid);
+      const to = !(cur && cur.archived);
+      if(to && !(await showConfirm('Отправить блок в архив? Он пропадёт из активных, вернуть можно в любой момент.', 'В архив'))) return;
+      if(await setBlockArchived(bid, to)){ modal.innerHTML = body(); wire(); render(); }
+    });
+    modal.querySelectorAll('[data-arch-proj]').forEach(b=>b.onclick=async ()=>{
+      const pid = b.dataset.archProj;
+      const cur = projectsFor(personal).find(x=>x.id===pid);
+      const to = !(cur && cur.archived);
+      if(to && !(await showConfirm('Отправить проект в архив? Он пропадёт из активных, вернуть можно в любой момент.', 'В архив'))) return;
+      if(await setProjectArchived(personal, pid, to)){ modal.innerHTML = body(); wire(); render(); }
+    });
     modal.querySelectorAll('[data-rename-block]').forEach(b=>b.onclick=async ()=>{
       const bid = b.dataset.renameBlock;
       const current = state.blocksWork.find(x=>x.id===bid);
@@ -6160,7 +6202,7 @@ function renderArchiveTab(root){
     <div class="row-between">
       <div>
         <h2 class="section-title">Архив</h2>
-        <p class="subtitle">Блоки и проекты, где выполнены все задачи, и отдельные выполненные задачи</p>
+        <p class="subtitle">Блоки и проекты, которые вы отправили в архив, и отдельные выполненные задачи</p>
       </div>
     </div>
     ${canSeePersonal?`
@@ -6170,14 +6212,14 @@ function renderArchiveTab(root){
       </div>
     `:''}
     ${!personal && completedBlocksFor().length ? `
-      <h3 class="section-title" style="font-size:15px;">📦 Завершённые блоки</h3>
+      <h3 class="section-title" style="font-size:15px;">📦 Блоки в архиве</h3>
       <div style="margin-bottom:24px;">
         ${completedBlocksFor().map(b=>{
           const blockProjects = projectsInBlock(b.id);
           const directTasks = directTasksInBlock(b.id).filter(t=>!t.parentId).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
           return `
             <div class="note" style="margin-bottom:10px;background:var(--rose-bg);border-color:var(--rose);">
-              <strong>📦 ${escapeHtml(b.name)}</strong> <span class="subtitle">— все задачи блока завершены</span>
+              <strong>📦 ${escapeHtml(b.name)}</strong> <button class="btn ghost small" data-unarch-block="${b.id}" style="margin-left:8px;">↩ Вернуть из архива</button>
             </div>
             ${directTasks.length ? `
               <div class="note" style="margin:0 0 8px 20px;"><strong>Задачи блока напрямую</strong> <span class="subtitle">— (${directTasks.length})</span></div>
@@ -6200,25 +6242,31 @@ function renderArchiveTab(root){
         }).join('')}
       </div>
     ` : ''}
-    <h3 class="section-title" style="font-size:15px;">📁 Завершённые проекты</h3>
+    <h3 class="section-title" style="font-size:15px;">📁 Проекты в архиве</h3>
     <div style="margin-bottom:24px;">
       ${completedProjects.length ? completedProjects.map(p=>{
         const tasks = projectTasksFor(personal, p.id).filter(t=>!t.parentId).sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
         return `
           <div class="note" style="margin-bottom:14px;">
-            <strong>${escapeHtml(p.name)}</strong> <span class="subtitle">— все задачи (${tasks.length}) выполнены</span>
+            <strong>${escapeHtml(p.name)}</strong> <span class="subtitle">— задач: ${tasks.length}, выполнено: ${tasks.filter(t=>t.status==='done').length}</span> <button class="btn ghost small" data-unarch-proj="${p.id}" style="margin-left:8px;">↩ Вернуть из архива</button>
           </div>
           <div class="item-list" style="margin-bottom:18px;">
             ${tasks.map(t=>taskItemHtml(t, personal, {depth:0})).join('')}
           </div>
         `;
-      }).join('') : `<p class="subtitle" style="margin:0 0 18px;">Пока нет завершённых проектов — как только все задачи в проекте будут отмечены выполненными, он появится здесь автоматически.</p>`}
+      }).join('') : `<p class="subtitle" style="margin:0 0 18px;">В архиве пока нет проектов. Отправить проект в архив можно в окне «Проекты» кнопкой «📥 В архив».</p>`}
     </div>
     <h3 class="section-title" style="font-size:15px;">✅ Отдельные выполненные задачи</h3>
     <div class="item-list">
       ${standaloneDone.length ? standaloneDone.map(t=>taskItemHtml(t, personal, {depth:0})).join('') : `<p class="subtitle" style="margin:0;">Здесь появятся выполненные задачи, которые не входят в полностью завершённый проект</p>`}
     </div>
   `;
+  root.querySelectorAll('[data-unarch-block]').forEach(b=>b.onclick=async ()=>{
+    if(await setBlockArchived(b.dataset.unarchBlock, false)) render();
+  });
+  root.querySelectorAll('[data-unarch-proj]').forEach(b=>b.onclick=async ()=>{
+    if(await setProjectArchived(personal, b.dataset.unarchProj, false)) render();
+  });
   root.querySelectorAll('[data-arc-sub]').forEach(b=>b.onclick=()=>{
     state.archiveSubtab = b.dataset.arcSub;
     render();

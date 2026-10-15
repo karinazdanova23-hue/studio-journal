@@ -2504,6 +2504,7 @@ function renderLoginScreen(message){
       const data = await r.json();
       if(!r.ok){ errEl.textContent = data.error || 'Не удалось войти'; return; }
       state.currentUserId = data.employee.id;
+      state.currentUserRole = data.employee.role;
       root.innerHTML = '';
       startApp();
     };
@@ -7059,7 +7060,82 @@ window.addEventListener('resize', ()=>{
 });
 
 /* ---------------- init ---------------- */
+/* ---------------- режим «Семья»: только просмотр календаря Руководителя ---------------- */
+function isFamilyRoleName(role){
+  const r = String(role||'').trim().toLowerCase();
+  return r==='муж' || r==='семья';
+}
+async function startFamilyApp(){
+  // Прячем всё рабочее: вкладки, поиск, напоминания, резервные копии, сотрудников.
+  ['searchBtn','bellBtn','dataBtn','staffBtn','tabsNav'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display='none'; });
+  const who = document.getElementById('whoAmIBtn');
+  if(who){ who.textContent='Выйти'; who.onclick = async ()=>{ try{ await fetch('/api/logout',{method:'POST',credentials:'include'}); }catch(e){} location.reload(); }; }
+  const root = document.getElementById('appContent');
+  root.innerHTML = `<div class="empty-state"><div class="big">Загрузка…</div></div>`;
+  let data = null;
+  for(let i=0;i<5 && !data;i++){
+    try{
+      const r = await fetch('/api/family/calendar', {credentials:'include'});
+      if(r.status===401){ location.reload(); return; }
+      if(r.ok) data = await r.json(); else await sleep(1500);
+    }catch(e){ await sleep(1500); }
+  }
+  if(!data){ root.innerHTML = `<div class="empty-state"><div class="big">Не удалось загрузить календарь. Обновите страницу.</div></div>`; return; }
+  const events = (data.events||[]).slice().sort((a,b)=> a.date===b.date ? (a.startTime||'').localeCompare(b.startTime||'') : a.date.localeCompare(b.date));
+  const ownerName = data.owner && data.owner.name ? data.owner.name : 'Календарь';
+  const MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+  const WD = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+  const now = new Date();
+  let year = now.getFullYear(), month = now.getMonth(), selected = null;
+  function draw(){
+    const first = new Date(year, month, 1);
+    const startOffset = (first.getDay()+6)%7;
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const pad = n=>String(n).padStart(2,'0');
+    const iso = d=>`${year}-${pad(month+1)}-${pad(d)}`;
+    const byDay = {};
+    events.forEach(e=>{ (byDay[e.date] = byDay[e.date] || []).push(e); });
+    let cells = '';
+    for(let i=0;i<startOffset;i++) cells += `<div></div>`;
+    for(let d=1; d<=daysInMonth; d++){
+      const key = iso(d), has = (byDay[key]||[]).length;
+      const isToday = key===dateToISO(now), isSel = key===selected;
+      cells += `<button data-fday="${key}" style="border:1px solid ${isSel?'var(--ink)':'var(--line,#ddd)'};background:${isToday?'var(--rose-bg,#fde)':'var(--card,#fff)'};border-radius:8px;padding:6px 2px;min-height:44px;cursor:pointer;font:inherit;">
+        <div>${d}</div>${has?`<div style="font-size:11px;color:var(--plum,#738);">● ${has}</div>`:''}</button>`;
+    }
+    const monthPrefix = `${year}-${pad(month+1)}`;
+    const list = events.filter(e=> selected ? e.date===selected : e.date.startsWith(monthPrefix));
+    root.innerHTML = `
+      <div class="row-between"><div>
+        <h2 class="section-title">Календарь: ${escapeHtml(ownerName)}</h2>
+        <p class="subtitle">Только просмотр</p></div></div>
+      <div style="display:flex;gap:8px;align-items:center;margin:12px 0;">
+        <button class="btn ghost small" id="famPrev">←</button>
+        <strong style="min-width:150px;text-align:center;">${MONTHS[month]} ${year}</strong>
+        <button class="btn ghost small" id="famNext">→</button>
+        <button class="btn ghost small" id="famToday">Сегодня</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center;margin-bottom:6px;font-size:12px;color:var(--ink-soft);">${WD.map(w=>`<div>${w}</div>`).join('')}</div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:18px;">${cells}</div>
+      <h3 class="section-title" style="font-size:15px;">${selected ? fmtDate(selected) : 'События месяца'} ${selected?`<button class="btn ghost small" id="famAll" style="margin-left:8px;">показать весь месяц</button>`:''}</h3>
+      <div class="item-list">
+        ${list.length ? list.map(e=>`
+          <div class="item"><div class="main">
+            <div class="title">${escapeHtml(e.title||'')}</div>
+            <div class="meta"><span>${fmtDate(e.date)}</span>${e.startTime?`<span>${escapeHtml(e.startTime)}${e.endTime?'–'+escapeHtml(e.endTime):''}</span>`:'<span>весь день</span>'}${CATEGORIES[e.category]?`<span>${escapeHtml(CATEGORIES[e.category])}</span>`:''}${e.location?`<span>📍 ${escapeHtml(e.location)}</span>`:''}</div>
+            ${e.notes?`<div class="desc">${escapeHtml(e.notes)}</div>`:''}
+          </div></div>`).join('') : `<p class="subtitle" style="margin:0;">Событий нет</p>`}
+      </div>`;
+    document.getElementById('famPrev').onclick=()=>{ month--; if(month<0){month=11;year--;} selected=null; draw(); };
+    document.getElementById('famNext').onclick=()=>{ month++; if(month>11){month=0;year++;} selected=null; draw(); };
+    document.getElementById('famToday').onclick=()=>{ year=now.getFullYear(); month=now.getMonth(); selected=dateToISO(now); draw(); };
+    const all = document.getElementById('famAll'); if(all) all.onclick=()=>{ selected=null; draw(); };
+    root.querySelectorAll('[data-fday]').forEach(b=>b.onclick=()=>{ selected = selected===b.dataset.fday ? null : b.dataset.fday; draw(); });
+  }
+  draw();
+}
 async function startApp(){
+  if(isFamilyRoleName(state.currentUserRole)) return startFamilyApp();
   const loaded = await loadAll();
   if(loaded === false) return; // сессия истекла — handleSessionExpired уже показал вход
   if(!state.taskFilterEmployee && state.currentUserId) state.taskFilterEmployee = state.currentUserId;
@@ -7085,6 +7161,7 @@ async function startApp(){
     return;
   }
   state.currentUserId = emp.id;
+  state.currentUserRole = emp.role;
   await startApp();
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('/sw.js').catch(()=>{});

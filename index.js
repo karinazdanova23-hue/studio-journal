@@ -444,9 +444,15 @@ function currentEmployee(req) {
   if (!employeeId) return null;
   return findEmployee(employeeId);
 }
+// Роль «Муж» / «Семья»: только просмотр календаря Руководителя (/api/family/calendar). Всё остальное — закрыто.
+function isFamilyRole(role) {
+  const r = String(role || '').trim().toLowerCase();
+  return r === 'муж' || r === 'семья';
+}
 function requireAuth(req, res, next) {
   const emp = currentEmployee(req);
   if (!emp) return res.status(401).json({ error: 'Не авторизован' });
+  if (isFamilyRole(emp.role)) return res.status(403).json({ error: 'Для вашей роли доступен только просмотр календаря' });
   req.employee = emp;
   next();
 }
@@ -672,6 +678,24 @@ app.post('/api/login', (req, res) => {
 app.post('/api/logout', (req, res) => {
   res.clearCookie(AUTH_COOKIE);
   res.json({ ok: true });
+});
+
+// Календарь Руководителя для семьи: личные дела + события, где участвует сам Руководитель. Только чтение.
+app.get('/api/family/calendar', (req, res) => {
+  const emp = currentEmployee(req);
+  if (!emp) return res.status(401).json({ error: 'Не авторизован' });
+  if (!isFamilyRole(emp.role)) return res.status(403).json({ error: 'Недоступно' });
+  const leaderId = getLeaderId();
+  const leader = getEmployees().find(e => e.id === leaderId);
+  if (!leaderId) return res.json({ owner: null, events: [] });
+  const shared = (parseJsonArray(store.kv['calendar:events']) || [])
+    .filter(e => e && Array.isArray(e.employeeIds) && e.employeeIds.includes(leaderId) && e.category !== 'personal');
+  const personal = parseJsonArray(store.kv[`personal:${leaderId}:events`]) || [];
+  const pick = e => ({
+    id: e.id, title: e.title, date: e.date, startTime: e.startTime || '', endTime: e.endTime || '',
+    category: e.category, format: e.format || '', location: e.location || '', notes: e.notes || '',
+  });
+  res.json({ owner: { name: leader ? leader.name : '' }, events: shared.concat(personal).filter(e => e && e.date).map(pick) });
 });
 
 app.get('/api/me', (req, res) => {

@@ -5814,6 +5814,29 @@ function openChecklistEditModal(checklistId, onDone){
 }
 
 /* ================= TASK ANALYTICS ================= */
+// Детализация: у каждого сотрудника — сколько задач в каждом проекте (всего / в работе / готово / просрочено).
+function computeEmployeeProjectStats(tasks, employees, projects, today){
+  const projName = id => { const p = projects.find(x=>x.id===id); return p ? p.name : 'Без проекта'; };
+  const groups = employees.map(e=>({key:e.id, emp:e, tasks:tasks.filter(t=>t.assigneeId===e.id)}));
+  groups.push({key:'none', emp:null, tasks:tasks.filter(t=>!t.assigneeId || !employees.some(e=>e.id===t.assigneeId))});
+  return groups.filter(g=>g.tasks.length).map(g=>{
+    const by = {};
+    g.tasks.forEach(t=>{
+      const name = t.projectId ? projName(t.projectId) : 'Без проекта';
+      const r = by[name] = by[name] || {name, total:0, open:0, done:0, overdue:0};
+      r.total++;
+      if(t.status==='done') r.done++; else { r.open++; if(t.deadline && t.deadline<today) r.overdue++; }
+    });
+    const list = Object.values(by).sort((a,b)=> (a.name==='Без проекта') - (b.name==='Без проекта') || b.total-a.total || a.name.localeCompare(b.name,'ru'));
+    return {emp:g.emp, total:g.tasks.length, open:list.reduce((n,r)=>n+r.open,0), done:list.reduce((n,r)=>n+r.done,0), overdue:list.reduce((n,r)=>n+r.overdue,0), projects:list};
+  }).sort((a,b)=>b.total-a.total);
+}
+function exportEmployeeProjectCSV(){
+  const stats = computeEmployeeProjectStats(state.tasksWork, state.employees, state.projectsWork, todayISO());
+  const lines = [['Сотрудник','Роль','Проект','Всего задач','В работе','Готово','Просрочено'].map(csvEscape).join(';')];
+  stats.forEach(g=>g.projects.forEach(r=>lines.push([g.emp?g.emp.name:'Без исполнителя', g.emp?g.emp.role||'':'', r.name, r.total, r.open, r.done, r.overdue].map(csvEscape).join(';'))));
+  downloadTextFile(`zadachi-po-proektam-${todayISO()}.csv`, 'text/csv;charset=utf-8', '\uFEFF'+lines.join('\n'));
+}
 function renderTaskAnalytics(el){
   const today = todayISO();
   const rows = state.employees.map(e=>{
@@ -5846,6 +5869,7 @@ function renderTaskAnalytics(el){
   }
   projectRows.sort((a,b)=>b.pct-a.pct);
   function barColor(pct){ return pct>=70?'var(--teal)':pct>=30?'var(--ochre)':'var(--brick)'; }
+  const empProjStats = computeEmployeeProjectStats(state.tasksWork, state.employees, state.projectsWork, today);
 
   const blockRows = state.blocksWork.map(b=>{
     const tasks = tasksInBlock(b.id);
@@ -5920,8 +5944,39 @@ function renderTaskAnalytics(el){
         </tbody>
       </table>
     </div>
-    <p class="subtitle" style="margin-top:14px;">Средний срок выполнения считается от даты постановки задачи до отметки «Готово». Личные задачи в статистику не входят.</p>
+    <div class="row-between" style="margin:26px 0 8px;align-items:baseline;">
+      <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--indigo);margin:0;">👥 Сотрудники по проектам — сколько задач в каждом</h4>
+      <button class="btn ghost small" id="anEmpProjCsv">⬇ CSV</button>
+    </div>
+    ${empProjStats.length ? empProjStats.map(g=>`
+      <div class="an-table" style="margin-bottom:12px;">
+        <table class="an-table-inner">
+          <thead><tr>
+            <th>${g.emp?escapeHtml(g.emp.name)+` <span class="subtitle" style="font-weight:400;">${escapeHtml(g.emp.role||'')}</span>`:'Без исполнителя'}</th>
+            <th>Всего</th><th>В работе</th><th>Готово</th><th>Просрочено</th>
+          </tr></thead>
+          <tbody>
+            ${g.projects.map(r=>`
+              <tr>
+                <td class="an-name" style="${r.name==='Без проекта'?'color:var(--ink-soft);font-weight:400;':''}">${escapeHtml(r.name)}</td>
+                <td class="an-num"><strong>${r.total}</strong></td>
+                <td class="an-num">${r.open}</td>
+                <td class="an-num" style="color:var(--teal);">${r.done}</td>
+                <td class="an-num" style="color:${r.overdue>0?'var(--brick)':'var(--ink-soft)'};font-weight:${r.overdue>0?'600':'400'};">${r.overdue}</td>
+              </tr>`).join('')}
+            <tr style="background:var(--paper,#faf8f2);">
+              <td class="an-name">Итого</td>
+              <td class="an-num"><strong>${g.total}</strong></td><td class="an-num">${g.open}</td>
+              <td class="an-num" style="color:var(--teal);">${g.done}</td>
+              <td class="an-num" style="color:${g.overdue>0?'var(--brick)':'var(--ink-soft)'};">${g.overdue}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>`).join('') : `<p class="subtitle">Пока нет задач для детализации.</p>`}
+    <p class="subtitle" style="margin-top:14px;">Средний срок выполнения считается от даты постановки задачи до отметки «Готово». Личные задачи в статистику не входят. В детализации по проектам подзадачи считаются отдельными задачами.</p>
   `;
+  const empProjCsvBtn = el.querySelector('#anEmpProjCsv');
+  if(empProjCsvBtn) empProjCsvBtn.onclick = exportEmployeeProjectCSV;
 }
 
 /* ================= REPORT (отчёт о выполненных задачах) ================= */

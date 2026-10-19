@@ -178,6 +178,9 @@
   #scrollTopBtn{position:fixed;right:18px;bottom:22px;width:46px;height:46px;border-radius:50%;border:none;background:var(--indigo,#33507d);color:#fff;font-size:22px;line-height:1;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,0.28);z-index:40;opacity:0;pointer-events:none;transform:translateY(10px);transition:opacity .2s,transform .2s;}
   #scrollTopBtn.show{opacity:.92;pointer-events:auto;transform:none;}
   #scrollTopBtn:hover{opacity:1;}
+  #fabAddTask{position:fixed;right:18px;bottom:80px;height:46px;padding:0 20px;border-radius:23px;border:none;background:var(--teal,#2f7d74);color:#fff;font:inherit;font-weight:700;font-size:15px;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,0.28);z-index:40;display:none;}
+  #fabAddTask.show{display:block;}
+  #fabAddTask:hover{filter:brightness(1.08);}
   textarea.autogrow{min-height:60px;max-height:60vh;resize:vertical;overflow-y:auto;}
   .item .actions{display:flex;gap:6px;flex-wrap:wrap;}
   .task-check{width:19px;height:19px;flex:none;margin-top:2px;accent-color:var(--teal);cursor:pointer;}
@@ -534,7 +537,7 @@ function handleSessionExpired(){
 }
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
-function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
+function todayISO(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; } // местная дата (не UTC)
 function fmtDate(iso){
   if(!iso) return '';
   const [y,m,d]=iso.split('-');
@@ -862,6 +865,7 @@ const state = {
   calMonth:new Date().getMonth(),
   taskSubtab:'work',
   archiveSubtab:'work',
+  analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null},
   taskBoardShowDone:false,
   reportStart:null,
   reportEnd:null,
@@ -920,6 +924,7 @@ const TABS = [
   {id:'calendar', label:'Календарь'},
   {id:'funds', label:'Финансы'},
   {id:'archive', label:'Архив'},
+  {id:'analytics', label:'📊 Аналитика', roles:['Руководитель','Ассистент']},
 ];
 const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', birthday:'Дни рождения', personal:'Личные дела Карины'};
 const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', birthday:'var(--rose)', personal:'var(--plum)'};
@@ -2331,7 +2336,7 @@ function empName(id){
 
 function renderTabs(){
   const nav = document.getElementById('tabsNav');
-  nav.innerHTML = TABS.map(t=>{
+  nav.innerHTML = TABS.filter(t=>!t.roles || hasRole(...t.roles)).map(t=>{
     let count = '';
     if(t.id==='tasks'){
       const openCount = state.tasksWork.filter(x=>x.status!=='done').length;
@@ -2357,8 +2362,10 @@ function computeReminders(filterAssigneeId){
   const today = todayISO();
   let allTasks = state.tasksWork.concat(personalAccessAllowed() ? state.personalTasks : []);
   if(filterAssigneeId){ allTasks = allTasks.filter(t=>t.assigneeId===filterAssigneeId); }
-  const overdueTasks = allTasks.filter(t=>t.deadline && t.deadline<today && t.status==='progress');
-  const dueTodayTasks = allTasks.filter(t=>t.deadline===today && t.status==='progress');
+  // «Открытая» задача = в работе или на согласовании (так же, как в списке задач в Обзоре).
+  const isOpenT = t=>t.status==='progress' || t.status==='approval';
+  const overdueTasks = allTasks.filter(t=>t.deadline && t.deadline<today && isOpenT(t));
+  const dueTodayTasks = allTasks.filter(t=>t.deadline===today && isOpenT(t));
   // При просмотре конкретного сотрудника считаем только события, в которых он действительно
   // участвует (employeeIds) — иначе (например, у Руководителя с полным расписанием) счётчик
   // показывал вообще все видимые события дня, даже те, где этот сотрудник не задействован.
@@ -2366,9 +2373,9 @@ function computeReminders(filterAssigneeId){
   if(filterAssigneeId){ eventsInScope = eventsInScope.filter(e=>e.employeeIds && e.employeeIds.includes(filterAssigneeId)); }
   const todayEvents = eventsInScope.filter(e=>e.date===today).sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
   const soon = new Date(); soon.setDate(soon.getDate()+3);
-  const soonISO = soon.toISOString().slice(0,10);
+  const soonISO = dateToISO(soon);
   const upcomingEvents = eventsInScope.filter(e=>e.date>today && e.date<=soonISO).sort((a,b)=>a.date.localeCompare(b.date));
-  const dueSoonTasks = allTasks.filter(t=>t.deadline && t.deadline>today && t.deadline<=soonISO && t.status==='progress').sort((a,b)=>a.deadline.localeCompare(b.deadline));
+  const dueSoonTasks = allTasks.filter(t=>t.deadline && t.deadline>today && t.deadline<=soonISO && isOpenT(t)).sort((a,b)=>a.deadline.localeCompare(b.deadline));
   return {overdueTasks, dueTodayTasks, todayEvents, upcomingEvents, dueSoonTasks};
 }
 // Задачи, поставленные (созданные) текущему пользователю за последние 3 дня —
@@ -2714,8 +2721,13 @@ function render(){
     }
   }
   else if(state.tab==='archive') renderArchiveTab(root);
+  else if(state.tab==='analytics'){
+    if(hasRole('Руководитель','Ассистент')) renderAnalytics(root);
+    else root.innerHTML = accessDeniedScreen('Аналитика доступна только Руководителю и Ассистенту.');
+  }
   renderBellBadge();
   renderWhoAmIBtn();
+  if(typeof updateAddTaskFab==='function') updateAddTaskFab();
 }
 
 /* ================= OVERVIEW ================= */
@@ -2960,18 +2972,21 @@ function renderOverview(root){
           const upcomingC = pick(c=>!c.rework && !c.overdue && !c.today && c.dated);
           const noDeadlineC = pick(c=>!c.rework && !c.dated);
           const count = (cs)=>cs.reduce((n,c)=>n+c.items.length,0);
+          // В заголовках групп считаем именно задачи с нужным сроком (а не всё, что показано рядом
+          // как подзадачи/родитель с другим сроком) — чтобы числа совпадали с карточками сверху.
+          const countBy = (cs, fn)=>cs.reduce((n,c)=>n+c.items.filter(x=>fn(x.t)).length,0);
           const rowsOf = (cs)=>cs.map(c=>c.items.map(x=>taskRow(x.t, x.depth)).join('')).join('');
           const groupLabel = (label)=>`<div class="subtitle" style="margin:14px 0 6px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">${label}</div>`;
           let html = '';
           if(reworkC.length) html += groupLabel(`↩️ Возвращено на доработку (${count(reworkC)})`) + `<div style="border:1px solid var(--brick);border-radius:10px;padding:2px;margin-bottom:10px;">${rowsOf(reworkC)}</div>`;
           if(overdueC.length) html += `
             <div class="row-between" style="align-items:baseline;margin:14px 0 6px;">
-              <div class="subtitle" style="margin:0;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">⚠️ Просрочено (${count(overdueC)})</div>
+              <div class="subtitle" style="margin:0;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">⚠️ Просрочено (${countBy(overdueC, t=>t.deadline && t.deadline<today)})</div>
               <button type="button" class="btn ghost small" id="toggleOverdueList">${state.overviewOverdueCollapsed?'Показать':'Скрыть'}</button>
             </div>
             ${state.overviewOverdueCollapsed ? '' : rowsOf(overdueC)}
           `;
-          if(todayC.length) html += groupLabel(`Сегодня (${count(todayC)})`) + rowsOf(todayC);
+          if(todayC.length) html += groupLabel(`Сегодня (${countBy(todayC, t=>t.deadline===today)})`) + rowsOf(todayC);
           if(upcomingC.length) html += groupLabel(`Предстоящие (${count(upcomingC)})`) + rowsOf(upcomingC);
           if(noDeadlineC.length) html += groupLabel(`Без дедлайна (${count(noDeadlineC)})`) + rowsOf(noDeadlineC);
           return html || `<p class="subtitle" style="margin:0;">Открытых задач нет 🎉</p>`;
@@ -3897,7 +3912,7 @@ function taskItemHtml(t, personal, opts){
         ${overdue ? renderOverdueReasonBlock(t, personal) : ''}
       </div>
       <div class="actions">
-        <button class="btn ghost small" data-add-sub="${t.id}">+ Подзадача</button>
+        <button class="btn ghost small" data-add-sub="${t.id}" title="Создать подзадачу">+ Подзадача</button>
         <button class="btn ghost small" data-comments-task="${t.id}" data-comments-personal="${personal?'1':'0'}">💬${(t.comments&&t.comments.length)?' '+t.comments.length:''}</button>
         <button class="btn ghost small" data-edit-task="${t.id}" style="${canEditTask(t,personal)?'':'opacity:.4;'}" title="${canEditTask(t,personal)?'Изменить':whyCantEdit(t)}">Изм.</button>
         <button class="btn danger small" data-del-task="${t.id}" style="${canDeleteTask(t,personal)?'':'opacity:.4;'}" title="${canDeleteTask(t,personal)?'Удалить':whyCantDelete(t)}">✕</button>
@@ -4467,7 +4482,15 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
   modal.innerHTML = `
     <div class="overlay" id="ov">
       <div class="modal">
-        <h3>${existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':(checklist?'Новая задача из чек-листа':'Новая задача'))}${personal?' · личная':''}</h3>
+        <div class="modal-topbar">
+          <h3>${existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':(checklist?'Новая задача из чек-листа':'Новая задача'))}${personal?' · личная':''}</h3>
+          <div class="modal-topbar-btns">
+            ${(draftSubs || (existing && !parentId && source.some(c=>c.parentId===existing.id)))?`<button class="btn ghost" id="editSubtasks">🧩 Редактировать подзадачи (${draftSubs ? draftSubs.length : source.filter(c=>c.parentId===existing.id).length})</button>`:''}
+            ${existing && editable?`<button class="btn ghost" id="addSubFromModal">+ Создать подзадачу</button>`:''}
+            <button class="btn ghost" id="cancelTask">${editable?'Отмена':'Закрыть'}</button>
+            ${editable?`<button class="btn" id="saveTask">Сохранить</button>`:''}
+          </div>
+        </div>
         ${existing && !editable?`<div class="note">Эту задачу поставили не вы, поэтому менять её нельзя — можно только посмотреть. Изменить может тот, кто её поставил, либо Руководитель/Ассистент.</div>`:''}
         <div id="t_formWrap" style="${editable?'':'pointer-events:none;opacity:.6;'}">
         ${parentId?`<div class="note">Подзадача для: <strong>${escapeHtml(parentTask?parentTask.title:'')}</strong></div>`:''}
@@ -4597,15 +4620,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
           <input type="hidden" id="t_event" value="">
         </div>
         </div>
-        <div class="modal-actions">
-          ${(draftSubs || (existing && !parentId && source.some(c=>c.parentId===existing.id)))?`<button class="btn ghost" id="editSubtasks" style="margin-right:auto;">🧩 Редактировать подзадачи (${draftSubs ? draftSubs.length : source.filter(c=>c.parentId===existing.id).length})</button>`:''}
-          ${existing?`<button class="btn danger" id="deleteTask" style="${canDeleteTask(existing,personal)?'':'opacity:.4;'}" title="${canDeleteTask(existing,personal)?'Удалить задачу':whyCantDelete(existing)}">Удалить</button>`:''}
-          <button class="btn ghost" id="cancelTask">${editable?'Отмена':'Закрыть'}</button>
-          ${editable?`<button class="btn" id="saveTask">Сохранить</button>`:''}
-        </div>
+        ${existing?`<div class="modal-actions">
+          <button class="btn danger" id="deleteTask" style="${canDeleteTask(existing,personal)?'':'opacity:.4;'}" title="${canDeleteTask(existing,personal)?'Удалить задачу':whyCantDelete(existing)}">Удалить</button>
+        </div>`:''}
       </div>
     </div>`;
   document.getElementById('cancelTask').onclick=closeModal;
+  const addSubModalBtn = document.getElementById('addSubFromModal');
+  if(addSubModalBtn) addSubModalBtn.onclick=async ()=>{
+    const dirty = document.getElementById('t_title').value.trim()!==(existing.title||'').trim() ||
+                  document.getElementById('t_desc').value.trim()!==(existing.description||'').trim();
+    if(dirty && !(await showConfirm('В этой задаче есть несохранённые изменения. Создать подзадачу без их сохранения?', 'Создать подзадачу'))) return;
+    closeModal();
+    openTaskModal(null, personal, existing.id);
+  };
   if(editable){
     document.getElementById('ov').setAttribute('data-guard-close','1');
     document.getElementById('ov').onclick=(ev)=>{ if(ev.target.id==='ov') confirmCloseModal(); };
@@ -5136,15 +5164,20 @@ function openSubtasksEditor(cfg){
   }
   function draw(){
     ov.innerHTML = `<div class="modal" style="max-width:640px;">
-      <h3>${escapeHtml(cfg.heading)}</h3>
+      <div class="modal-topbar">
+        <h3>${escapeHtml(cfg.heading)}</h3>
+        <div class="modal-topbar-btns">
+          ${cfg.allowAdd && !cfg.readonly ? '<button type="button" class="btn ghost" id="subAdd">+ Создать подзадачу</button>' : ''}
+          ${!cfg.allowAdd && cfg.parentTask && canEditTask(cfg.parentTask, cfg.personal) ? '<button type="button" class="btn ghost" id="subCreate">+ Создать подзадачу</button>' : ''}
+          <button class="btn ghost" id="subCancel">Отмена</button>
+          ${cfg.readonly ? '' : '<button class="btn" id="subDone">Сохранить</button>'}
+        </div>
+      </div>
       ${hint()}
       <div id="subRows">${rows.map(rowHtml).join('') || '<p class="subtitle">Подзадач нет</p>'}</div>
-      ${cfg.allowAdd ? '<button type="button" class="btn ghost small" id="subAdd">+ Добавить подзадачу</button>' : ''}
-      <div class="modal-actions">
-        <button class="btn ghost" id="subCancel">Отмена</button>
-        ${cfg.readonly ? '' : '<button class="btn" id="subDone">Готово</button>'}
-      </div>
     </div>`;
+    const createNew = ov.querySelector('#subCreate');
+    if(createNew) createNew.onclick=()=>{ ov.remove(); closeModal(); openTaskModal(null, cfg.personal, cfg.parentTask.id); };
     ov.querySelectorAll('[data-sub-remove]').forEach(b=>b.onclick=()=>{ collect(); rows.splice(+b.dataset.subRemove,1); draw(); });
     const add = ov.querySelector('#subAdd');
     if(add) add.onclick=()=>{ collect(); rows.push({key:'n'+Date.now(), title:'', description:'—', assigneeId:'', deadline:'', deadlineTime:''}); draw(); };
@@ -5968,6 +6001,7 @@ function renderTaskReport(el){
         ${late && t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
         ${taskLinksHtml(t)}
       </div>
+      <div class="actions"><button type="button" class="btn ghost small" data-edit-task="${t.id}" style="${canEditTask(t,false)?'':'opacity:.4;'}" title="${canEditTask(t,false)?'Изменить задачу':whyCantEdit(t)}">Изм.</button></div>
     </div>`;
   }
   function notDoneRowHtml(t){
@@ -5986,6 +6020,7 @@ function renderTaskReport(el){
         ${t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
         ${t.reworkNote?`<div class="desc" style="color:var(--brick);">↩️ На доработке: ${linkifyEscaped(t.reworkNote)}</div>`:''}
       </div>
+      <div class="actions"><button type="button" class="btn ghost small" data-edit-task="${t.id}" style="${canEditTask(t,false)?'':'opacity:.4;'}" title="${canEditTask(t,false)?'Изменить задачу':whyCantEdit(t)}">Изм.</button></div>
     </div>`;
   }
   function groupBlock(label, tasks, rowFn){
@@ -6095,6 +6130,14 @@ function renderTaskReport(el){
   document.getElementById('rep_end').onchange = (e)=>{ state.reportEnd = e.target.value; render(); };
   document.getElementById('rep_emp').onchange = (e)=>{ state.reportEmployee = e.target.value; render(); };
   document.getElementById('rep_download').onclick = ()=>exportTaskReportCSV();
+  // Редактирование задачи прямо из отчёта — то же окно, что и в списке задач.
+  el.querySelectorAll('[data-edit-task]').forEach(b=>b.onclick=()=>{
+    const id = b.dataset.editTask;
+    const t = state.tasksWork.find(x=>x.id===id);
+    if(!t){ toast('Задача не найдена — обновите страницу'); return; }
+    if(!canEditTask(t, false)){ toast(whyCantEdit(t)); return; }
+    openTaskModal(id, false);
+  });
   el.querySelectorAll('[data-rep-period]').forEach(b=>b.onclick=()=>{
     const now = new Date();
     if(b.dataset.repPeriod==='week'){
@@ -6183,6 +6226,150 @@ function exportTaskReportCSV(){
 
   const csv = '\uFEFF' + lines.join('\r\n');
   downloadTextFile(`otchet-zadachi-${state.reportStart}--${state.reportEnd}.csv`, 'text/csv;charset=utf-8', csv);
+}
+
+/* ================= ANALYTICS: время на встречах ================= */
+// Встречи = категории «Планёрки» (planning) и «Рабочие встречи» (meeting). Длительность — по времени начала/конца события.
+const MEETING_CATS = ['planning','meeting'];
+function timeToMin(t){
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t||'');
+  return m ? (+m[1])*60 + (+m[2]) : null;
+}
+function eventDurationMin(e){
+  const a = timeToMin(e.startTime), b = timeToMin(e.endTime);
+  if(a===null || b===null || b<=a) return null; // длительность неизвестна
+  return b - a;
+}
+function fmtDur(min){
+  min = Math.round(min||0);
+  if(!min) return '0 ч';
+  const h = Math.floor(min/60), m = min%60;
+  return (h ? h+' ч' : '') + (h && m ? ' ' : '') + (m ? m+' мин' : '');
+}
+function analyticsRange(mode, anchorISO){
+  const d = new Date(anchorISO+'T00:00:00');
+  let from, to, label;
+  const MON = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
+  if(mode==='week'){
+    const wd = (d.getDay()+6)%7;
+    from = new Date(d); from.setDate(d.getDate()-wd);
+    to = new Date(from); to.setDate(from.getDate()+6);
+    label = `${fmtDate(dateToISO(from))} — ${fmtDate(dateToISO(to))}`;
+  } else if(mode==='quarter'){
+    const q = Math.floor(d.getMonth()/3);
+    from = new Date(d.getFullYear(), q*3, 1);
+    to = new Date(d.getFullYear(), q*3+3, 0);
+    label = `${q+1} квартал ${d.getFullYear()}`;
+  } else if(mode==='year'){
+    from = new Date(d.getFullYear(), 0, 1);
+    to = new Date(d.getFullYear(), 11, 31);
+    label = `${d.getFullYear()} год`;
+  } else {
+    from = new Date(d.getFullYear(), d.getMonth(), 1);
+    to = new Date(d.getFullYear(), d.getMonth()+1, 0);
+    label = `${MON[d.getMonth()]} ${d.getFullYear()}`;
+  }
+  return {from:dateToISO(from), to:dateToISO(to), label};
+}
+function shiftAnalyticsAnchor(mode, anchorISO, dir){
+  const d = new Date(anchorISO+'T00:00:00');
+  if(mode==='week') d.setDate(d.getDate()+7*dir);
+  else if(mode==='quarter') d.setMonth(d.getMonth()+3*dir);
+  else if(mode==='year') d.setFullYear(d.getFullYear()+dir);
+  else d.setMonth(d.getMonth()+dir, 1);
+  return dateToISO(d);
+}
+// Считает время на встречах по сотрудникам за период. Возвращает строки, отсортированные по убыванию времени.
+function computeMeetingStats(fromISO, toISO, pastOnly, employees, events, nowDate){
+  const today = dateToISO(nowDate || new Date());
+  const meetings = events.filter(e=> MEETING_CATS.includes(e.category) && e.date>=fromISO && e.date<=toISO && (!pastOnly || e.date<=today));
+  const rows = employees.map(emp=>{
+    const mine = meetings.filter(e=>(e.employeeIds||[]).includes(emp.id)).sort((a,b)=> a.date===b.date ? (a.startTime||'').localeCompare(b.startTime||'') : a.date.localeCompare(b.date));
+    let planMin=0, meetMin=0, unknown=0;
+    mine.forEach(e=>{
+      const dur = eventDurationMin(e);
+      if(dur===null){ unknown++; return; }
+      if(e.category==='planning') planMin += dur; else meetMin += dur;
+    });
+    return {emp, count:mine.length, planMin, meetMin, totalMin:planMin+meetMin, unknown, list:mine};
+  });
+  rows.sort((a,b)=> b.totalMin-a.totalMin || b.count-a.count || a.emp.name.localeCompare(b.emp.name));
+  return {rows, meetingsTotal:meetings.length};
+}
+function renderAnalytics(root){
+  const st = state.analytics;
+  if(!st.anchor) st.anchor = todayISO();
+  const range = analyticsRange(st.mode, st.anchor);
+  const allEvents = (state.events||[]).concat(state.archiveEvents||[]);
+  const {rows, meetingsTotal} = computeMeetingStats(range.from, range.to, st.pastOnly, state.employees, allEvents);
+  const active = rows.filter(r=>r.count>0);
+  const idle = rows.filter(r=>r.count===0);
+  const maxMin = Math.max(1, ...rows.map(r=>r.totalMin));
+  const sumMin = rows.reduce((s,r)=>s+r.totalMin,0);
+  const noEndCount = new Set(rows.flatMap(r=>r.list.filter(e=>eventDurationMin(e)===null).map(e=>e.id))).size;
+  const MODES = {week:'Неделя', month:'Месяц', quarter:'Квартал', year:'Год'};
+  const barRow = r => {
+    const wPlan = r.planMin/maxMin*100, wMeet = r.meetMin/maxMin*100;
+    const open = st.openEmp===r.emp.id;
+    return `
+      <div class="item" style="display:block;cursor:pointer;" data-an-emp="${r.emp.id}">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
+          <div><strong>${escapeHtml(r.emp.name)}</strong> <span class="subtitle">${escapeHtml(r.emp.role||'')}</span></div>
+          <div><strong>${fmtDur(r.totalMin)}</strong> <span class="subtitle">· встреч: ${r.count}</span></div>
+        </div>
+        <div style="display:flex;height:12px;border-radius:6px;background:var(--line,#eee);overflow:hidden;margin:6px 0 2px;">
+          <div title="Планёрки: ${fmtDur(r.planMin)}" style="width:${wPlan}%;background:${CATEGORY_COLORS.planning};"></div>
+          <div title="Рабочие встречи: ${fmtDur(r.meetMin)}" style="width:${wMeet}%;background:${CATEGORY_COLORS.meeting};"></div>
+        </div>
+        <div class="subtitle" style="font-size:12px;">Планёрки ${fmtDur(r.planMin)} · Рабочие встречи ${fmtDur(r.meetMin)}${r.count? ` · в среднем ${fmtDur((r.planMin+r.meetMin)/Math.max(1,r.count-r.unknown))}`:''}${r.unknown?` · без времени окончания: ${r.unknown}`:''}</div>
+        ${open ? `<div style="margin-top:8px;border-top:1px solid var(--line,#ddd);padding-top:6px;">
+          ${r.list.map(e=>{ const d = eventDurationMin(e); return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:2px 0;">
+            <span>${fmtDate(e.date)} ${e.startTime?escapeHtml(e.startTime)+(e.endTime?'–'+escapeHtml(e.endTime):''):''} · ${escapeHtml(e.title||'')} <span class="subtitle">(${escapeHtml(CATEGORIES[e.category]||'')})</span></span>
+            <span>${d===null?'—':fmtDur(d)}</span></div>`; }).join('')}
+        </div>` : ''}
+      </div>`;
+  };
+  root.innerHTML = `
+    <div class="row-between">
+      <div>
+        <h2 class="section-title">Аналитика: время на встречах</h2>
+        <p class="subtitle">Планёрки и рабочие встречи — сколько времени каждый сотрудник проводит на них. Считается по времени начала и конца события в календаре.</p>
+      </div>
+      <button class="btn ghost small" id="anCsv">⬇ CSV</button>
+    </div>
+    <div class="cat-filters" style="margin:12px 0;">
+      ${Object.entries(MODES).map(([k,v])=>`<button class="cat-chip ${st.mode===k?'':'off'}" data-an-mode="${k}">${v}</button>`).join('')}
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <button class="btn ghost small" id="anPrev">←</button>
+      <strong style="min-width:190px;text-align:center;">${escapeHtml(range.label)}</strong>
+      <button class="btn ghost small" id="anNext">→</button>
+      <button class="btn ghost small" id="anNow">Сейчас</button>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px;margin-left:8px;"><input type="checkbox" id="anPast" ${st.pastOnly?'checked':''}> только уже прошедшие</label>
+    </div>
+    <div class="note" style="margin-bottom:14px;">
+      Всего встреч за период: <strong>${meetingsTotal}</strong> · суммарно по сотрудникам: <strong>${fmtDur(sumMin)}</strong>
+      <span style="margin-left:10px;"><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.planning};"></span> Планёрки
+      <span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.meeting};margin-left:8px;"></span> Рабочие встречи</span>
+      ${noEndCount ? `<div class="subtitle" style="margin-top:4px;">У ${noEndCount} встреч(и) не указано время начала или конца — в часы они не входят, но учтены в количестве.</div>` : ''}
+    </div>
+    <div class="item-list">
+      ${active.length ? active.map(barRow).join('') : `<p class="subtitle" style="margin:0;">За этот период встреч с участниками нет.</p>`}
+    </div>
+    ${idle.length && active.length ? `<p class="subtitle" style="margin-top:12px;">Без встреч за период: ${idle.map(r=>escapeHtml(r.emp.name)).join(', ')}</p>` : ''}
+    <p class="subtitle" style="margin-top:14px;">Нажмите на сотрудника, чтобы увидеть список его встреч. Если на встрече несколько участников, время засчитывается каждому из них.</p>
+  `;
+  root.querySelectorAll('[data-an-mode]').forEach(b=>b.onclick=()=>{ st.mode=b.dataset.anMode; st.openEmp=null; render(); });
+  document.getElementById('anPrev').onclick=()=>{ st.anchor=shiftAnalyticsAnchor(st.mode, st.anchor, -1); st.openEmp=null; render(); };
+  document.getElementById('anNext').onclick=()=>{ st.anchor=shiftAnalyticsAnchor(st.mode, st.anchor, 1); st.openEmp=null; render(); };
+  document.getElementById('anNow').onclick=()=>{ st.anchor=todayISO(); st.openEmp=null; render(); };
+  document.getElementById('anPast').onchange=(ev)=>{ st.pastOnly=ev.target.checked; render(); };
+  root.querySelectorAll('[data-an-emp]').forEach(el=>el.onclick=()=>{ st.openEmp = st.openEmp===el.dataset.anEmp ? null : el.dataset.anEmp; render(); });
+  document.getElementById('anCsv').onclick=()=>{
+    const lines = [['Сотрудник','Роль','Встреч','Планёрки (мин)','Рабочие встречи (мин)','Всего (мин)','Всего (ч)','Встреч без времени окончания'].map(csvEscape).join(';')];
+    rows.forEach(r=>lines.push([r.emp.name, r.emp.role||'', r.count, r.planMin, r.meetMin, r.totalMin, (r.totalMin/60).toFixed(2).replace('.',','), r.unknown].map(csvEscape).join(';')));
+    downloadTextFile(`vstrechi-${range.from}_${range.to}.csv`, 'text/csv;charset=utf-8', '﻿'+lines.join('\n'));
+  };
 }
 
 /* ================= ARCHIVE ================= */
@@ -7199,6 +7386,27 @@ async function startApp(){
       }
     }, 150);
   }, true);
+})();
+
+/* ---------- плавающая кнопка «+ Задача»: всегда на экране при прокрутке ---------- */
+function updateAddTaskFab(){
+  const fab = document.getElementById('fabAddTask');
+  if(!fab) return;
+  const visible = state.loaded && !!state.currentUserId && !isFamilyRoleName(state.currentUserRole);
+  fab.classList.toggle('show', visible);
+}
+(function(){
+  const fab = document.createElement('button');
+  fab.id = 'fabAddTask'; fab.type = 'button'; fab.title = 'Поставить задачу'; fab.setAttribute('aria-label','Добавить задачу');
+  fab.textContent = '+ Задача';
+  document.body.appendChild(fab);
+  fab.onclick = ()=>{
+    if(document.querySelector('body > .overlay, #modalRoot .overlay')) return; // окно уже открыто
+    const personal = state.tab==='tasks' && state.taskSubtab==='personal';
+    if(personal && !personalAccessAllowed()){ toast('Личные задачи доступны только Руководителю и Ассистенту'); return; }
+    openTaskModal(null, personal);
+  };
+  updateAddTaskFab();
 })();
 
 /* ---------- кнопка «наверх» ---------- */

@@ -866,6 +866,7 @@ const state = {
   taskSubtab:'work',
   archiveSubtab:'work',
   analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null},
+  todayOrder:{}, todayOrderLoaded:{},
   taskBoardShowDone:false,
   reportStart:null,
   reportEnd:null,
@@ -2773,6 +2774,19 @@ function renderOverview(root){
   // По умолчанию каждый видит только свои задачи. Руководитель/Ассистент могут выбрать чужой обзор или "Все".
   let viewingId = canChooseWhoToView ? (state.overviewFilterEmployee || state.currentUserId) : state.currentUserId;
   const viewCompanyWide = canChooseWhoToView && viewingId === 'all';
+  // Ручная очередность задач «на сегодня» хранится отдельно для каждого сотрудника.
+  const orderKey = id => 'settings:todayOrder:'+id;
+  const canOrderToday = !viewCompanyWide && !!viewingId && (viewingId===state.currentUserId || canChooseWhoToView) && state.todayOrderLoaded[viewingId]===true;
+  if(!viewCompanyWide && viewingId && state.todayOrderLoaded[viewingId]===undefined){
+    state.todayOrderLoaded[viewingId] = 'loading';
+    const vid = viewingId;
+    sGetState(orderKey(vid), true).then(r=>{
+      if(r.status==='ok'){ try{ const a = JSON.parse(r.value); state.todayOrder[vid] = Array.isArray(a)?a:[]; }catch(e){ state.todayOrder[vid] = []; } state.todayOrderLoaded[vid] = true; }
+      else if(r.status==='missing'){ state.todayOrder[vid] = []; state.todayOrderLoaded[vid] = true; }
+      else { delete state.todayOrderLoaded[vid]; return; } // сбой чтения — не даём менять очередность вслепую
+      if(state.tab==='overview') render();
+    });
+  }
   const {overdueTasks, dueTodayTasks, todayEvents} = computeReminders(viewCompanyWide ? null : viewingId);
   const workBalance = state.fundsEntries.reduce((s,f)=> s + (f.type==='issue'?Number(f.amount):-Number(f.amount)), 0);
   const personalBalance = state.personalFundsEntries.reduce((s,f)=> s + (f.type==='issue'?Number(f.amount):-Number(f.amount)), 0);
@@ -2823,13 +2837,18 @@ function renderOverview(root){
     });
     return out;
   };
-  function taskRow(t, depth){
+  function taskRow(t, depth, rank){
     depth = depth||0;
     const overdue = t.deadline && t.deadline<todayISO();
     const timePassed = !overdue && t.deadline===todayISO() && t.deadlineTime && t.deadlineTime < new Date().toTimeString().slice(0,5);
     const personal = state.personalTasks.some(pt=>pt.id===t.id);
     const canComplete = canCompleteTask(t, personal);
-    return `<div class="item"${depth?` style="margin-left:${depth*22}px;border-left:2px solid var(--paper-line);"`:''}>
+    return `<div class="item"${rank?` data-ov-rank="${t.id}"`:''}${depth?` style="margin-left:${depth*22}px;border-left:2px solid var(--paper-line);"`:''}>
+      ${rank?`<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:none;">
+        <button type="button" class="btn ghost small" data-ov-move="${t.id}|up" ${rank.pos===1?'disabled':''} title="Поднять выше" style="padding:0 7px;line-height:1.3;">▲</button>
+        <span class="mono" style="font-size:12px;font-weight:700;color:var(--indigo);" title="Место в очереди на сегодня">№${rank.pos}</span>
+        <button type="button" class="btn ghost small" data-ov-move="${t.id}|down" ${rank.pos===rank.total?'disabled':''} title="Опустить ниже" style="padding:0 7px;line-height:1.3;">▼</button>
+      </div>`:''}
       <input type="checkbox" class="task-check${canComplete?'':' task-check-locked'}" data-ov-done="${t.id}" data-ov-done-personal="${personal?'1':'0'}" ${t.status==='done'?'checked':''} ${canComplete?'':'disabled'} title="${canComplete?'Отметить выполненной':whyCantComplete(t, personal)}">
       <div class="main" style="cursor:pointer;" data-ov-task="${t.id}">
         <div class="title">${depth?'↳ ':''}${escapeHtml(t.title)}</div>
@@ -2968,7 +2987,13 @@ function renderOverview(root){
           const pick = (fn)=>clusters.filter(fn);
           const reworkC = pick(c=>c.rework);
           const overdueC = pick(c=>!c.rework && c.overdue);
-          const todayC = pick(c=>!c.rework && !c.overdue && c.today);
+          let todayC = pick(c=>!c.rework && !c.overdue && c.today);
+          const savedOrder = (state.todayOrder[viewingId]||[]);
+          const hasCustomOrder = !viewCompanyWide && todayC.some(c=>savedOrder.includes(c.items[0].t.id));
+          if(hasCustomOrder){
+            const posOf = c=>{ const i = savedOrder.indexOf(c.items[0].t.id); return i<0 ? Infinity : i; };
+            todayC = todayC.map((c,i)=>({c,i})).sort((a,b)=>{ const pa=posOf(a.c), pb=posOf(b.c); return pa===pb ? a.i-b.i : pa-pb; }).map(x=>x.c);
+          }
           const upcomingC = pick(c=>!c.rework && !c.overdue && !c.today && c.dated);
           const noDeadlineC = pick(c=>!c.rework && !c.dated);
           const count = (cs)=>cs.reduce((n,c)=>n+c.items.length,0);
@@ -2986,7 +3011,13 @@ function renderOverview(root){
             </div>
             ${state.overviewOverdueCollapsed ? '' : rowsOf(overdueC)}
           `;
-          if(todayC.length) html += groupLabel(`Сегодня (${countBy(todayC, t=>t.deadline===today)})`) + rowsOf(todayC);
+          if(todayC.length){
+            const rankedRows = (cs)=>cs.map((c,i)=>c.items.map((x,j)=>taskRow(x.t, x.depth, (j===0 && canOrderToday) ? {pos:i+1,total:cs.length} : null)).join('')).join('');
+            html += `<div class="row-between" style="align-items:baseline;margin:14px 0 6px;">
+              <div class="subtitle" style="margin:0;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">Сегодня (${countBy(todayC, t=>t.deadline===today)})${canOrderToday?' · очередность можно менять стрелками ▲▼':''}</div>
+              ${canOrderToday && hasCustomOrder ? '<button type="button" class="btn ghost small" id="resetTodayOrder">Сбросить порядок</button>' : ''}
+            </div>` + rankedRows(todayC);
+          }
           if(upcomingC.length) html += groupLabel(`Предстоящие (${count(upcomingC)})`) + rowsOf(upcomingC);
           if(noDeadlineC.length) html += groupLabel(`Без дедлайна (${count(noDeadlineC)})`) + rowsOf(noDeadlineC);
           return html || `<p class="subtitle" style="margin:0;">Открытых задач нет 🎉</p>`;
@@ -3017,6 +3048,24 @@ function renderOverview(root){
   };
   const createdTodayCard = document.getElementById('createdTodayCard');
   if(createdTodayCard) createdTodayCard.onclick=()=>openCreatedTodayModal(createdTodayTasks, canChooseWhoToView);
+  async function saveTodayOrder(ids){
+    const prev = state.todayOrder[viewingId];
+    state.todayOrder[viewingId] = ids;
+    const ok = await sSet(orderKey(viewingId), JSON.stringify(ids), true);
+    if(!ok){ state.todayOrder[viewingId] = prev; toast('Не удалось сохранить очередность — попробуйте ещё раз'); }
+    render();
+  }
+  root.querySelectorAll('[data-ov-move]').forEach(btn=>btn.onclick=async (e)=>{
+    e.stopPropagation();
+    const [id, dir] = btn.dataset.ovMove.split('|');
+    const ids = Array.from(root.querySelectorAll('[data-ov-rank]')).map(el=>el.dataset.ovRank);
+    const i = ids.indexOf(id), j = dir==='up' ? i-1 : i+1;
+    if(i<0 || j<0 || j>=ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    await saveTodayOrder(ids);
+  });
+  const resetOrderBtn = document.getElementById('resetTodayOrder');
+  if(resetOrderBtn) resetOrderBtn.onclick = ()=>saveTodayOrder([]);
   root.querySelectorAll('[data-ov-done]').forEach(cb=>{
     cb.onclick = e=>e.stopPropagation();
     cb.onchange = async ()=>{
@@ -5814,6 +5863,43 @@ function openChecklistEditModal(checklistId, onDone){
 }
 
 /* ================= TASK ANALYTICS ================= */
+// Разбор каждого проекта по исполнителям: объём, нагрузка и «эффективность» — кто двигает проект, а кто тормозит.
+function computeProjectEmployeeBreakdown(tasks, projects, employees, today){
+  const daysBetween = (a,b)=> Math.max(0,(new Date(b)-new Date(a))/86400000);
+  return projects.map(p=>{
+    const pt = tasks.filter(t=>t.projectId===p.id);
+    if(!pt.length) return null;
+    const openAll = pt.filter(t=>t.status!=='done');
+    const groups = employees.map(e=>({emp:e, ts:pt.filter(t=>t.assigneeId===e.id)}));
+    groups.push({emp:null, ts:pt.filter(t=>!t.assigneeId || !employees.some(e=>e.id===t.assigneeId))});
+    const rows = groups.filter(g=>g.ts.length).map(g=>{
+      const done = g.ts.filter(t=>t.status==='done');
+      const open = g.ts.filter(t=>t.status!=='done');
+      const review = open.filter(t=>t.status==='review').length;
+      // Задачи «на проверке» ждут постановщика, а не исполнителя — просрочкой исполнителя не считаются.
+      const overdue = open.filter(t=>t.status!=='review' && t.deadline && t.deadline<today).length;
+      const withDl = done.filter(t=>t.deadline && t.completedAt);
+      const onTime = withDl.filter(t=>t.completedAt.slice(0,10)<=t.deadline).length;
+      const durs = done.filter(t=>t.createdDate && t.completedAt).map(t=>daysBetween(t.createdDate, t.completedAt));
+      return {emp:g.emp, total:g.ts.length, done:done.length, open:open.length, review, overdue,
+        onTimePct: withDl.length ? Math.round(onTime/withDl.length*100) : null,
+        avgDays: durs.length ? durs.reduce((a,b)=>a+b,0)/durs.length : null,
+        openShare: openAll.length ? Math.round(open.length/openAll.length*100) : 0};
+    }).sort((a,b)=> b.overdue-a.overdue || b.open-a.open || b.total-a.total);
+    // «Тормозит проект»: у кого больше всего просроченных открытых задач (если просрочек нет — у кого больше всего открытых).
+    let bottleneck = null;
+    const worstOverdue = rows.filter(r=>r.overdue>0).sort((a,b)=>b.overdue-a.overdue || b.open-a.open)[0];
+    if(worstOverdue) bottleneck = {row:worstOverdue, kind:'overdue'};
+    else {
+      const byOpen = rows.filter(r=>r.open>0).sort((a,b)=>b.open-a.open);
+      // Показываем только если лидер по открытым задачам один (при равенстве «виноватого» нет).
+      if(byOpen.length>1 && byOpen[0].open>byOpen[1].open) bottleneck = {row:byOpen[0], kind:'open'};
+    }
+    const done = pt.filter(t=>t.status==='done').length;
+    return {project:p, total:pt.length, done, open:openAll.length, overdue:openAll.filter(t=>t.status!=='review' && t.deadline && t.deadline<today).length,
+      pct: Math.round(done/pt.length*100), rows, bottleneck};
+  }).filter(Boolean).sort((a,b)=> b.overdue-a.overdue || b.open-a.open || a.project.name.localeCompare(b.project.name,'ru'));
+}
 // Детализация: у каждого сотрудника — сколько задач в каждом проекте (всего / в работе / готово / просрочено).
 function computeEmployeeProjectStats(tasks, employees, projects, today){
   const projName = id => { const p = projects.find(x=>x.id===id); return p ? p.name : 'Без проекта'; };
@@ -5870,6 +5956,7 @@ function renderTaskAnalytics(el){
   projectRows.sort((a,b)=>b.pct-a.pct);
   function barColor(pct){ return pct>=70?'var(--teal)':pct>=30?'var(--ochre)':'var(--brick)'; }
   const empProjStats = computeEmployeeProjectStats(state.tasksWork, state.employees, state.projectsWork, today);
+  const projBreakdown = computeProjectEmployeeBreakdown(state.tasksWork, state.projectsWork, state.employees, today);
 
   const blockRows = state.blocksWork.map(b=>{
     const tasks = tasksInBlock(b.id);
@@ -5944,6 +6031,40 @@ function renderTaskAnalytics(el){
         </tbody>
       </table>
     </div>
+    <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--indigo);margin:26px 0 4px;">🔍 Разбор проектов по исполнителям — нагрузка и кто тормозит</h4>
+    <p class="subtitle" style="margin:0 0 10px;">Откройте проект, чтобы увидеть, сколько задач на ком, сколько просрочено и как исполнитель справляется со сроками.</p>
+    ${projBreakdown.length ? projBreakdown.map(b=>`
+      <details class="an-proj" ${b.overdue>0?'open':''} style="border:1px solid var(--paper-line);border-radius:10px;margin-bottom:10px;padding:0;">
+        <summary style="cursor:pointer;padding:10px 12px;list-style:none;">
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;">
+            <strong>📁 ${escapeHtml(b.project.name)}</strong>
+            <span class="subtitle" style="margin:0;">${b.done} из ${b.total} готово · открыто ${b.open}${b.overdue?` · <span style="color:var(--brick);font-weight:600;">просрочено ${b.overdue}</span>`:''}</span>
+          </div>
+          <div class="an-bar-track" style="margin-top:6px;"><div class="an-bar-fill" style="width:${b.pct}%;background:${barColor(b.pct)};"></div></div>
+          ${b.bottleneck ? `<div style="margin-top:6px;font-size:12.5px;color:${b.bottleneck.kind==='overdue'?'var(--brick)':'var(--ochre)'};">${b.bottleneck.kind==='overdue'
+            ? `🔴 Больше всего тормозит: <strong>${b.bottleneck.row.emp?escapeHtml(b.bottleneck.row.emp.name):'задачи без исполнителя'}</strong> — просрочено ${b.bottleneck.row.overdue} из ${b.bottleneck.row.open} открытых`
+            : `🟠 Больше всего открытых задач у: <strong>${b.bottleneck.row.emp?escapeHtml(b.bottleneck.row.emp.name):'задачи без исполнителя'}</strong> — ${b.bottleneck.row.open} из ${b.open} (${b.bottleneck.row.openShare}%)`}</div>` : ''}
+        </summary>
+        <div class="an-table" style="border:none;border-top:1px solid var(--paper-line);border-radius:0 0 10px 10px;">
+          <table class="an-table-inner">
+            <thead><tr><th>Исполнитель</th><th>Всего</th><th>Готово</th><th>Открыто</th><th>Просрочено</th><th>В срок</th><th>Ср. срок</th><th>Доля открытых</th></tr></thead>
+            <tbody>
+              ${b.rows.map(r=>`
+                <tr>
+                  <td class="an-name">${r.emp?escapeHtml(r.emp.name)+`<div class="subtitle" style="margin:0;font-size:11px;font-weight:400;">${escapeHtml(r.emp.role||'')}</div>`:'<span style="color:var(--ink-soft);">Без исполнителя</span>'}</td>
+                  <td class="an-num">${r.total}</td>
+                  <td class="an-num" style="color:var(--teal);">${r.done}</td>
+                  <td class="an-num">${r.open}${r.review?`<div class="subtitle" style="margin:0;font-size:10.5px;">на проверке: ${r.review}</div>`:''}</td>
+                  <td class="an-num" style="color:${r.overdue>0?'var(--brick)':'var(--ink-soft)'};font-weight:${r.overdue>0?'700':'400'};">${r.overdue}</td>
+                  <td class="an-num" title="Доля выполненных задач, закрытых не позже дедлайна" style="color:${r.onTimePct===null?'var(--ink-soft)':barColor(r.onTimePct)};">${r.onTimePct===null?'—':r.onTimePct+'%'}</td>
+                  <td class="an-num">${r.avgDays!==null?r.avgDays.toFixed(1)+' дн.':'—'}</td>
+                  <td><div class="an-bar-wrap"><div class="an-bar-track"><div class="an-bar-fill" style="width:${r.openShare}%;background:${r.overdue>0?'var(--brick)':'var(--indigo)'};"></div></div><span class="an-num" style="font-size:11px;color:var(--ink-soft);min-width:32px;text-align:right;">${r.openShare}%</span></div></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>`).join('') : `<p class="subtitle">В проектах пока нет задач.</p>`}
+    <p class="subtitle" style="margin:0 0 6px;">«В срок» — доля уже выполненных задач, закрытых не позже дедлайна (у задач без дедлайна не считается). «Доля открытых» — какую часть всех незакрытых задач проекта держит этот человек. Подзадачи считаются отдельными задачами.</p>
     <div class="row-between" style="margin:26px 0 8px;align-items:baseline;">
       <h4 style="font-family:'Space Grotesk',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--indigo);margin:0;">👥 Сотрудники по проектам — сколько задач в каждом</h4>
       <button class="btn ghost small" id="anEmpProjCsv">⬇ CSV</button>
@@ -6056,11 +6177,15 @@ function renderTaskReport(el){
         ${late && t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
         ${taskLinksHtml(t)}
       </div>
-      <div class="actions"><button type="button" class="btn ghost small" data-edit-task="${t.id}" style="${canEditTask(t,false)?'':'opacity:.4;'}" title="${canEditTask(t,false)?'Изменить задачу':whyCantEdit(t)}">Изм.</button></div>
+      ${canEditTask(t,false)?`<div class="actions"><button type="button" class="btn ghost small" data-edit-task="${t.id}" title="Изменить задачу">Изм.</button></div>`:''}
     </div>`;
   }
   function notDoneRowHtml(t){
+    // Исполнитель может отметить свою задачу выполненной прямо из отчёта (так же, как в Обзоре).
+    const mine = !!t.assigneeId && t.assigneeId===state.currentUserId && (t.status==='progress' || t.status==='approval');
+    const canDo = mine && canCompleteTask(t, false);
     return `<div class="item">
+      ${mine ? `<input type="checkbox" class="task-check${canDo?'':' task-check-locked'}" data-rep-done="${t.id}" ${canDo?'':'disabled'} title="${canDo?'Отметить выполненной':whyCantComplete(t, false)}">` : ''}
       <div class="main">
         <div class="title">${t.inReport?'📌 ':''}${escapeHtml(t.title)}</div>
         <div class="meta">
@@ -6075,7 +6200,7 @@ function renderTaskReport(el){
         ${t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
         ${t.reworkNote?`<div class="desc" style="color:var(--brick);">↩️ На доработке: ${linkifyEscaped(t.reworkNote)}</div>`:''}
       </div>
-      <div class="actions"><button type="button" class="btn ghost small" data-edit-task="${t.id}" style="${canEditTask(t,false)?'':'opacity:.4;'}" title="${canEditTask(t,false)?'Изменить задачу':whyCantEdit(t)}">Изм.</button></div>
+      ${canEditTask(t,false)?`<div class="actions"><button type="button" class="btn ghost small" data-edit-task="${t.id}" title="Изменить задачу">Изм.</button></div>`:''}
     </div>`;
   }
   function groupBlock(label, tasks, rowFn){
@@ -6185,6 +6310,19 @@ function renderTaskReport(el){
   document.getElementById('rep_end').onchange = (e)=>{ state.reportEnd = e.target.value; render(); };
   document.getElementById('rep_emp').onchange = (e)=>{ state.reportEmployee = e.target.value; render(); };
   document.getElementById('rep_download').onclick = ()=>exportTaskReportCSV();
+  // «Выполнено» из отчёта: тот же порядок, что в Обзоре — отчёт исполнителя (комментарий/ссылка) и отправка на проверку.
+  el.querySelectorAll('[data-rep-done]').forEach(cb=>{
+    cb.onchange = async ()=>{
+      const id = cb.dataset.repDone;
+      const task = state.tasksWork.find(t=>t.id===id);
+      if(!cb.checked) return;
+      if(!task || !canCompleteTask(task, false)){ cb.checked=false; toast(task?whyCantComplete(task,false):'Задача не найдена'); return; }
+      const isOverdue = !!(task.deadline && task.deadline < todayISO());
+      const result = await requestCompletionComment(task.title, isOverdue);
+      if(result===null){ cb.checked=false; return; }
+      await saveDoneToggle(id, false, result, cb, task);
+    };
+  });
   // Редактирование задачи прямо из отчёта — то же окно, что и в списке задач.
   el.querySelectorAll('[data-edit-task]').forEach(b=>b.onclick=()=>{
     const id = b.dataset.editTask;

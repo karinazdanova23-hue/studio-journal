@@ -865,6 +865,8 @@ const state = {
   calMonth:new Date().getMonth(),
   taskSubtab:'work',
   archiveSubtab:'work',
+  regs:null,
+  regsState:{loading:false, error:false, loadedAt:0, prio:'all', openId:null},
   analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{planning:true, meeting:true, event:true}},
   todayOrder:{}, todayOrderLoaded:{},
   taskBoardShowDone:false,
@@ -926,6 +928,7 @@ const TABS = [
   {id:'funds', label:'Финансы'},
   {id:'archive', label:'Архив'},
   {id:'analytics', label:'📊 Аналитика', roles:['Руководитель','Ассистент']},
+  {id:'regs', label:'📜 Регламенты', roles:['Руководитель','Ассистент','Старший администратор']},
 ];
 const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', birthday:'Дни рождения', personal:'Личные дела Карины'};
 const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', birthday:'var(--rose)', personal:'var(--plum)'};
@@ -1548,6 +1551,7 @@ const AUDIT_ACTION_LABELS = {
   deadline_changed: 'Изменил(а) дедлайн',
   project_deleted: 'Удалил(а) проект',
   block_deleted: 'Удалил(а) блок',
+  reg_moved: 'Передал(а) регламент',
   project_archived: 'Отправил(а) проект в архив',
   project_unarchived: 'Вернул(а) проект из архива',
   block_archived: 'Отправил(а) блок в архив',
@@ -2048,8 +2052,8 @@ function whyCantComplete(t, personal){
   return `Отметить выполненной может только исполнитель — ${empName(t&&t.assigneeId)}.`;
 }
 function withStatus(t, newStatus, comment, completionLink, overdueReason){
-  if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), overdueReason: overdueReason!==undefined ? overdueReason : (t.overdueReason||'')};
-  if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, completionComment:'', completionLink:''};
+  if(newStatus==='done' && t.status!=='done') return {...t, status:newStatus, completedAt: todayISO(), submittedAt: todayISO(), completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), overdueReason: overdueReason!==undefined ? overdueReason : (t.overdueReason||'')};
+  if(newStatus!=='done') return {...t, status:newStatus, completedAt:null, submittedAt:null, completionComment:'', completionLink:''};
   return {...t, status:newStatus};
 }
 // Исполнитель отмечает "сделано" -> обычно уходит не сразу в "Готово", а на проверку постановщику.
@@ -2060,7 +2064,7 @@ function withStatusReview(t, comment, completionLink, overdueReason){
   if(t.creatorId && t.assigneeId && t.creatorId===t.assigneeId && !kidsOnReview){
     return withStatus(t, 'done', comment, completionLink, overdueReason);
   }
-  return {...t, status:'review', completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), overdueReason: overdueReason!==undefined ? overdueReason : (t.overdueReason||''), reworkNote:''};
+  return {...t, status:'review', submittedAt: todayISO(), completionComment: comment||t.completionComment||'', completionLink: completionLink!==undefined ? completionLink : (t.completionLink||''), overdueReason: overdueReason!==undefined ? overdueReason : (t.overdueReason||''), reworkNote:''};
 }
 function canReviewTask(t, personal){
   if(personal) return true;
@@ -2081,7 +2085,7 @@ async function approveTask(personal, id){
   const target = before.find(t=>t.id===id);
   if(!target || !canReviewTask(target, personal)){ toast(whyCantReview(target||{})); return; }
   if(before.some(c=>c.parentId===id && c.status!=='done')){ toast('Сначала примите все подзадачи — потом можно принять главную задачу.'); return; }
-  const updated = before.map(t=>t.id===id?{...t, status:'done', completedAt:todayISO(), reworkNote:'', approvedAt:todayISO(), approvedBy:state.currentUserId}:t);
+  const updated = before.map(t=>t.id===id?{...t, status:'done', completedAt:todayISO(), submittedAt: t.submittedAt || todayISO(), reworkNote:'', approvedAt:todayISO(), approvedBy:state.currentUserId}:t);
   setTasksFor(personal, updated);
   const ok = await persistTasksFor(personal);
   if(!ok){ setTasksFor(personal, before); saveFailedToast(()=>approveTask(personal, id)); return; }
@@ -2125,17 +2129,17 @@ async function reworkTaskSave(personal, id, note, deadline){
   const newDeadline = deadline || target.deadline;
   const reworkText = note || 'Постановщик вернул задачу на доработку';
   const updated = before.map(t=>{
-    if(t.id===id) return {...t, status:'progress', completedAt:null, deadline:newDeadline,
+    if(t.id===id) return {...t, status:'progress', completedAt:null, submittedAt:null, deadline:newDeadline,
       // Если дедлайн при возврате на доработку поменялся — старая причина просрочки больше не актуальна.
       overdueReason: newDeadline!==t.deadline ? '' : (t.overdueReason||''),
       reworkNote: reworkText};
     // Не приняли подзадачу — главная задача (если она сдана на проверку) тоже возвращается на доработку.
     if(target.parentId && t.id===target.parentId && (t.status==='review' || t.status==='done')){
-      return {...t, status:'progress', completedAt:null, approvedAt:null, approvedBy:null, reworkNote:`Подзадача «${target.title}» возвращена на доработку: ${reworkText}`};
+      return {...t, status:'progress', completedAt:null, submittedAt:null, approvedAt:null, approvedBy:null, reworkNote:`Подзадача «${target.title}» возвращена на доработку: ${reworkText}`};
     }
     // Не приняли главную задачу — её подзадачи, ещё стоящие на проверке, тоже возвращаются на доработку.
     if(t.parentId===id && t.status==='review'){
-      return {...t, status:'progress', completedAt:null, reworkNote:`Главная задача возвращена на доработку: ${reworkText}`};
+      return {...t, status:'progress', completedAt:null, submittedAt:null, reworkNote:`Главная задача возвращена на доработку: ${reworkText}`};
     }
     return t;
   });
@@ -2726,6 +2730,7 @@ function render(){
     if(hasRole('Руководитель','Ассистент')) renderAnalytics(root);
     else root.innerHTML = accessDeniedScreen('Аналитика доступна только Руководителю и Ассистенту.');
   }
+  else if(state.tab==='regs') renderRegs(root);
   renderBellBadge();
   renderWhoAmIBtn();
   if(typeof updateAddTaskFab==='function') updateAddTaskFab();
@@ -3848,7 +3853,7 @@ function renderTasks(root){
       <div style="display:flex;gap:8px;">
         <button class="btn ghost" id="ideasBtn" style="${state.taskSubtab!=='work'?'display:none;':''}">💡 Идеи</button>
         <button class="btn ghost" id="checklistsBtn" style="${state.taskSubtab!=='work'?'display:none;':''}">📋 Чек-листы</button>
-        <button class="btn" id="addTaskBtn" style="${state.taskSubtab==='analytics'||state.taskSubtab==='report'?'display:none;':''}">+ Задача</button>
+        <button class="btn" id="addTaskBtn" style="${state.taskSubtab==='analytics'||state.taskSubtab==='report'||state.taskSubtab==='day'?'display:none;':''}">+ Задача</button>
       </div>
     </div>
     <div class="subtabs">
@@ -3856,6 +3861,7 @@ function renderTasks(root){
       <button class="subtab-btn ${state.taskSubtab==='personal'?'active':''}" data-st="personal">🔒 Личные</button>
       <button class="subtab-btn ${state.taskSubtab==='analytics'?'active':''}" data-st="analytics">📊 Аналитика</button>
       <button class="subtab-btn ${state.taskSubtab==='report'?'active':''}" data-st="report">📄 Отчёт</button>
+      <button class="subtab-btn ${state.taskSubtab==='day'?'active':''}" data-st="day">📅 За день</button>
     </div>
     <div id="taskBody"></div>
   `;
@@ -3871,6 +3877,7 @@ function renderTasks(root){
   if(state.taskSubtab==='work') renderTaskBoard(root.querySelector('#taskBody'), false);
   else if(state.taskSubtab==='analytics') renderTaskAnalytics(root.querySelector('#taskBody'));
   else if(state.taskSubtab==='report') renderTaskReport(root.querySelector('#taskBody'));
+  else if(state.taskSubtab==='day') renderDayReview(root.querySelector('#taskBody'));
   else renderPersonalTasks(root.querySelector('#taskBody'));
 }
 
@@ -6100,6 +6107,79 @@ function renderTaskAnalytics(el){
   if(empProjCsvBtn) empProjCsvBtn.onclick = exportEmployeeProjectCSV;
 }
 
+/* ================= «ЗА ДЕНЬ»: что сотрудник сделал в выбранный день ================= */
+// Задача считается «сданной в этот день», если исполнитель нажал «выполнено» в этот день (submittedAt).
+// У задач, закрытых до появления этой отметки, берём дату закрытия (completedAt).
+function taskSubmitDate(t){
+  if(t.submittedAt) return t.submittedAt;
+  if(t.status==='done' && t.completedAt) return String(t.completedAt).slice(0,10);
+  return null;
+}
+function computeDayReview(tasks, employees, dayISO, today){
+  const isOpen = t=> t.status==='progress' || t.status==='approval';
+  const groups = employees.map(e=>({emp:e, ts:tasks.filter(t=>t.assigneeId===e.id)}));
+  return groups.map(g=>{
+    const submitted = g.ts.filter(t=> taskSubmitDate(t)===dayISO && (t.status==='review' || t.status==='done'))
+      .sort((a,b)=>(a.title||'').localeCompare(b.title||'','ru'));
+    // Что осталось: открытые задачи, срок которых наступил к концу выбранного дня (на сегодня и раньше).
+    const left = g.ts.filter(t=> isOpen(t) && t.deadline && t.deadline<=dayISO);
+    const dueDay = left.filter(t=>t.deadline===dayISO);
+    const overdue = left.filter(t=>t.deadline<dayISO);
+    const reworked = g.ts.filter(t=> t.status==='progress' && t.reworkNote && t.deadline && t.deadline<=dayISO).length;
+    return {emp:g.emp, submitted, dueDay, overdue, left, reworked,
+      waiting: submitted.filter(t=>t.status==='review').length, accepted: submitted.filter(t=>t.status==='done').length};
+  }).filter(r=> r.submitted.length || r.left.length)
+    .sort((a,b)=> b.submitted.length-a.submitted.length || b.left.length-a.left.length || a.emp.name.localeCompare(b.emp.name,'ru'));
+}
+function renderDayReview(el){
+  const today = todayISO();
+  const st = state.dayReview = state.dayReview || {date:today, emp:'all'};
+  const rows = computeDayReview(state.tasksWork, state.employees, st.date, today).filter(r=>st.emp==='all' || r.emp.id===st.emp);
+  const isToday = st.date===today;
+  const total = rows.reduce((n,r)=>n+r.submitted.length,0);
+  const taskRowHtml = (t, kind)=>{
+    const sub = taskSubmitDate(t);
+    const badge = t.status==='review' ? `<span class="badge review">На проверке</span>` : t.status==='done' ? `<span class="badge done">${t.approvedAt?'Принято':'Готово'}</span>` : `<span class="badge progress">${STATUSES[t.status]||''}</span>`;
+    return `<div class="item" style="cursor:pointer;" data-day-task="${t.id}">
+      <div class="main">
+        <div class="title">${escapeHtml(t.title)}</div>
+        <div class="meta">${badge}${t.projectId?`<span>📁 ${escapeHtml(projectName(false,t.projectId))}</span>`:''}${t.deadline?`<span style="${kind==='overdue'?'color:var(--brick);font-weight:600;':''}">до ${escapeHtml(fmtDeadline(t))}</span>`:''}${kind==='sub' && t.deadline && sub && sub>t.deadline?`<span style="color:var(--brick);font-weight:600;">сдано с опозданием</span>`:''}</div>
+        ${kind==='sub' && t.completionComment?`<div class="desc" style="color:var(--teal);">✅ ${linkifyEscaped(t.completionComment)}</div>`:''}
+        ${kind==='sub' && t.completionLink?`<div class="desc">🔗 <a href="${escapeHtml(t.completionLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;" onclick="event.stopPropagation()">Ссылка на результат</a></div>`:''}
+        ${kind==='sub' && t.overdueReason?`<div class="desc" style="color:var(--brick);">⚠️ Причина задержки: ${linkifyEscaped(t.overdueReason)}</div>`:''}
+      </div></div>`;
+  };
+  el.innerHTML = `
+    <div class="field-row" style="align-items:flex-end;">
+      <div class="field"><label>День</label><input type="date" id="day_date" value="${st.date}"></div>
+      <div class="field"><label>Сотрудник</label>
+        <select id="day_emp">
+          <option value="all">Все сотрудники</option>
+          ${state.employees.map(e=>`<option value="${e.id}" ${st.emp===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}
+        </select></div>
+      <button class="btn ghost" id="day_today" ${isToday?'disabled':''}>Сегодня</button>
+    </div>
+    <div class="note" style="margin-bottom:14px;">
+      Сдано за ${isToday?'сегодня':escapeHtml(fmtDate(st.date))}: <strong>${total}</strong>. «Сдано» — исполнитель нажал «выполнено» в этот день (задача могла ещё не быть принята постановщиком).
+    </div>
+    ${rows.length ? rows.map(r=>`
+      <h3 class="section-title" style="font-size:15px;margin:20px 0 6px;">${escapeHtml(r.emp.name)} <span class="subtitle" style="font-size:12px;">${escapeHtml(r.emp.role||'')}</span></h3>
+      <div class="subtitle" style="margin:0 0 8px;">Сдано: <strong>${r.submitted.length}</strong>${r.submitted.length?` (на проверке: ${r.waiting}, принято: ${r.accepted})`:''} · осталось на день: <strong>${r.dueDay.length}</strong> · просрочено: <strong style="${r.overdue.length?'color:var(--brick);':''}">${r.overdue.length}</strong>${r.reworked?` · на доработке: ${r.reworked}`:''}</div>
+      ${r.submitted.length ? `<div class="subtitle" style="margin:8px 0 4px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">✅ Сдано в этот день</div><div class="item-list">${r.submitted.map(t=>taskRowHtml(t,'sub')).join('')}</div>` : `<p class="subtitle" style="margin:4px 0;">В этот день ничего не сдано.</p>`}
+      ${r.left.length ? `<div class="subtitle" style="margin:12px 0 4px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em;">⏳ Не сдано (срок наступил)</div><div class="item-list">${r.overdue.concat(r.dueDay).map(t=>taskRowHtml(t, t.deadline<st.date?'overdue':'due')).join('')}</div>` : ''}
+    `).join('') : `<div class="empty-state"><div class="big">Нет данных за этот день</div><p>Ни сданных задач, ни задач со сроком на этот день.</p></div>`}
+    <p class="subtitle" style="margin-top:16px;">Дата нажатия «выполнено» записывается с момента обновления приложения — у задач, закрытых раньше, берётся дата принятия.</p>
+  `;
+  document.getElementById('day_date').onchange = (e)=>{ st.date = e.target.value || today; render(); };
+  document.getElementById('day_emp').onchange = (e)=>{ st.emp = e.target.value; render(); };
+  document.getElementById('day_today').onclick = ()=>{ st.date = today; render(); };
+  el.querySelectorAll('[data-day-task]').forEach(row=>row.onclick=()=>{
+    const t = state.tasksWork.find(x=>x.id===row.dataset.dayTask);
+    if(!t) return;
+    if(canEditTask(t, false)) openTaskModal(t.id, false); else openTaskViewModal(t);
+  });
+}
+
 /* ================= REPORT (отчёт о выполненных задачах) ================= */
 function reportMarkOk(t){
   return state.reportMark==='marked' ? !!t.inReport : state.reportMark==='unmarked' ? !t.inReport : true;
@@ -6490,6 +6570,317 @@ function computeMeetingStats(fromISO, toISO, pastOnly, employees, events, nowDat
   rows.sort((a,b)=> b.totalMin-a.totalMin || b.count-a.count || a.emp.name.localeCompare(b.emp.name));
   return {rows, meetingsTotal:meetings.length};
 }
+/* ================= РЕГЛАМЕНТЫ: у кого сейчас в работе ================= */
+// Общий список state.regs хранится под ключом 'regs:list'. Регламент:
+//   {id, title, priority:1|2|3, stage:'todo'|'work'|'review'|'done', link, note,
+//    holderId (null — не назначен), since (дата, с которой он у текущего держателя),
+//    createdAt, doneAt, moves:[{id,date,from,to,note,by,stage}]}
+const REG_STAGES = {todo:'Не начат', work:'В работе', review:'На проверке', done:'Утверждён'};
+const REG_PRIORITIES = {1:'Приоритет 1', 2:'Приоритет 2', 3:'Приоритет 3'};
+const REG_SEED = [
+  {title:'Генеральная уборка', priority:1}, {title:'Касса', priority:1}, {title:'Конфликты', priority:1},
+  {title:'Смены администраторов', priority:1}, {title:'Снабжение', priority:1},
+  {title:'Передача смены', priority:2}, {title:'Поломка техники', priority:2}, {title:'ЧП (чрезвычайные ситуации)', priority:2},
+];
+function regDayDiff(fromISO, toISO){
+  if(!fromISO || !toISO) return 0;
+  const a = Date.parse(fromISO+'T00:00:00Z'), b = Date.parse(toISO+'T00:00:00Z');
+  return Math.max(0, Math.round((b-a)/86400000));
+}
+function regDaysWord(n){
+  const m10 = n%10, m100 = n%100;
+  if(m10===1 && m100!==11) return 'день';
+  if(m10>=2 && m10<=4 && (m100<10 || m100>=20)) return 'дня';
+  return 'дней';
+}
+// Путь регламента: сколько дней он был у каждого держателя (по порядку), последний отрезок — текущий.
+function computeRegPath(reg, today){
+  const moves = (reg.moves||[]).slice().sort((a,b)=> (a.date||'').localeCompare(b.date||'') );
+  const segs = [];
+  let holder = moves.length ? moves[0].from : reg.holderId;
+  let start = reg.createdAt || (moves[0] && moves[0].date) || today;
+  moves.forEach(m=>{
+    segs.push({holderId: holder, from: start, to: m.date, days: regDayDiff(start, m.date), current:false});
+    holder = m.to; start = m.date;
+  });
+  const end = reg.stage==='done' && reg.doneAt ? reg.doneAt : today;
+  segs.push({holderId: holder, from: start, to: end, days: regDayDiff(start, end), current: reg.stage!=='done'});
+  return segs;
+}
+// Колонки доски: три ключевые роли всегда, плюс все остальные, у кого что-то лежит, плюс «Не назначен».
+function computeRegColumns(regs, employees){
+  const open = regs.filter(r=>r.stage!=='done');
+  const key = ['Руководитель','Ассистент','Старший администратор'];
+  const cols = [];
+  const seen = new Set();
+  key.forEach(role=>{
+    employees.filter(e=>e.role===role).forEach(e=>{ cols.push({id:e.id, name:e.name, role:e.role}); seen.add(e.id); });
+  });
+  open.forEach(r=>{
+    if(r.holderId && !seen.has(r.holderId)){
+      const e = employees.find(x=>x.id===r.holderId);
+      cols.push({id:r.holderId, name:e?e.name:'(сотрудник удалён)', role:e?e.role:''}); seen.add(r.holderId);
+    }
+  });
+  if(open.some(r=>!r.holderId || (r.holderId && !seen.has(r.holderId)))) cols.push({id:null, name:'Не назначен', role:''});
+  return cols.map(c=>({...c, items: open.filter(r=>(r.holderId||null)===c.id)}));
+}
+function regsAccess(){ return hasRole('Руководитель','Ассистент','Старший администратор'); }
+
+async function loadRegs(force){
+  const st = state.regsState;
+  if(st.loading) return;
+  if(!force && st.loadedAt && Date.now()-st.loadedAt < 60000) return;
+  st.loading = true;
+  const r = await sGetState('regs:list', true);
+  st.loading = false;
+  if(r.status==='ok'){
+    let arr = []; try{ arr = JSON.parse(r.value); }catch(e){ arr = null; }
+    if(Array.isArray(arr)){ state.regs = arr; st.error = false; st.loadedAt = Date.now(); }
+    else { st.error = true; }
+  } else if(r.status==='missing'){ state.regs = []; st.error = false; st.loadedAt = Date.now(); }
+  else if(r.status==='failed'){ st.error = true; }
+  if(state.tab==='regs') render();
+}
+// Любое изменение: берём свежий список с сервера, применяем правку к нему и сохраняем (чтобы не
+// затереть то, что за это время поменял кто-то другой). Читать не удалось — НЕ пишем.
+async function mutateRegs(mutator){
+  const r = await sGetState('regs:list', true);
+  let base;
+  if(r.status==='ok'){ try{ base = JSON.parse(r.value); }catch(e){ base = null; } if(!Array.isArray(base)){ toast('⚠️ Не удалось прочитать список регламентов — изменение не сохранено'); return false; } }
+  else if(r.status==='missing'){ base = []; }
+  else { if(r.status==='failed') toast('⚠️ Нет связи с сервером — изменение не сохранено, повторите'); return false; }
+  const next = mutator(base.map(x=>({...x})));
+  if(!next) return false;
+  const ok = await sSet('regs:list', JSON.stringify(next), true);
+  if(!ok){ saveFailedToast(); return false; }
+  state.regs = next; state.regsState.loadedAt = Date.now(); state.regsState.error = false;
+  return true;
+}
+function regHolderName(id){ return id ? empName(id) : 'Не назначен'; }
+function regQuickHolders(){
+  const out = [];
+  ['Ассистент','Старший администратор','Руководитель'].forEach(role=>{
+    const e = state.employees.find(x=>x.role===role);
+    if(e) out.push({id:e.id, label: role==='Руководитель' ? 'Я (Карина)' : role});
+  });
+  return out;
+}
+function openRegEditModal(regId){
+  const reg = regId ? (state.regs||[]).find(r=>r.id===regId) : null;
+  const root = document.getElementById('modalRoot');
+  const holderOpts = `<option value="">Не назначен</option>` + state.employees.map(e=>`<option value="${e.id}" ${reg&&reg.holderId===e.id?'selected':''}>${escapeHtml(e.name)} — ${escapeHtml(e.role||'')}</option>`).join('');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h3>${reg?'Регламент':'Новый регламент'}</h3>
+    <div class="field"><label>Название</label><input id="rgTitle" value="${escapeHtml(reg?reg.title:'')}" placeholder="Например: Касса"></div>
+    <div class="field-row">
+      <div class="field"><label>Приоритет</label><select id="rgPrio">${[1,2,3].map(p=>`<option value="${p}" ${(reg?reg.priority:1)===p?'selected':''}>${REG_PRIORITIES[p]}</option>`).join('')}</select></div>
+      <div class="field"><label>Этап</label><select id="rgStage">${Object.keys(REG_STAGES).map(s=>`<option value="${s}" ${(reg?reg.stage:'todo')===s?'selected':''}>${REG_STAGES[s]}</option>`).join('')}</select></div>
+    </div>
+    ${reg?'':`<div class="field"><label>У кого сейчас</label><select id="rgHolder">${holderOpts}</select></div>`}
+    <div class="field"><label>Ссылка на документ</label><input id="rgLink" value="${escapeHtml(reg?reg.link||'':'')}" placeholder="https://docs.google.com/…"></div>
+    <div class="field"><label>Заметка</label><textarea id="rgNote" rows="2">${escapeHtml(reg?reg.note||'':'')}</textarea></div>
+    <div class="field"><label>Связанные задачи <span class="subtitle" id="rgTaskCnt"></span></label>
+      <input id="rgTaskQ" placeholder="Найти задачу по названию…">
+      <div id="rgTaskList" style="max-height:200px;overflow-y:auto;border:1px solid var(--paper-line);border-radius:8px;margin-top:6px;padding:4px 8px;"></div></div>
+    <div class="modal-actions">
+      ${reg?'<button class="btn danger" id="rgDel" style="margin-right:auto;">Удалить</button>':''}
+      <button class="btn ghost" id="rgCancel">Отмена</button>
+      <button class="btn" id="rgSave">Сохранить</button>
+    </div></div></div>`;
+  document.getElementById('rgCancel').onclick = closeModal;
+  const known = new Set(state.tasksWork.map(t=>t.id));
+  const picked = new Set(reg ? (reg.taskIds||[]) : []);
+  const drawTasks = ()=>{
+    const q = document.getElementById('rgTaskQ').value.trim().toLowerCase();
+    const list = state.tasksWork.filter(t=> picked.has(t.id) || (!q ? t.status!=='done' : (t.title||'').toLowerCase().includes(q)))
+      .filter(t=> !q || picked.has(t.id) || (t.title||'').toLowerCase().includes(q))
+      .sort((a,b)=> (picked.has(b.id)?1:0)-(picked.has(a.id)?1:0)).slice(0,60);
+    document.getElementById('rgTaskList').innerHTML = list.length ? list.map(t=>`<label style="display:flex;gap:8px;align-items:flex-start;padding:3px 0;font-size:13px;cursor:pointer;">
+      <input type="checkbox" data-rg-pick="${t.id}" ${picked.has(t.id)?'checked':''} style="width:auto;margin-top:3px;">
+      <span>${escapeHtml(t.title||'')} <span class="subtitle">· ${escapeHtml(empName(t.assigneeId))} · ${STATUSES[t.status]||''}${t.parentId?' · подзадача':''}</span></span></label>`).join('') : '<div class="subtitle" style="padding:6px 0;">Ничего не найдено</div>';
+    document.querySelectorAll('[data-rg-pick]').forEach(c=> c.onchange = ()=>{ if(c.checked) picked.add(c.dataset.rgPick); else picked.delete(c.dataset.rgPick); document.getElementById('rgTaskCnt').textContent = picked.size?`(выбрано: ${picked.size})`:''; });
+    document.getElementById('rgTaskCnt').textContent = picked.size?`(выбрано: ${picked.size})`:'';
+  };
+  document.getElementById('rgTaskQ').oninput = drawTasks;
+  drawTasks();
+  if(reg) document.getElementById('rgDel').onclick = async ()=>{
+    if(!await showConfirm(`Удалить регламент «${reg.title}» вместе с историей передач?`)) return;
+    const ok = await mutateRegs(a=>a.filter(x=>x.id!==reg.id));
+    if(ok){ closeModal(); toast('Регламент удалён'); render(); }
+  };
+  document.getElementById('rgSave').onclick = async ()=>{
+    const title = document.getElementById('rgTitle').value.trim();
+    if(!title){ document.getElementById('rgTitle').classList.add('invalid'); return; }
+    const priority = parseInt(document.getElementById('rgPrio').value,10);
+    const stage = document.getElementById('rgStage').value;
+    const link = document.getElementById('rgLink').value.trim();
+    const note = document.getElementById('rgNote').value.trim();
+    const today = todayISO();
+    // привязки к задачам, которых этот пользователь не видит, не трогаем
+    const hidden = reg ? (reg.taskIds||[]).filter(id=>!known.has(id)) : [];
+    const taskIds = [...picked].concat(hidden);
+    const ok = await mutateRegs(a=>{
+      if(reg){
+        return a.map(x=> x.id!==reg.id ? x : {...x, title, priority, stage, link, note, taskIds,
+          doneAt: stage==='done' ? (x.doneAt||today) : null});
+      }
+      const holderId = document.getElementById('rgHolder').value || null;
+      return a.concat([{id:uid(), title, priority, stage, link, note, taskIds, holderId, since: today, createdAt: today,
+        doneAt: stage==='done'?today:null, moves:[]}]);
+    });
+    if(ok){ closeModal(); toast('Сохранено'); render(); }
+  };
+}
+function openRegMoveModal(regId){
+  const reg = (state.regs||[]).find(r=>r.id===regId);
+  if(!reg) return;
+  const quick = regQuickHolders();
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h3>Передать: ${escapeHtml(reg.title)}</h3>
+    <div class="subtitle" style="margin:-8px 0 12px;">Сейчас у: <strong>${escapeHtml(regHolderName(reg.holderId))}</strong></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+      ${quick.map(q=>`<button type="button" class="btn ghost small" data-rg-quick="${q.id}">${escapeHtml(q.label)}</button>`).join('')}
+    </div>
+    <div class="field"><label>Кому</label><select id="rmTo">
+      <option value="">Не назначен</option>
+      ${state.employees.map(e=>`<option value="${e.id}" ${reg.holderId===e.id?'selected':''}>${escapeHtml(e.name)} — ${escapeHtml(e.role||'')}</option>`).join('')}
+    </select></div>
+    <div class="field-row">
+      <div class="field"><label>Этап</label><select id="rmStage">${Object.keys(REG_STAGES).map(s=>`<option value="${s}" ${reg.stage===s?'selected':''}>${REG_STAGES[s]}</option>`).join('')}</select></div>
+      <div class="field"><label>Дата передачи</label><input type="date" id="rmDate" value="${todayISO()}"></div>
+    </div>
+    <div class="field"><label>Что сделано / что нужно сделать</label><textarea id="rmNote" rows="3" placeholder="Например: черновик готов, нужна проверка по кассе"></textarea></div>
+    <div class="modal-actions"><button class="btn ghost" id="rmCancel">Отмена</button><button class="btn" id="rmSave">Передать</button></div>
+  </div></div>`;
+  root.querySelectorAll('[data-rg-quick]').forEach(b=> b.onclick = ()=>{ document.getElementById('rmTo').value = b.dataset.rgQuick; });
+  document.getElementById('rmCancel').onclick = closeModal;
+  document.getElementById('rmSave').onclick = async ()=>{
+    const to = document.getElementById('rmTo').value || null;
+    const stage = document.getElementById('rmStage').value;
+    const date = document.getElementById('rmDate').value || todayISO();
+    const note = document.getElementById('rmNote').value.trim();
+    const me = state.currentUserId;
+    const ok = await mutateRegs(a=>{
+      const cur = a.find(x=>x.id===reg.id);
+      if(!cur){ toast('Регламент уже удалён'); return null; }
+      const from = cur.holderId || null;
+      if(from===to && stage===cur.stage && !note){ toast('Ничего не изменилось'); return null; }
+      const moves = (cur.moves||[]).concat(from===to ? [] : [{id:uid(), date, from, to, note, by:me, stage}]);
+      // одна запись на смену этапа без передачи — тоже в историю, с from===to
+      const withStage = (from===to) ? moves.concat([{id:uid(), date, from, to, note, by:me, stage}]) : moves;
+      return a.map(x=> x.id!==cur.id ? x : {...x, holderId: to, stage, moves: withStage,
+        since: from===to ? (x.since||date) : date, doneAt: stage==='done' ? (x.doneAt||date) : null});
+    });
+    if(ok){
+      logAudit('reg_moved', `«${reg.title}»: ${regHolderName(reg.holderId)} → ${regHolderName(to)}, этап: ${REG_STAGES[stage]}`);
+      closeModal(); toast('Передано'); render();
+    }
+  };
+}
+function renderRegs(root){
+  if(!regsAccess()){ root.innerHTML = accessDeniedScreen('Регламенты доступны Руководителю, Ассистенту и Старшему администратору.'); return; }
+  const st = state.regsState;
+  if(state.regs===null){
+    if(!st.loading && !st.error) loadRegs(true);
+    root.innerHTML = st.error
+      ? `<div class="empty">Не удалось загрузить регламенты. <button class="btn small" id="rgRetry">Повторить</button></div>`
+      : `<div class="empty">Загрузка…</div>`;
+    const b = root.querySelector('#rgRetry'); if(b) b.onclick = ()=>{ st.error=false; loadRegs(true); render(); };
+    return;
+  }
+  loadRegs(false); // мягкое обновление, если данные старше минуты
+  const today = todayISO();
+  const regs = state.regs.filter(r=> st.prio==='all' || String(r.priority)===st.prio);
+  const cols = computeRegColumns(regs, state.employees);
+  const done = regs.filter(r=>r.stage==='done');
+  const card = r=>{
+    const segs = computeRegPath(r, today);
+    const cur = segs[segs.length-1];
+    const days = cur.days;
+    const stale = days>=7 && r.stage!=='done';
+    const lastMove = (r.moves||[]).slice().reverse().find(m=>m.note);
+    const open = st.openId===r.id;
+    const lt = (r.taskIds||[]).map(id=>state.tasksWork.find(t=>t.id===id)).filter(Boolean);
+    const ltDone = lt.filter(t=>t.status==='done').length;
+    return `<div class="item" style="display:block;" data-rg-id="${r.id}">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+        <strong style="cursor:pointer;" data-rg-toggle="${r.id}">${escapeHtml(r.title)}</strong>
+        <span class="badge prio-${r.priority===1?'high':r.priority===2?'med':'low'}">П${r.priority}</span>
+      </div>
+      <div class="subtitle" style="margin:3px 0;">
+        <span class="badge ${r.stage==='done'?'done':r.stage==='review'?'review':r.stage==='work'?'progress':'prio-low'}">${REG_STAGES[r.stage]}</span>
+        <span style="${stale?'color:var(--brick);font-weight:600;':''}"> · у него ${days} ${regDaysWord(days)}${stale?' ⚠️':''}</span>
+      </div>
+      ${lt.length?`<div class="subtitle" style="font-size:12.5px;cursor:pointer;" data-rg-toggle="${r.id}">🔗 Задачи: ${ltDone}/${lt.length} выполнено</div>`:''}
+      ${lastMove?`<div class="subtitle" style="font-size:12.5px;">💬 ${escapeHtml(lastMove.note)}</div>`:''}
+      ${r.link?`<div style="font-size:12.5px;margin-top:3px;"><a href="${escapeHtml(/^https?:/i.test(r.link)?r.link:'https://'+r.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);">📄 Документ</a></div>`:''}
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        <button class="btn small" data-rg-move="${r.id}">Передать →</button>
+        <button class="btn ghost small" data-rg-edit="${r.id}">Изм.</button>
+      </div>
+      ${open?`<div style="margin-top:8px;border-top:1px solid var(--paper-line);padding-top:6px;font-size:12.5px;">
+        <div style="margin-bottom:4px;"><strong>Путь:</strong> ${segs.map(s=>`${escapeHtml(regHolderName(s.holderId))} — ${s.days} ${regDaysWord(s.days)}${s.current?' (сейчас)':''}`).join(' → ')}</div>
+        ${lt.length?`<div style="margin-bottom:6px;"><strong>Задачи:</strong>${lt.map(t=>`<div data-rg-task="${t.id}" style="cursor:pointer;padding:2px 0;"><span class="badge ${t.status}">${STATUSES[t.status]}</span> ${escapeHtml(t.title||'')} <span class="subtitle">· ${escapeHtml(empName(t.assigneeId))}${t.deadline?' · до '+fmtDate(t.deadline):''}</span></div>`).join('')}</div>`:''}
+        ${r.note?`<div class="subtitle" style="margin-bottom:4px;">Заметка: ${escapeHtml(r.note)}</div>`:''}
+        ${(r.moves||[]).length ? (r.moves||[]).slice().reverse().map(m=>`<div>${fmtDate(m.date)} · ${m.from===m.to?'этап: '+escapeHtml(REG_STAGES[m.stage]||''):escapeHtml(regHolderName(m.from))+' → '+escapeHtml(regHolderName(m.to))+' <span class="subtitle">('+escapeHtml(REG_STAGES[m.stage]||'')+')</span>'}${m.note?` — ${escapeHtml(m.note)}`:''}${m.by?` <span class="subtitle">[${escapeHtml(empName(m.by))}]</span>`:''}</div>`).join('') : '<div class="subtitle">Передач пока не было</div>'}
+      </div>`:''}
+    </div>`;
+  };
+  // сводка: сколько всего дней регламенты провели у каждого (по всей истории)
+  const totals = {};
+  state.regs.forEach(r=> computeRegPath(r, today).forEach(s=>{ const k=s.holderId||'—'; totals[k]=(totals[k]||0)+s.days; }));
+  const nOpen = regs.filter(r=>r.stage!=='done').length;
+  root.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+      <div><h2 style="margin:0;">📜 Регламенты</h2><div class="subtitle">В работе: ${nOpen} · утверждено: ${done.length}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn ghost small" id="rgRefresh">↻ Обновить</button>
+        <button class="btn" id="rgAdd">+ Регламент</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+      ${['all','1','2','3'].map(p=>`<button class="subtab-btn ${st.prio===p?'active':''}" data-rg-prio="${p}">${p==='all'?'Все':REG_PRIORITIES[p]}</button>`).join('')}
+    </div>
+    ${state.regs.length===0 ? `<div class="empty" style="padding:24px 8px;text-align:center;">
+        Регламентов пока нет.<br><br>
+        <button class="btn" id="rgSeed">Добавить из вашего списка (Приоритет 1 и 2)</button>
+        <div class="subtitle" style="margin-top:8px;">Добавятся: ${REG_SEED.map(s=>escapeHtml(s.title)).join(', ')}. Все — «Не назначен»; дальше вы раздаёте их кнопкой «Передать».</div>
+      </div>` : `
+    <div class="rg-board" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:start;">
+      ${cols.map(c=>`<div style="background:var(--paper,#faf8f3);border:1px solid var(--paper-line);border-radius:10px;padding:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+          <div><strong>${escapeHtml(c.name)}</strong>${c.role&&c.role!==c.name?` <span class="subtitle">${escapeHtml(c.role)}</span>`:''}</div>
+          <span class="count">${c.items.length}</span>
+        </div>
+        ${c.items.length ? c.items.map(card).join('') : '<div class="subtitle" style="font-size:12.5px;">Сейчас ничего нет</div>'}
+      </div>`).join('')}
+    </div>
+    ${done.length?`<details style="margin-top:16px;"><summary style="cursor:pointer;"><strong>✅ Утверждённые (${done.length})</strong></summary><div style="margin-top:8px;display:grid;gap:8px;">${done.map(card).join('')}</div></details>`:''}
+    <details style="margin-top:16px;"><summary style="cursor:pointer;"><strong>⏱ Сколько дней регламенты провели у каждого</strong></summary>
+      <div style="margin-top:8px;font-size:13.5px;">${Object.keys(totals).sort((a,b)=>totals[b]-totals[a]).map(k=>`<div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${escapeHtml(k==='—'?'Не назначен':empName(k))}</span><strong>${totals[k]} ${regDaysWord(totals[k])}</strong></div>`).join('')}
+      <div class="subtitle" style="margin-top:6px;">Суммарно по всем регламентам, включая утверждённые.</div></div>
+    </details>`}`;
+  root.querySelector('#rgAdd').onclick = ()=>openRegEditModal(null);
+  root.querySelector('#rgRefresh').onclick = async ()=>{ await loadRegs(true); toast('Обновлено'); };
+  const seed = root.querySelector('#rgSeed');
+  if(seed) seed.onclick = async ()=>{
+    const today = todayISO();
+    const ok = await mutateRegs(a=> a.length ? null : REG_SEED.map(s=>({id:uid(), title:s.title, priority:s.priority, stage:'todo', link:'', note:'',
+      holderId:null, since:today, createdAt:today, doneAt:null, moves:[]})));
+    if(ok){ toast('Регламенты добавлены'); render(); }
+  };
+  root.querySelectorAll('[data-rg-prio]').forEach(b=> b.onclick = ()=>{ st.prio = b.dataset.rgPrio; render(); });
+  root.querySelectorAll('[data-rg-toggle]').forEach(b=> b.onclick = ()=>{ st.openId = st.openId===b.dataset.rgToggle ? null : b.dataset.rgToggle; render(); });
+  root.querySelectorAll('[data-rg-task]').forEach(b=> b.onclick = ()=>{
+    const t = state.tasksWork.find(x=>x.id===b.dataset.rgTask); if(!t) return;
+    if(canEditTask(t,false)) openTaskModal(t.id,false); else openTaskViewModal(t);
+  });
+  root.querySelectorAll('[data-rg-move]').forEach(b=> b.onclick = ()=>openRegMoveModal(b.dataset.rgMove));
+  root.querySelectorAll('[data-rg-edit]').forEach(b=> b.onclick = ()=>openRegEditModal(b.dataset.rgEdit));
+}
+
 function renderAnalytics(root){
   const st = state.analytics;
   if(!st.anchor) st.anchor = todayISO();

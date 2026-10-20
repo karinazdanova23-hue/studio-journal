@@ -754,8 +754,13 @@ app.post('/api/employees/:id/password', async (req, res) => {
 });
 
 // ---------- универсальное хранилище ключ-значение (замена window.storage) ----------
+// Регламенты (кто сейчас держит какой регламент) — только Руководитель, Ассистент, Старший администратор
+function regsKeyDenied(key, role) {
+  return key === 'regs:list' && !['Руководитель', 'Ассистент', 'Старший администратор'].includes(role);
+}
 app.get('/api/storage/:key', requireAuth, (req, res) => {
   const key = req.params.key;
+  if (regsKeyDenied(key, req.employee.role)) return res.status(403).json({ error: 'Нет доступа' });
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
@@ -773,6 +778,7 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
   const key = req.params.key;
   let { value } = req.body || {};
   if (typeof value !== 'string') return res.status(400).json({ error: 'value должен быть строкой' });
+  if (regsKeyDenied(key, req.employee.role)) return res.status(403).json({ error: 'Нет доступа' });
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
@@ -840,6 +846,21 @@ app.delete('/api/storage/:key', requireAuth, async (req, res) => {
 });
 
 // ---------- список автоматических бэкапов (только Руководитель/Ассистент) ----------
+// Поиск по задачам всей студии (только чтение): любой сотрудник может найти и открыть чужую задачу, чтобы увидеть
+// детали (исполнитель, срок, ссылки). Переписка по задаче (комментарии, отчёт исполнителя, замечания при возврате,
+// причины просрочки) и суммы покупок НЕ отдаются — они остаются видны только тем, кому положено по оргструктуре.
+const SEARCH_TASK_FIELDS = ['id','title','description','link','links','assigneeId','creatorId','createdDate','deadline','deadlineTime',
+  'priority','status','projectId','blockId','parentId','managementStage','completedAt','approvedAt','fromChecklist','inReport','sortOrder'];
+app.get('/api/tasks/search-all', requireAuth, (req, res) => {
+  const arr = parseJsonArray(store.kv['tasks:work']) || [];
+  const tasks = arr.filter(t => t && t.id).map(t => {
+    const o = {};
+    SEARCH_TASK_FIELDS.forEach(k => { if (t[k] !== undefined) o[k] = t[k]; });
+    return o;
+  });
+  res.json({ tasks });
+});
+
 app.get('/api/auto-backups', requireAuth, (req, res) => {
   if (!isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });

@@ -865,7 +865,7 @@ const state = {
   calMonth:new Date().getMonth(),
   taskSubtab:'work',
   archiveSubtab:'work',
-  analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null},
+  analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{planning:true, meeting:true, event:true}},
   todayOrder:{}, todayOrderLoaded:{},
   taskBoardShowDone:false,
   reportStart:null,
@@ -6422,8 +6422,8 @@ function exportTaskReportCSV(){
 }
 
 /* ================= ANALYTICS: время на встречах ================= */
-// Встречи = категории «Планёрки» (planning) и «Рабочие встречи» (meeting). Длительность — по времени начала/конца события.
-const MEETING_CATS = ['planning','meeting'];
+// Считаем категории «Планёрки» (planning), «Рабочие встречи» (meeting) и «События» (event). Длительность — по времени начала/конца.
+const MEETING_CATS = ['planning','meeting','event'];
 function timeToMin(t){
   const m = /^(\d{1,2}):(\d{2})$/.exec(t||'');
   return m ? (+m[1])*60 + (+m[2]) : null;
@@ -6473,18 +6473,19 @@ function shiftAnalyticsAnchor(mode, anchorISO, dir){
   return dateToISO(d);
 }
 // Считает время на встречах по сотрудникам за период. Возвращает строки, отсортированные по убыванию времени.
-function computeMeetingStats(fromISO, toISO, pastOnly, employees, events, nowDate){
+function computeMeetingStats(fromISO, toISO, pastOnly, employees, events, nowDate, cats){
   const today = dateToISO(nowDate || new Date());
-  const meetings = events.filter(e=> MEETING_CATS.includes(e.category) && e.date>=fromISO && e.date<=toISO && (!pastOnly || e.date<=today));
+  const on = c => !cats || cats[c]!==false;
+  const meetings = events.filter(e=> MEETING_CATS.includes(e.category) && on(e.category) && e.date>=fromISO && e.date<=toISO && (!pastOnly || e.date<=today));
   const rows = employees.map(emp=>{
     const mine = meetings.filter(e=>(e.employeeIds||[]).includes(emp.id)).sort((a,b)=> a.date===b.date ? (a.startTime||'').localeCompare(b.startTime||'') : a.date.localeCompare(b.date));
-    let planMin=0, meetMin=0, unknown=0;
+    let planMin=0, meetMin=0, evtMin=0, unknown=0;
     mine.forEach(e=>{
       const dur = eventDurationMin(e);
       if(dur===null){ unknown++; return; }
-      if(e.category==='planning') planMin += dur; else meetMin += dur;
+      if(e.category==='planning') planMin += dur; else if(e.category==='event') evtMin += dur; else meetMin += dur;
     });
-    return {emp, count:mine.length, planMin, meetMin, totalMin:planMin+meetMin, unknown, list:mine};
+    return {emp, count:mine.length, planMin, meetMin, evtMin, totalMin:planMin+meetMin+evtMin, unknown, list:mine};
   });
   rows.sort((a,b)=> b.totalMin-a.totalMin || b.count-a.count || a.emp.name.localeCompare(b.emp.name));
   return {rows, meetingsTotal:meetings.length};
@@ -6494,7 +6495,7 @@ function renderAnalytics(root){
   if(!st.anchor) st.anchor = todayISO();
   const range = analyticsRange(st.mode, st.anchor);
   const allEvents = (state.events||[]).concat(state.archiveEvents||[]);
-  const {rows, meetingsTotal} = computeMeetingStats(range.from, range.to, st.pastOnly, state.employees, allEvents);
+  const {rows, meetingsTotal} = computeMeetingStats(range.from, range.to, st.pastOnly, state.employees, allEvents, new Date(), st.cats);
   const active = rows.filter(r=>r.count>0);
   const idle = rows.filter(r=>r.count===0);
   const maxMin = Math.max(1, ...rows.map(r=>r.totalMin));
@@ -6502,19 +6503,20 @@ function renderAnalytics(root){
   const noEndCount = new Set(rows.flatMap(r=>r.list.filter(e=>eventDurationMin(e)===null).map(e=>e.id))).size;
   const MODES = {week:'Неделя', month:'Месяц', quarter:'Квартал', year:'Год'};
   const barRow = r => {
-    const wPlan = r.planMin/maxMin*100, wMeet = r.meetMin/maxMin*100;
+    const wPlan = r.planMin/maxMin*100, wMeet = r.meetMin/maxMin*100, wEvt = r.evtMin/maxMin*100;
     const open = st.openEmp===r.emp.id;
     return `
       <div class="item" style="display:block;cursor:pointer;" data-an-emp="${r.emp.id}">
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
           <div><strong>${escapeHtml(r.emp.name)}</strong> <span class="subtitle">${escapeHtml(r.emp.role||'')}</span></div>
-          <div><strong>${fmtDur(r.totalMin)}</strong> <span class="subtitle">· встреч: ${r.count}</span></div>
+          <div><strong>${fmtDur(r.totalMin)}</strong> <span class="subtitle">· записей: ${r.count}</span></div>
         </div>
         <div style="display:flex;height:12px;border-radius:6px;background:var(--line,#eee);overflow:hidden;margin:6px 0 2px;">
           <div title="Планёрки: ${fmtDur(r.planMin)}" style="width:${wPlan}%;background:${CATEGORY_COLORS.planning};"></div>
           <div title="Рабочие встречи: ${fmtDur(r.meetMin)}" style="width:${wMeet}%;background:${CATEGORY_COLORS.meeting};"></div>
+          <div title="События: ${fmtDur(r.evtMin)}" style="width:${wEvt}%;background:${CATEGORY_COLORS.event};"></div>
         </div>
-        <div class="subtitle" style="font-size:12px;">Планёрки ${fmtDur(r.planMin)} · Рабочие встречи ${fmtDur(r.meetMin)}${r.count? ` · в среднем ${fmtDur((r.planMin+r.meetMin)/Math.max(1,r.count-r.unknown))}`:''}${r.unknown?` · без времени окончания: ${r.unknown}`:''}</div>
+        <div class="subtitle" style="font-size:12px;">Планёрки ${fmtDur(r.planMin)} · Рабочие встречи ${fmtDur(r.meetMin)} · События ${fmtDur(r.evtMin)}${r.count? ` · в среднем ${fmtDur(r.totalMin/Math.max(1,r.count-r.unknown))}`:''}${r.unknown?` · без времени окончания: ${r.unknown}`:''}</div>
         ${open ? `<div style="margin-top:8px;border-top:1px solid var(--line,#ddd);padding-top:6px;">
           ${r.list.map(e=>{ const d = eventDurationMin(e); return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:2px 0;">
             <span>${fmtDate(e.date)} ${e.startTime?escapeHtml(e.startTime)+(e.endTime?'–'+escapeHtml(e.endTime):''):''} · ${escapeHtml(e.title||'')} <span class="subtitle">(${escapeHtml(CATEGORIES[e.category]||'')})</span></span>
@@ -6525,13 +6527,16 @@ function renderAnalytics(root){
   root.innerHTML = `
     <div class="row-between">
       <div>
-        <h2 class="section-title">Аналитика: время на встречах</h2>
-        <p class="subtitle">Планёрки и рабочие встречи — сколько времени каждый сотрудник проводит на них. Считается по времени начала и конца события в календаре.</p>
+        <h2 class="section-title">Аналитика: встречи и события</h2>
+        <p class="subtitle">Планёрки, рабочие встречи и события — сколько времени каждый сотрудник проводит на них. Считается по времени начала и конца в календаре.</p>
       </div>
       <button class="btn ghost small" id="anCsv">⬇ CSV</button>
     </div>
     <div class="cat-filters" style="margin:12px 0;">
       ${Object.entries(MODES).map(([k,v])=>`<button class="cat-chip ${st.mode===k?'':'off'}" data-an-mode="${k}">${v}</button>`).join('')}
+    </div>
+    <div class="cat-filters" style="margin:0 0 12px;">
+      ${MEETING_CATS.map(c=>`<button class="cat-chip ${st.cats[c]?'':'off'}" data-an-cat="${c}"><span class="dot" style="background:${CATEGORY_COLORS[c]};"></span>${CATEGORIES[c]}</button>`).join('')}
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
       <button class="btn ghost small" id="anPrev">←</button>
@@ -6541,26 +6546,33 @@ function renderAnalytics(root){
       <label style="display:flex;gap:6px;align-items:center;font-size:13px;margin-left:8px;"><input type="checkbox" id="anPast" ${st.pastOnly?'checked':''}> только уже прошедшие</label>
     </div>
     <div class="note" style="margin-bottom:14px;">
-      Всего встреч за период: <strong>${meetingsTotal}</strong> · суммарно по сотрудникам: <strong>${fmtDur(sumMin)}</strong>
+      Всего за период: <strong>${meetingsTotal}</strong> · суммарно по сотрудникам: <strong>${fmtDur(sumMin)}</strong>
       <span style="margin-left:10px;"><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.planning};"></span> Планёрки
-      <span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.meeting};margin-left:8px;"></span> Рабочие встречи</span>
-      ${noEndCount ? `<div class="subtitle" style="margin-top:4px;">У ${noEndCount} встреч(и) не указано время начала или конца — в часы они не входят, но учтены в количестве.</div>` : ''}
+      <span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.meeting};margin-left:8px;"></span> Рабочие встречи
+      <span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.event};margin-left:8px;"></span> События</span>
+      ${noEndCount ? `<div class="subtitle" style="margin-top:4px;">У ${noEndCount} записей не указано время начала или конца — в часы они не входят, но учтены в количестве.</div>` : ''}
     </div>
     <div class="item-list">
       ${active.length ? active.map(barRow).join('') : `<p class="subtitle" style="margin:0;">За этот период встреч с участниками нет.</p>`}
     </div>
     ${idle.length && active.length ? `<p class="subtitle" style="margin-top:12px;">Без встреч за период: ${idle.map(r=>escapeHtml(r.emp.name)).join(', ')}</p>` : ''}
-    <p class="subtitle" style="margin-top:14px;">Нажмите на сотрудника, чтобы увидеть список его встреч. Если на встрече несколько участников, время засчитывается каждому из них.</p>
+    <p class="subtitle" style="margin-top:14px;">Нажмите на сотрудника, чтобы увидеть список его встреч и событий. Если участников несколько, время засчитывается каждому из них.</p>
   `;
   root.querySelectorAll('[data-an-mode]').forEach(b=>b.onclick=()=>{ st.mode=b.dataset.anMode; st.openEmp=null; render(); });
+  root.querySelectorAll('[data-an-cat]').forEach(b=>b.onclick=()=>{
+    const c = b.dataset.anCat;
+    const othersOn = MEETING_CATS.some(x=>x!==c && st.cats[x]);
+    if(st.cats[c] && !othersOn){ toast('Должна остаться выбрана хотя бы одна категория'); return; }
+    st.cats[c] = !st.cats[c]; render();
+  });
   document.getElementById('anPrev').onclick=()=>{ st.anchor=shiftAnalyticsAnchor(st.mode, st.anchor, -1); st.openEmp=null; render(); };
   document.getElementById('anNext').onclick=()=>{ st.anchor=shiftAnalyticsAnchor(st.mode, st.anchor, 1); st.openEmp=null; render(); };
   document.getElementById('anNow').onclick=()=>{ st.anchor=todayISO(); st.openEmp=null; render(); };
   document.getElementById('anPast').onchange=(ev)=>{ st.pastOnly=ev.target.checked; render(); };
   root.querySelectorAll('[data-an-emp]').forEach(el=>el.onclick=()=>{ st.openEmp = st.openEmp===el.dataset.anEmp ? null : el.dataset.anEmp; render(); });
   document.getElementById('anCsv').onclick=()=>{
-    const lines = [['Сотрудник','Роль','Встреч','Планёрки (мин)','Рабочие встречи (мин)','Всего (мин)','Всего (ч)','Встреч без времени окончания'].map(csvEscape).join(';')];
-    rows.forEach(r=>lines.push([r.emp.name, r.emp.role||'', r.count, r.planMin, r.meetMin, r.totalMin, (r.totalMin/60).toFixed(2).replace('.',','), r.unknown].map(csvEscape).join(';')));
+    const lines = [['Сотрудник','Роль','Количество','Планёрки (мин)','Рабочие встречи (мин)','События (мин)','Всего (мин)','Всего (ч)','Без времени окончания'].map(csvEscape).join(';')];
+    rows.forEach(r=>lines.push([r.emp.name, r.emp.role||'', r.count, r.planMin, r.meetMin, r.evtMin, r.totalMin, (r.totalMin/60).toFixed(2).replace('.',','), r.unknown].map(csvEscape).join(';')));
     downloadTextFile(`vstrechi-${range.from}_${range.to}.csv`, 'text/csv;charset=utf-8', '﻿'+lines.join('\n'));
   };
 }
@@ -6809,11 +6821,72 @@ function openFundModal(id, scope){
 
 /* ================= EMPLOYEES ================= */
 /* ================= GLOBAL SEARCH ================= */
+// Список задач всей студии для поиска (только чтение). Кэшируется на минуту.
+async function loadAllTasksReadonly(){
+  const c = state.allTasksReadonly;
+  if(c && Date.now()-c.at < 60000) return c.list;
+  try{
+    const r = await fetch('/api/tasks/search-all', {credentials:'include'});
+    if(!r.ok) return c ? c.list : [];
+    const j = await r.json();
+    state.allTasksReadonly = {at:Date.now(), list:j.tasks||[]};
+    return state.allTasksReadonly.list;
+  }catch(e){ return c ? c.list : []; }
+}
+// Карточка задачи только для просмотра: все детали, без редактирования.
+function openTaskViewModal(t){
+  const all = (state.allTasksReadonly ? state.allTasksReadonly.list : []).concat(state.tasksWork.filter(x=>!(state.allTasksReadonly&&state.allTasksReadonly.list.some(y=>y.id===x.id))));
+  const parent = t.parentId ? all.find(x=>x.id===t.parentId) : null;
+  const subs = all.filter(x=>x.parentId===t.id).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+  const proj = t.projectId ? state.projectsWork.find(p=>p.id===t.projectId) : null;
+  const row = (label, val)=> val ? `<div class="field" style="margin-bottom:10px;"><label>${label}</label><div>${val}</div></div>` : '';
+  const links = taskLinks(t);
+  const ov = document.createElement('div');
+  ov.className='overlay'; ov.style.zIndex=160;
+  ov.innerHTML = `
+    <div class="modal" style="max-width:560px;">
+      <div class="modal-topbar">
+        <h3>${escapeHtml(t.title)}</h3>
+        <div class="modal-topbar-btns"><button class="btn" id="tvClose">Закрыть</button></div>
+      </div>
+      <div class="note" style="margin-bottom:12px;">👁 Только просмотр. Изменить задачу может тот, кто её поставил, либо Руководитель/Ассистент.</div>
+      <div class="meta" style="margin-bottom:12px;">
+        <span class="badge ${t.status||'progress'}">${STATUSES[t.status]||''}</span>
+        <span class="badge prio-${t.priority==='high'?'high':t.priority==='med'?'med':'low'}">${PRIORITIES[t.priority]||''}</span>
+        ${checklistBadgeHtml(t)}
+        ${t.managementStage?`<span class="badge">${MANAGEMENT_STAGES[t.managementStage]||''}</span>`:''}
+      </div>
+      ${row('Описание', t.description ? linkifyEscaped(t.description) : '')}
+      ${row('Исполнитель', t.assigneeId ? escapeHtml(empName(t.assigneeId)) : '—')}
+      ${row('Поставил(а)', t.creatorId ? escapeHtml(empName(t.creatorId)) : '')}
+      ${row('Дедлайн', t.deadline ? escapeHtml(fmtDeadline(t)) : 'не указан')}
+      ${row('Дата постановки', t.createdDate ? escapeHtml(fmtDate(t.createdDate)) : '')}
+      ${row('Выполнено', t.completedAt ? escapeHtml(fmtDate(t.completedAt)) : '')}
+      ${row('Проект', proj ? '📁 '+escapeHtml(proj.name) : '')}
+      ${row('Блок', t.blockId ? '📦 '+escapeHtml(blockName(t.blockId)) : '')}
+      ${row('Подзадача для', parent ? escapeHtml(parent.title) : '')}
+      ${row('Ссылки', links.length ? links.map((l,i)=>`<div><a href="${escapeHtml(l)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);text-decoration:underline;">${escapeHtml(l)}</a></div>`).join('') : '')}
+      ${subs.length ? `<div class="field"><label>Подзадачи (${subs.length})</label>
+        <div class="item-list">${subs.map(c=>`
+          <div class="item"><div class="main"><div class="title">${escapeHtml(c.title)}</div>
+            <div class="meta"><span class="badge ${c.status||'progress'}">${STATUSES[c.status]||''}</span>${c.assigneeId?`<span>${escapeHtml(empName(c.assigneeId))}</span>`:''}${c.deadline?`<span>до ${escapeHtml(fmtDeadline(c))}</span>`:''}</div></div></div>`).join('')}
+        </div></div>` : ''}
+    </div>`;
+  document.body.appendChild(ov);
+  const close = ()=>ov.remove();
+  ov.querySelector('#tvClose').onclick = close;
+  ov.onclick = (e)=>{ if(e.target===ov) close(); };
+}
 async function openTaskFromSearch(taskId, personal){
   if(personal && !personalAccessAllowed()) return false;
-  const t = tasksFor(personal).find(x=>x.id===taskId);
+  let t = tasksFor(personal).find(x=>x.id===taskId);
+  if(!t && !personal){
+    // Чужая задача из общего поиска — открываем для просмотра.
+    const ro = (state.allTasksReadonly ? state.allTasksReadonly.list : []).find(x=>x.id===taskId);
+    if(ro){ openTaskViewModal(ro); return false; }
+  }
   if(!t) return false;
-  if(!canEditTask(t, personal)){ toast(whyCantEdit(t)); return false; }
+  if(!canEditTask(t, personal)){ if(!personal){ openTaskViewModal(t); return false; } toast(whyCantEdit(t)); return false; }
   state.tab='tasks'; state.taskSubtab = personal?'personal':'work';
   render();
   setTimeout(()=>openTaskModal(taskId, personal), 50);
@@ -6825,7 +6898,11 @@ function performGlobalSearch(query){
   const match = (s)=> s && String(s).toLowerCase().includes(q);
   const allTasks = state.tasksWork.map(t=>({...t, __personal:false}))
     .concat(personalAccessAllowed() ? state.personalTasks.map(t=>({...t, __personal:true})) : []);
-  const tasks = allTasks.filter(t=> match(t.title) || match(t.description) || match(t.purchaseStore)).slice(0,8);
+  // К задачам, доступным мне по оргструктуре, добавляем задачи всей студии «только для просмотра»
+  // (без переписки и отчётов исполнителей).
+  const knownIds = new Set(allTasks.map(t=>t.id));
+  const roTasks = (state.allTasksReadonly ? state.allTasksReadonly.list : []).filter(t=>!knownIds.has(t.id)).map(t=>({...t, __personal:false, __ro:true}));
+  const tasks = allTasks.concat(roTasks).filter(t=> match(t.title) || match(t.description) || match(t.purchaseStore) || (t.__ro && match(empName(t.assigneeId)))).slice(0,12);
 
   const allEvents = allVisibleEvents().map(e=>({...e, __personal: isPersonalEvent(e.id)}));
   const events = allEvents.filter(e=> match(e.title) || match(e.notes) || match(e.location)).slice(0,8);
@@ -6862,6 +6939,7 @@ function openSearchModal(){
   const input = ov.querySelector('#globalSearchInput');
   const resultsEl = ov.querySelector('#globalSearchResults');
   setTimeout(()=>input.focus(),0);
+  loadAllTasksReadonly().then(()=>{ if(input.value.trim().length>=2) renderResults(); });
 
   function renderResults(){
     const q = input.value;
@@ -6881,7 +6959,7 @@ function openSearchModal(){
       html += res.tasks.map(t=>`
         <div class="item" style="cursor:pointer;" data-sr-task="${t.id}" data-sr-personal="${t.__personal?'1':'0'}">
           <div class="main"><div class="title">${t.__personal?'🔒 ':''}${escapeHtml(t.title)}</div>
-          <div class="meta"><span class="badge ${t.status||'progress'}">${STATUSES[t.status]||''}</span>${t.deadline?`<span>до ${fmtDeadline(t)}</span>`:''}</div></div>
+          <div class="meta"><span class="badge ${t.status||'progress'}">${STATUSES[t.status]||''}</span>${t.assigneeId?`<span>${escapeHtml(empName(t.assigneeId))}</span>`:''}${t.deadline?`<span>до ${fmtDeadline(t)}</span>`:''}${t.__ro?'<span>👁 просмотр</span>':''}</div></div>
         </div>`).join('');
       html += `</div>`;
     }

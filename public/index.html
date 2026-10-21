@@ -1553,6 +1553,8 @@ const AUDIT_ACTION_LABELS = {
   project_deleted: 'Удалил(а) проект',
   block_deleted: 'Удалил(а) блок',
   reg_moved: 'Передал(а) регламент',
+  block_simple_on: 'Включил(а) упрощённые задачи в блоке',
+  block_simple_off: 'Выключил(а) упрощённые задачи в блоке',
   project_archived: 'Отправил(а) проект в архив',
   project_unarchived: 'Вернул(а) проект из архива',
   block_archived: 'Отправил(а) блок в архив',
@@ -1657,6 +1659,35 @@ async function setBlockArchived(blockId, archived){
   if(bl) logAudit(archived?'block_archived':'block_unarchived', `«${bl.name}»`);
   toast(archived ? 'Блок отправлен в архив' : 'Блок возвращён из архива');
   return true;
+}
+/* ---------------- упрощённые задачи ----------------
+   Блок с флагом simpleTasks: задачи в нём ставятся короткой формой (название, исполнитель, дедлайн,
+   статус, повтор, необязательное описание) и автоматически уходят в проект «Задачи» этого блока. */
+function isSimpleBlock(b){ return !!(b && b.simpleTasks && !b.archived); }
+function simpleBlocks(){ return state.blocksWork.filter(isSimpleBlock); }
+function simpleProjectOfBlock(blockId){
+  return state.projectsWork.find(p=>p.blockId===blockId && (p.simpleProject || (p.name||'').trim().toLowerCase()==='задачи'));
+}
+// Проект «Задачи» внутри блока: если его нет — создаётся (локально сразу, сохранение — в фоне).
+function ensureSimpleProject(blockId){
+  let p = simpleProjectOfBlock(blockId);
+  if(p) return p;
+  p = {id:uid(), name:'Задачи', blockId, simpleProject:true};
+  state.projectsWork = state.projectsWork.concat([p]);
+  saveProjectsWork().then(ok=>{ if(!ok) toast('⚠️ Не удалось сохранить проект «Задачи» — повторите позже'); });
+  return p;
+}
+// Если задачи сейчас смотрят в «простом» блоке (выбран блок или единственный проект из него) —
+// кнопка «+ Задача» открывает упрощённую форму.
+function contextSimpleBlockId(){
+  if(state.tab!=='tasks' || state.taskSubtab!=='work') return null;
+  let bid = state.taskFilterBlockId.work;
+  if(!bid){
+    const ids = [...state.taskFilterProjectIds.work];
+    if(ids.length===1){ const pr = state.projectsWork.find(x=>x.id===ids[0]); bid = pr && pr.blockId; }
+  }
+  const b = bid && state.blocksWork.find(x=>x.id===bid);
+  return isSimpleBlock(b) ? b.id : null;
 }
 function activeBlocksFor(){
   return state.blocksWork.filter(b=>!isBlockCompleted(b.id));
@@ -4519,7 +4550,7 @@ function renderPersonalTasks(el){
 }
 
 function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
-  opts = opts || {};
+  opts = Object.assign({}, opts || {});
   const taskOpts = opts;
   // Постановка главной задачи из чек-листа: название и описание подтягиваются из чек-листа,
   // шаги становятся подзадачами (их можно поправить кнопкой «Редактировать подзадачи»).
@@ -4529,6 +4560,17 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
   const existing = id ? source.find(t=>t.id===id) : null;
   const parentId = existing ? (existing.parentId||null) : (presetParentId||null);
   const parentTask = parentId ? source.find(x=>x.id===parentId) : null;
+  // Упрощённая форма: только для новых задач из «простого» блока или для уже упрощённых задач.
+  let simpleMode = false;
+  if(!personal && !parentId && !checklist){
+    if(existing) simpleMode = !!existing.simple && !opts.extended && isSimpleBlock(state.blocksWork.find(b=>b.id===existing.blockId));
+    else if(opts.simple===true) simpleMode = simpleBlocks().length>0;
+    else if(opts.simple===undefined){ const cb = contextSimpleBlockId(); if(cb){ simpleMode = true; opts.blockId = cb; } }
+  }
+  if(simpleMode && !existing){
+    const bid = opts.blockId || (simpleBlocks()[0]||{}).id;
+    if(bid){ opts.blockId = bid; opts.projectId = ensureSimpleProject(bid).id; }
+  }
   const allProjects = projectsFor(personal);
   const selKey = personal?'personal':'work';
   const purchasesProject = allProjects.find(p=>isPurchasesProjectName(p.name));
@@ -4561,10 +4603,12 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
     <div class="overlay" id="ov">
       <div class="modal">
         <div class="modal-topbar">
-          <h3>${existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':(checklist?'Новая задача из чек-листа':'Новая задача'))}${personal?' · личная':''}</h3>
+          <h3>${simpleMode?`⚡ ${existing?(editable?'Изменить простую задачу':'Просмотр задачи'):'Простая задача'}`:existing?(editable?'Изменить задачу':'Просмотр задачи'):(parentId?'Новая подзадача':(checklist?'Новая задача из чек-листа':'Новая задача'))}${personal?' · личная':''}</h3>
           <div class="modal-topbar-btns">
             ${(draftSubs || (existing && !parentId && source.some(c=>c.parentId===existing.id)))?`<button class="btn ghost" id="editSubtasks">🧩 Редактировать подзадачи (${draftSubs ? draftSubs.length : source.filter(c=>c.parentId===existing.id).length})</button>`:''}
             ${existing && editable?`<button class="btn ghost" id="addSubFromModal">+ Создать подзадачу</button>`:''}
+            ${simpleMode && editable?`<button class="btn ghost" id="toExtended">Расширенная задача</button>`:''}
+            ${!simpleMode && !existing && !parentId && !checklist && !personal && simpleBlocks().length?`<button class="btn ghost" id="toSimple">⚡ Простая задача</button>`:''}
             <button class="btn ghost" id="cancelTask">${editable?'Отмена':'Закрыть'}</button>
             ${editable?`<button class="btn" id="saveTask">Сохранить</button>`:''}
           </div>
@@ -4941,6 +4985,48 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
     await saveNewInlineProject();
   };
 
+  if(simpleMode){
+    const hideField = id=>{ const e=document.getElementById(id); if(!e) return; const f=e.closest('.field')||e; f.style.display='none'; };
+    ['t_links_list','t_creator','t_self_assigned','t_in_report','t_createdDate','t_priority','t_mgmt_stage','t_event','t_project'].forEach(hideField);
+    const pw = document.getElementById('t_purchase_wrap'); if(pw) pw.style.display='none';
+    const cw = document.getElementById('t_completion_wrap'); if(cw) cw.style.display='none';
+    const st = document.getElementById('t_status'); if(st) st.addEventListener('change', ()=>{ if(cw) cw.style.display='none'; });
+    const dl = document.querySelector('#t_desc'); const dlab = dl && dl.closest('.field') && dl.closest('.field').querySelector('label');
+    if(dlab) dlab.textContent = 'Описание (необязательно)';
+    // блок: только те, где включены упрощённые задачи (плюс блок самой задачи); проект «Задачи» подставляется сам
+    const bsel = document.getElementById('t_block');
+    if(bsel){
+      const curB = bsel.value;
+      const list = simpleBlocks().filter(b=>true);
+      if(curB && !list.some(b=>b.id===curB)){ const cb = state.blocksWork.find(b=>b.id===curB); if(cb) list.push(cb); }
+      bsel.innerHTML = list.map(b=>`<option value="${b.id}" ${b.id===curB?'selected':''}>📦 ${escapeHtml(b.name)}</option>`).join('');
+      const syncSimpleProject = ()=>{
+        if(existing && bsel.value===existing.blockId) return;
+        const pr = ensureSimpleProject(bsel.value);
+        const ps = document.getElementById('t_project');
+        if(ps){ ps.innerHTML = `<option value="${pr.id}" selected>${escapeHtml(pr.name)}</option>`; ps.value = pr.id; }
+      };
+      bsel.addEventListener('change', syncSimpleProject);
+      if(!existing) syncSimpleProject();
+    }
+    const toExt = document.getElementById('toExtended');
+    if(toExt) toExt.onclick = ()=>{
+      const v = id=>{ const e=document.getElementById(id); return e?e.value:''; };
+      if(existing){ closeModal(); openTaskModal(existing.id, personal, null, null, onDone, {extended:true}); return; }
+      const o = Object.assign({}, opts, {simple:false, assigneeId:v('t_assignee'), deadline:v('t_deadline'), description:v('t_desc'), blockId:v('t_block')});
+      const pr = o.blockId ? simpleProjectOfBlock(o.blockId) : null; if(pr) o.projectId = pr.id;
+      const ttl = v('t_title');
+      closeModal(); openTaskModal(null, personal, null, ttl, onDone, o);
+    };
+  }
+  const toSimpleBtn = document.getElementById('toSimple');
+  if(toSimpleBtn) toSimpleBtn.onclick = ()=>{
+    const v = id=>{ const e=document.getElementById(id); return e?e.value:''; };
+    const o = Object.assign({}, opts, {simple:true, assigneeId:v('t_assignee'), deadline:v('t_deadline'), description:v('t_desc')});
+    const ttl = v('t_title');
+    closeModal(); openTaskModal(null, personal, null, ttl, onDone, o);
+  };
+
   function flagInvalid(elId){
     const elm = document.getElementById(elId);
     elm.classList.add('invalid');
@@ -4969,7 +5055,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
 
     let firstInvalid = null;
     if(!title) firstInvalid = flagInvalid('t_title');
-    if(!description) firstInvalid = firstInvalid || flagInvalid('t_desc');
+    if(!description && !simpleMode) firstInvalid = firstInvalid || flagInvalid('t_desc');
     if(!creatorId) firstInvalid = firstInvalid || flagInvalid('t_creator');
     if(!personal && !assigneeId) firstInvalid = firstInvalid || flagInvalid('t_assignee');
     if(!createdDate) firstInvalid = firstInvalid || flagInvalid('t_createdDate');
@@ -4982,7 +5068,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
     }
     const statusVal = document.getElementById('t_status').value;
     const completionCommentVal = document.getElementById('t_completion_comment').value.trim();
-    if(statusVal==='done' && !completionCommentVal) firstInvalid = firstInvalid || flagInvalid('t_completion_comment');
+    if(statusVal==='done' && !completionCommentVal && !simpleMode) firstInvalid = firstInvalid || flagInvalid('t_completion_comment');
     if(firstInvalid){
       toast('Заполните все обязательные поля (отмечены *)');
       firstInvalid.focus();
@@ -5076,6 +5162,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
       sortOrder: existing ? (existing.sortOrder||0) : 0,
       selfAssigned: document.getElementById('t_self_assigned') ? document.getElementById('t_self_assigned').checked : !!(existing && existing.selfAssigned),
       fromChecklist: existing ? !!existing.fromChecklist : !!draftSubs,
+      simple: existing ? !!existing.simple : simpleMode,
       inReport: document.getElementById('t_in_report') ? document.getElementById('t_in_report').checked : !!(existing && existing.inReport),
     };
 
@@ -5316,9 +5403,10 @@ function openProjectsModal(personal, presetBlockId){
           ${state.blocksWork.map(b=>`
             <div class="item" style="background:var(--card);display:block;">
               <div class="title" style="font-weight:600;font-size:14.5px;overflow-wrap:break-word;word-break:normal;">${escapeHtml(b.name)}</div>
-              <div class="subtitle" style="font-size:12px;margin:2px 0 8px;">${projectsInBlock(b.id).length} проект(ов)</div>
+              <div class="subtitle" style="font-size:12px;margin:2px 0 8px;">${projectsInBlock(b.id).length} проект(ов)${b.simpleTasks?' · ⚡ упрощённые задачи':''}</div>
               <div class="actions" style="justify-content:flex-end;">
                 <button class="btn ghost small" data-quick-add-proj="${b.id}" title="Добавить проект сразу в этот блок">+ Проект</button>
+                <button class="btn ghost small" data-simple-block="${b.id}" title="${b.simpleTasks?'Выключить упрощённые задачи в этом блоке':'Разрешить упрощённые задачи в этом блоке (создаст проект «Задачи»)'}" style="${b.simpleTasks?'border-color:var(--teal);color:var(--teal);':''}">⚡ ${b.simpleTasks?'Упрощённые: вкл':'Упрощённые'}</button>
                 <button class="btn ghost small" data-arch-block="${b.id}" title="${b.archived?'Вернуть из архива':'Отправить в архив'}">${b.archived?'↩ Из архива':'📥 В архив'}</button>
                 <button class="btn ghost small" data-rename-block="${b.id}">✎</button>
                 <button class="btn danger small" data-del-block="${b.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять блоки может только Руководитель или Ассистент'}">✕</button>
@@ -5326,10 +5414,14 @@ function openProjectsModal(personal, presetBlockId){
             </div>
           `).join('') || `<p class="subtitle" style="margin:0;">Блоков пока нет</p>`}
         </div>
-        <div class="field-row" style="margin:0 0 12px;">
+        <div class="field-row" style="margin:0 0 6px;">
           <input id="block_name" placeholder="Например: Финансы" style="flex:1;">
           <button class="btn ghost small" id="addBlockBtn">+ Добавить блок</button>
         </div>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:0 0 12px;cursor:pointer;">
+          <input type="checkbox" id="block_simple" style="width:auto;margin-top:3px;">
+          <span>⚡ Разрешить упрощённые задачи — в блоке создастся проект «Задачи», задачи в нём ставятся короткой формой (название, исполнитель, дедлайн, статус, повтор)</span>
+        </label>
         <button class="btn ghost small" id="syncBlocksBtn" style="${canDeleteProject?'':'opacity:.4;'}" ${canDeleteProject?'':'disabled'} title="${canDeleteProject?'Привести существующие задачи в соответствие: если у задачи есть проект без блока — подставить блок этого проекта; подзадачи подтянуть за родителем':'Доступно только Руководителю и Ассистенту'}">🔄 Обновить блоки/проекты у существующих задач</button>
       </div>
     `;
@@ -5461,11 +5553,33 @@ function openProjectsModal(personal, presetBlockId){
       if(!name){ toast('Введите название блока'); return; }
       await refreshProjectsAndBlocksFromServer();
       const before = state.blocksWork;
-      state.blocksWork = before.concat([{id:uid(), name}]);
+      const simple = !!(document.getElementById('block_simple') && document.getElementById('block_simple').checked);
+      const newBlock = {id:uid(), name};
+      if(simple) newBlock.simpleTasks = true;
+      state.blocksWork = before.concat([newBlock]);
       const ok = await saveBlocksWork();
       if(!ok){ state.blocksWork = before; saveFailedToast(retry); return; }
+      if(simple){
+        ensureSimpleProject(newBlock.id);
+        await saveProjectsWork();
+        logAudit('block_simple_on', `«${name}»`);
+      }
       modal.innerHTML = body(); wire(); render();
     };
+    modal.querySelectorAll('[data-simple-block]').forEach(b=>b.onclick=async function retry(){
+      const bid = b.dataset.simpleBlock;
+      await refreshProjectsAndBlocksFromServer();
+      const cur = state.blocksWork.find(x=>x.id===bid); if(!cur) return;
+      const to = !cur.simpleTasks;
+      const before = state.blocksWork;
+      state.blocksWork = before.map(x=>x.id===bid ? {...x, simpleTasks:to} : x);
+      const ok = await saveBlocksWork();
+      if(!ok){ state.blocksWork = before; saveFailedToast(retry); return; }
+      if(to){ ensureSimpleProject(bid); await saveProjectsWork(); }
+      logAudit(to?'block_simple_on':'block_simple_off', `«${cur.name}»`);
+      toast(to ? 'Упрощённые задачи включены — проект «Задачи» создан' : 'Упрощённые задачи выключены (старые задачи остались)');
+      modal.innerHTML = body(); wire(); render();
+    });
     const syncBlocksBtn = document.getElementById('syncBlocksBtn');
     if(syncBlocksBtn) syncBlocksBtn.onclick=async ()=>{
       if(!hasRole('Руководитель','Ассистент')){ toast('Доступно только Руководителю и Ассистенту'); return; }
@@ -5730,7 +5844,7 @@ function openQuickIdeasModal(){
           if(!ok){ state.quickIdeasWork = before; saveFailedToast(saveQuickIdeaConsumed); }
         }
         await saveQuickIdeaConsumed();
-      });
+      }, {simple:false});
     });
   }
   wire();
@@ -7076,7 +7190,7 @@ function renderRegs(root){
       if(!newId) return;
       const ok = await mutateRegs(a=> a.map(x=> x.id!==reg.id ? x : {...x, taskIds:(x.taskIds||[]).concat([newId])}));
       if(ok){ toast('Задача привязана к регламенту'); render(); }
-    }, {assigneeId: reg.holderId||'', deadline: reg.deadline||'', projectId: proj?proj.id:null, description:`Регламент «${reg.title}»`});
+    }, {simple:false, assigneeId: reg.holderId||'', deadline: reg.deadline||'', projectId: proj?proj.id:null, description:`Регламент «${reg.title}»`});
   });
   root.querySelector('#rgRefresh').onclick = async ()=>{ await loadRegs(true); toast('Обновлено'); };
   const seed = root.querySelector('#rgSeed');

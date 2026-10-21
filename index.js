@@ -534,6 +534,41 @@ function stripForeignPersonal(rawSnapshot, empId, role) {
   }
 }
 // Разовый перенос прежних общих личных данных к Руководителю (по решению владельца студии).
+// Один раз: в блоках «Дела менеджеров» и «Дела администраторов» включаем упрощённые задачи и
+// заводим в них проект «Задачи» (дальше — в приложении, кнопкой ⚡ у блока).
+async function migrateSimpleTaskBlocks() {
+  try {
+    if (store.kv['migrations:simpleBlocksV1']) return;
+    const blocks = parseJsonArray(store.kv['tasks:blocks']);
+    if (!blocks) return; // блоков ещё нет — повторим при следующем запуске
+    const projects = parseJsonArray(store.kv['tasks:projects']) || [];
+    const re = /^\s*дела\s+(менеджер|администратор)/i;
+    let changed = 0;
+    const newProjects = [];
+    const nextBlocks = blocks.map(b => {
+      if (!b || !re.test(String(b.name || ''))) return b;
+      if (!projects.concat(newProjects).some(p => p.blockId === b.id && (p.simpleProject || String(p.name || '').trim().toLowerCase() === 'задачи'))) {
+        newProjects.push({ id: 'simple-' + b.id, name: 'Задачи', blockId: b.id, simpleProject: true });
+      }
+      if (!b.simpleTasks) changed++;
+      return { ...b, simpleTasks: true };
+    });
+    const oldBlocks = store.kv['tasks:blocks'];
+    const oldProjects = store.kv['tasks:projects'];
+    store.kv['tasks:blocks'] = JSON.stringify(nextBlocks);
+    if (newProjects.length) store.kv['tasks:projects'] = JSON.stringify(projects.concat(newProjects));
+    store.kv['migrations:simpleBlocksV1'] = '1';
+    const ok = await persist();
+    if (!ok) {
+      store.kv['tasks:blocks'] = oldBlocks;
+      if (oldProjects === undefined) delete store.kv['tasks:projects']; else store.kv['tasks:projects'] = oldProjects;
+      delete store.kv['migrations:simpleBlocksV1'];
+      console.error('Упрощённые задачи в блоках: не удалось сохранить — попробуем при следующем запуске.');
+      return;
+    }
+    console.log(`Упрощённые задачи: включено в блоках ${changed}, добавлено проектов «Задачи»: ${newProjects.length}.`);
+  } catch (e) { console.error('Ошибка включения упрощённых задач:', e); }
+}
 async function migratePersonalToLeader() {
   try {
     const legacyKeys = Object.keys(store.kv).filter(k => PERSONAL_LEGACY_RE.test(k));
@@ -1006,6 +1041,7 @@ async function mergeAdminShiftProfiles() {
 
   await mergeAdminShiftProfiles();
   await migratePersonalToLeader();
+  await migrateSimpleTaskBlocks();
 
   serverReady = true;
   console.log('Данные загружены, сервер готов к работе.');

@@ -5314,9 +5314,10 @@ function openProjectsModal(personal, presetBlockId){
         <p class="subtitle" style="margin:0 0 10px;">Удобно для крупных направлений (например, «Финансы», «Персонал»), в которые входит сразу несколько проектов.</p>
         <div class="item-list" style="margin-bottom:12px;">
           ${state.blocksWork.map(b=>`
-            <div class="item" style="background:var(--card);">
-              <div class="main"><div class="title">${escapeHtml(b.name)}</div><div class="meta"><span>${projectsInBlock(b.id).length} проект(ов)</span></div></div>
-              <div class="actions">
+            <div class="item" style="background:var(--card);display:block;">
+              <div class="title" style="font-weight:600;font-size:14.5px;overflow-wrap:break-word;word-break:normal;">${escapeHtml(b.name)}</div>
+              <div class="subtitle" style="font-size:12px;margin:2px 0 8px;">${projectsInBlock(b.id).length} проект(ов)</div>
+              <div class="actions" style="justify-content:flex-end;">
                 <button class="btn ghost small" data-quick-add-proj="${b.id}" title="Добавить проект сразу в этот блок">+ Проект</button>
                 <button class="btn ghost small" data-arch-block="${b.id}" title="${b.archived?'Вернуть из архива':'Отправить в архив'}">${b.archived?'↩ Из архива':'📥 В архив'}</button>
                 <button class="btn ghost small" data-rename-block="${b.id}">✎</button>
@@ -5332,19 +5333,30 @@ function openProjectsModal(personal, presetBlockId){
         <button class="btn ghost small" id="syncBlocksBtn" style="${canDeleteProject?'':'opacity:.4;'}" ${canDeleteProject?'':'disabled'} title="${canDeleteProject?'Привести существующие задачи в соответствие: если у задачи есть проект без блока — подставить блок этого проекта; подзадачи подтянуть за родителем':'Доступно только Руководителю и Ассистенту'}">🔄 Обновить блоки/проекты у существующих задач</button>
       </div>
     `;
+    // Сколько задач внутри проекта и сколько из них выполнено (подзадачи считаются)
+    const projTaskCounts = {};
+    tasksFor(personal).forEach(t=>{
+      if(!t.projectId) return;
+      const c = projTaskCounts[t.projectId] || (projTaskCounts[t.projectId] = {total:0, done:0});
+      c.total++; if(t.status==='done') c.done++;
+    });
+    const taskWord = n => { const a=n%10, b=n%100; return (a===1&&b!==11)?'задача':(a>=2&&a<=4&&(b<10||b>=20))?'задачи':'задач'; };
     function projectRow(p){
+      const c = projTaskCounts[p.id] || {total:0, done:0};
       return `
-        <div class="item">
-          <div class="main"><div class="title">${escapeHtml(p.name)}</div></div>
-          ${!personal ? `
-            <select data-proj-block="${p.id}" style="width:auto;max-width:160px;">
-              <option value="">Без блока</option>
-              ${state.blocksWork.map(b=>`<option value="${b.id}" ${p.blockId===b.id?'selected':''}>${escapeHtml(b.name)}</option>`).join('')}
-            </select>
-          ` : ''}
-          <div class="actions">
+        <div class="item" style="display:block;">
+          <div class="title" style="font-weight:600;font-size:14.5px;overflow-wrap:break-word;word-break:normal;">${escapeHtml(p.name)}</div>
+          <div class="subtitle" style="font-size:12px;margin:2px 0 8px;">${c.total} ${taskWord(c.total)}, ${c.done} выполнено</div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            ${!personal ? `
+              <select data-proj-block="${p.id}" style="width:auto;max-width:190px;flex:0 1 190px;padding:5px 8px;font-size:12.5px;">
+                <option value="">Без блока</option>
+                ${state.blocksWork.map(b=>`<option value="${b.id}" ${p.blockId===b.id?'selected':''}>${escapeHtml(b.name)}</option>`).join('')}
+              </select>
+            ` : ''}
+            <span style="flex:1;"></span>
             <button class="btn ghost small" data-arch-proj="${p.id}" title="${p.archived?'Вернуть из архива':'Отправить в архив'}">${p.archived?'↩ Из архива':'📥 В архив'}</button>
-            <button class="btn ghost small" data-rename-proj="${p.id}">✎</button>
+            <button class="btn ghost small" data-rename-proj="${p.id}" title="Переименовать">✎</button>
             <button class="btn danger small" data-del-proj="${p.id}" style="${canDeleteProject?'':'opacity:.4;'}" title="${canDeleteProject?'Удалить':'Удалять проекты может только Руководитель или Ассистент'}">✕</button>
           </div>
         </div>
@@ -6876,6 +6888,59 @@ function regStatsHTML(regs, today){
         <div class="subtitle" style="font-size:12.5px;">${x.segs.map(sg=>`${escapeHtml(regHolderName(sg.holderId))} ${sg.days} дн.${sg.current?' (сейчас)':''}`).join(' → ')}${x.overdue?` · <span style="color:var(--brick);font-weight:600;">срок ${fmtDate(x.reg.deadline)} прошёл</span>`:''}</div>
       </div>`).join('')}`;
 }
+const REG_BULK_DEFAULT = `Формирование ЗП (1)
+Контроль готовности клиентских зон (1)
+Учет снабжения (1)
+Регулирование конфликтов (1)
+Оформление сертификатов (1)
+Чрезвычайные ситуации (2)
+Передача смены администраторов (2)
+Действия при поломке оборудований (2)
+Работа на смене администратора (1)
+Касса, сейф, финансы (1)
+Генеральная уборка (1)
+Внешний вид сотрудника (1)`;
+// Разбор строк вида «Название (приоритет)»; без числа в скобках — приоритет 1.
+function parseRegBulk(text){
+  return text.split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{
+    const m = l.match(/^(.*?)\s*\((\d)\)\s*$/);
+    const pr = m ? parseInt(m[2],10) : 1;
+    return {title:(m?m[1]:l).trim(), priority:[1,2,3].includes(pr)?pr:1};
+  }).filter(x=>x.title);
+}
+function openRegBulkModal(){
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h3>Добавить регламенты списком</h3>
+    <div class="subtitle" style="margin:-8px 0 10px;">Одна строка — один регламент. Число в скобках — приоритет. Все добавятся в «Не назначен»; с такими же названиями, что уже есть, пропускаются.</div>
+    <textarea id="rbText" rows="14" style="width:100%;">${escapeHtml(REG_BULK_DEFAULT)}</textarea>
+    <div class="subtitle" id="rbInfo" style="margin-top:6px;"></div>
+    <div class="modal-actions"><button class="btn ghost" id="rbCancel">Отмена</button><button class="btn" id="rbSave">Добавить</button></div>
+  </div></div>`;
+  const info = ()=>{ document.getElementById('rbInfo').textContent = 'Будет добавлено: '+parseRegBulk(document.getElementById('rbText').value).length; };
+  document.getElementById('rbText').oninput = info; info();
+  document.getElementById('rbCancel').onclick = closeModal;
+  document.getElementById('rbSave').onclick = async ()=>{
+    const items = parseRegBulk(document.getElementById('rbText').value);
+    if(!items.length){ toast('Список пуст'); return; }
+    const today = todayISO();
+    let added = 0, skipped = 0;
+    const ok = await mutateRegs(a=>{
+      const have = new Set(a.map(r=>(r.title||'').trim().toLowerCase()));
+      const fresh = [];
+      items.forEach(it=>{
+        const k = it.title.toLowerCase();
+        if(have.has(k)){ skipped++; return; }
+        have.add(k); added++;
+        fresh.push({id:uid(), title:it.title, priority:it.priority, stage:'todo', link:'', note:'', deadline:'', taskIds:[],
+          holderId:null, since:today, createdAt:today, doneAt:null, moves:[]});
+      });
+      return fresh.length ? a.concat(fresh) : null;
+    });
+    if(ok){ closeModal(); toast(`Добавлено: ${added}${skipped?`, пропущено повторов: ${skipped}`:''}`); render(); }
+    else if(!added && skipped){ toast('Все эти регламенты уже есть'); }
+  };
+}
 function renderRegs(root){
   if(!regsAccess()){ root.innerHTML = accessDeniedScreen('Регламенты доступны Руководителю, Ассистенту и Старшему администратору.'); return; }
   const st = state.regsState;
@@ -6940,6 +7005,7 @@ function renderRegs(root){
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
       <div><h2 style="margin:0;">📜 Регламенты</h2><div class="subtitle">В работе: ${nOpen} · утверждено: ${done.length}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn ghost small" id="rgBulk">📥 Добавить списком</button>
         <button class="btn ghost small" id="rgCsv">⬇ CSV</button>
         <button class="btn ghost small" id="rgRefresh">↻ Обновить</button>
         <button class="btn" id="rgAdd">+ Регламент</button>
@@ -6978,6 +7044,7 @@ function renderRegs(root){
       <div class="subtitle" style="margin-top:6px;">Суммарно по всем регламентам, включая утверждённые.</div></div>
     </details>`)}`;
   root.querySelector('#rgAdd').onclick = ()=>openRegEditModal(null);
+  root.querySelector('#rgBulk').onclick = openRegBulkModal;
   root.querySelector('#rgCsv').onclick = ()=>exportRegsCSV(regs);
   const sInp = root.querySelector('#rgSearch');
   sInp.oninput = ()=>{ st.q = sInp.value; render(); const n = document.getElementById('rgSearch'); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } };

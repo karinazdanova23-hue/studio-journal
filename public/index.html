@@ -869,7 +869,7 @@ const state = {
   regs:null,
   projListCollapsed:(()=>{ try{ const v = localStorage.getItem('lj:ui:projCollapsed'); return v===null ? true : v==='1'; }catch(e){ return true; } })(),
   regsState:{loading:false, error:false, loadedAt:0, prio:'all', openId:null, view:'board', q:''},
-  analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{info:true, feedback:true, control:true, solutions:true, other:true, none:true}},
+  analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{info:true, feedback:true, control:true, solutions:true, pr:true, other:true, none:true}},
   todayOrder:{}, todayOrderLoaded:{},
   taskBoardShowDone:false,
   reportStart:null,
@@ -943,7 +943,91 @@ function normEvents(arr){
   return (arr||[]).map(e=> (e && LEGACY_WORK_CATS.includes(e.category)) ? {...e, category:'work', legacyCategory:e.category} : e);
 }
 // Назначение рабочего события (обязательно): зачем оно проводится
-const EVENT_PURPOSES = {info:'Информационная встреча', feedback:'Выдача обратной связи', control:'Контроль и согласование задач', solutions:'Разработка решений', other:'Другое'};
+// Список назначений редактируют Руководитель и Ассистент (⚙️ в календаре): общий ключ 'settings:eventPurposes'.
+// Назначение не удаляется, а скрывается — старые события сохраняют своё назначение.
+const PURPOSE_DEFAULTS = [
+  {id:'info', label:'Информационная встреча'}, {id:'feedback', label:'Выдача обратной связи'},
+  {id:'control', label:'Контроль и согласование задач'}, {id:'solutions', label:'Разработка решений'},
+  {id:'pr', label:'Пиар'}, {id:'other', label:'Другое'}];
+const PURPOSE_BASE_COLORS = {info:'var(--indigo)', feedback:'var(--teal)', control:'var(--ochre)', solutions:'var(--plum)', pr:'var(--rose)', other:'var(--sky)', none:'var(--ink-soft)'};
+const PURPOSE_EXTRA_COLORS = ['#8a6d3b','#2f7d74','#9b4d6b','#4c6ea8','#7a8f3c','#b5651d','#6b5b95','#c0524d'];
+let EVENT_PURPOSES = {};   // видимые: id -> название (для выбора в форме)
+let PURPOSE_LABELS = {};   // все (включая скрытые) + «Без назначения»
+let PURPOSE_COLORS = {};
+let MEETING_CATS = [];     // все id назначений + 'none' (для аналитики)
+function applyPurposes(list){
+  let l = (Array.isArray(list) ? list : []).filter(p=>p && p.id && p.label).map(p=>({id:String(p.id), label:String(p.label), hidden:!!p.hidden}));
+  if(!l.length) l = PURPOSE_DEFAULTS.map(p=>({...p}));
+  if(!l.some(p=>p.id==='other')) l.push({id:'other', label:'Другое', hidden:false});
+  state.purposes = l;
+  EVENT_PURPOSES = {}; l.filter(p=>!p.hidden).forEach(p=>{ EVENT_PURPOSES[p.id] = p.label; });
+  PURPOSE_LABELS = {}; l.forEach(p=>{ PURPOSE_LABELS[p.id] = p.label; }); PURPOSE_LABELS.none = 'Без назначения';
+  PURPOSE_COLORS = {...PURPOSE_BASE_COLORS};
+  let n = 0; l.forEach(p=>{ if(!PURPOSE_COLORS[p.id]) PURPOSE_COLORS[p.id] = PURPOSE_EXTRA_COLORS[(n++) % PURPOSE_EXTRA_COLORS.length]; });
+  MEETING_CATS = l.map(p=>p.id).concat(['none']);
+}
+applyPurposes(PURPOSE_DEFAULTS);
+// Любое изменение списка: свежая версия с сервера → правка → сохранение (не прочитали — не пишем)
+async function mutatePurposes(mutator){
+  const r = await sGetState('settings:eventPurposes', true);
+  let base;
+  if(r.status==='ok'){ try{ base = JSON.parse(r.value); }catch(e){ base = null; } if(!Array.isArray(base)){ toast('⚠️ Не удалось прочитать список назначений — изменение не сохранено'); return false; } }
+  else if(r.status==='missing'){ base = PURPOSE_DEFAULTS.map(p=>({...p})); }
+  else { if(r.status==='failed') toast('⚠️ Нет связи с сервером — изменение не сохранено, повторите'); return false; }
+  const next = mutator(base.map(p=>({...p})));
+  if(!next) return false;
+  const ok = await sSet('settings:eventPurposes', JSON.stringify(next), true);
+  if(!ok){ saveFailedToast(); return false; }
+  applyPurposes(next);
+  return true;
+}
+async function loadPurposes(){
+  const r = await sGetState('settings:eventPurposes', true);
+  if(r.status==='ok'){ try{ applyPurposes(JSON.parse(r.value)); }catch(e){} }
+}
+function openPurposesModal(){
+  const root = document.getElementById('modalRoot');
+  const draw = ()=>{
+    root.innerHTML = `<div class="overlay"><div class="modal">
+      <h3>⚙️ Назначения событий</h3>
+      <div class="subtitle" style="margin:-8px 0 12px;">Варианты поля «Назначение» у рабочих событий (они же — разрезы в аналитике встреч). Скрытое назначение пропадает из выбора, но у старых событий остаётся.</div>
+      <div class="item-list" style="margin-bottom:12px;">
+        ${state.purposes.map(p=>`<div class="item" style="display:block;${p.hidden?'opacity:.55;':''}">
+          <div class="title" style="font-weight:600;">${escapeHtml(p.label)}${p.hidden?' <span class="subtitle">(скрыто)</span>':''}</div>
+          <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
+            <button class="btn ghost small" data-pu-ren="${p.id}">✎ Переименовать</button>
+            ${p.id==='other' ? '' : `<button class="btn ghost small" data-pu-hide="${p.id}">${p.hidden?'↩ Вернуть':'🙈 Скрыть'}</button>`}
+          </div></div>`).join('')}
+      </div>
+      <div class="field-row" style="margin:0;"><input id="pu_new" placeholder="Новое назначение, например: Обучение" style="flex:1;"><button class="btn small" id="pu_add">+ Добавить</button></div>
+      <div class="modal-actions"><button class="btn ghost" id="pu_close">Закрыть</button></div>
+    </div></div>`;
+    document.getElementById('pu_close').onclick = closeModal;
+    root.querySelectorAll('[data-pu-ren]').forEach(b=> b.onclick = async ()=>{
+      const id = b.dataset.puRen; const cur = state.purposes.find(p=>p.id===id);
+      const v = await showPrompt('Название назначения', cur?cur.label:''); if(v===null || v===undefined) return;
+      const name = String(v).trim(); if(!name) return;
+      if(await mutatePurposes(a=>a.map(p=>p.id===id?{...p,label:name}:p))){ draw(); render(); }
+    });
+    root.querySelectorAll('[data-pu-hide]').forEach(b=> b.onclick = async ()=>{
+      const id = b.dataset.puHide;
+      if(await mutatePurposes(a=>a.map(p=>p.id===id?{...p,hidden:!p.hidden}:p))){ draw(); render(); }
+    });
+    document.getElementById('pu_add').onclick = async ()=>{
+      const name = document.getElementById('pu_new').value.trim();
+      if(!name){ toast('Введите название'); return; }
+      if(state.purposes.some(p=>p.label.trim().toLowerCase()===name.toLowerCase())){ toast('Такое назначение уже есть'); return; }
+      const ok = await mutatePurposes(a=>{
+        const item = {id:'p_'+uid(), label:name, hidden:false};
+        const k = a.findIndex(p=>p.id==='other');
+        if(k>=0) a.splice(k,0,item); else a.push(item);
+        return a;
+      });
+      if(ok){ draw(); render(); }
+    };
+  };
+  loadPurposes().then(draw);
+}
 const STATUSES = {progress:'В работе', approval:'На согласовании', review:'На проверке', done:'Готово'};
 // Необязательная классификация задачи по функции управления — отдельно от рабочего статуса (STATUSES).
 const MANAGEMENT_STAGES = {planning:'Планирование', organization:'Организация', implementation:'Реализация', control:'Контроль', analysis:'Анализ'};
@@ -1446,6 +1530,7 @@ async function loadAll(){
     // (например, «Администратор 1 смена») возвращался при следующем открытии страницы.
   }
   state.events = normEvents(evt ? JSON.parse(evt) : []);
+  await loadPurposes();
   state.tasksWork = tw ? JSON.parse(tw) : [];
   state.personalSalt = salt || null;
   state.fundsEntries = fl ? JSON.parse(fl) : [];
@@ -3245,6 +3330,7 @@ function renderCalendar(root){
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         ${hasRole('Руководитель') ? `<button class="btn ghost" id="toggleFullScheduleBtn">${state.calendarFullView?'👁 Скрыть до моих':'🔭 Показать общее расписание'}</button>` : ''}
+        ${hasRole('Руководитель','Ассистент') ? `<button class="btn ghost" id="purposesBtn">⚙️ Назначения</button>` : ''}
         <button class="btn" id="addEventBtn">+ Событие</button>
       </div>
     </div>
@@ -3316,6 +3402,7 @@ function renderCalendar(root){
   root.querySelector('#calPrev').onclick=()=>{ state.calMonth--; if(state.calMonth<0){state.calMonth=11;state.calYear--;} render(); };
   root.querySelector('#calNext').onclick=()=>{ state.calMonth++; if(state.calMonth>11){state.calMonth=0;state.calYear++;} render(); };
   root.querySelector('#addEventBtn').onclick=()=>openEventModal();
+  const purposesBtn = root.querySelector('#purposesBtn'); if(purposesBtn) purposesBtn.onclick = openPurposesModal;
   const toggleFullBtn = document.getElementById('toggleFullScheduleBtn');
   if(toggleFullBtn) toggleFullBtn.onclick=()=>{
     state.calendarFullView = !state.calendarFullView;
@@ -3555,11 +3642,11 @@ function openEventModal(id, presetDate){
             </select>
           </div>
         </div>
-        <div class="field" id="f_purpose_wrap" style="${initialCategory==='work'?'':'display:none;'}">
-          <label>Назначение *</label>
+        <div class="field" id="f_purpose_wrap" style="${(initialCategory==='work'||initialCategory==='personal')?'':'display:none;'}">
+          <label id="f_purpose_label">Назначение *</label>
           <select id="f_purpose">
             <option value="">— выберите назначение —</option>
-            ${Object.entries(EVENT_PURPOSES).map(([k,v])=>`<option value="${k}" ${existing&&existing.purpose===k?'selected':''}>${v}</option>`).join('')}
+            ${Object.entries(EVENT_PURPOSES).map(([k,v])=>`<option value="${k}" ${existing&&existing.purpose===k?'selected':''}>${escapeHtml(v)}</option>`).join('')}
           </select>
           <input id="f_purpose_text" placeholder="Напишите назначение *" value="${existing?escapeHtml(existing.purposeText||''):''}" style="margin-top:6px;${existing&&existing.purpose==='other'?'':'display:none;'}">
         </div>
@@ -3666,7 +3753,21 @@ function openEventModal(id, presetDate){
     const vac = cat==='vacation';
     const show = (id, on)=>{ const el = document.getElementById(id); if(el) el.style.display = on?'':'none'; };
     show('f_time_wrap', !isAllDayCategory(cat));
-    show('f_purpose_wrap', cat==='work');
+    show('f_purpose_wrap', cat==='work' || cat==='personal');
+    // Рабочее: полный список, обязательно. Личное: необязательно, пока один вариант — «Пиар».
+    {
+      const ps = document.getElementById('f_purpose'), lab = document.getElementById('f_purpose_label');
+      const keys = cat==='personal' ? ['pr'].filter(k=>EVENT_PURPOSES[k]) : Object.keys(EVENT_PURPOSES);
+      // назначение, которое потом скрыли, у этого события остаётся выбранным (с пометкой)
+      const hiddenCur = (existing && cat==='work' && existing.purpose && !EVENT_PURPOSES[existing.purpose] && PURPOSE_LABELS[existing.purpose]) ? existing.purpose : null;
+      const cur = ps.value || (hiddenCur||'');
+      ps.innerHTML = `<option value="">${cat==='personal'?'— не указано —':'— выберите назначение —'}</option>` +
+        keys.map(k=>`<option value="${k}">${escapeHtml(EVENT_PURPOSES[k])}</option>`).join('') +
+        (hiddenCur ? `<option value="${hiddenCur}">${escapeHtml(PURPOSE_LABELS[hiddenCur])} (скрыто)</option>` : '');
+      ps.value = (keys.includes(cur) || cur===hiddenCur) ? cur : '';
+      lab.textContent = cat==='personal' ? 'Назначение (необязательно)' : 'Назначение *';
+      document.getElementById('f_purpose_text').style.display = (cat==='work' && ps.value==='other') ? '' : 'none';
+    }
     show('f_vac_wrap', vac);
     show('f_vac_to_wrap', vac && !existing);
     // у отпуска нет формата/ссылок/участников-списка/повтора — только сотрудник и период
@@ -3765,6 +3866,9 @@ function openEventModal(id, presetDate){
     }
     // Рабочее событие: «Назначение» обязательно (если «Другое» — ещё и текст)
     let purpose = '', purposeText = '';
+    if(category==='personal'){
+      purpose = document.getElementById('f_purpose').value==='pr' ? 'pr' : '';
+    }
     if(category==='work'){
       purpose = document.getElementById('f_purpose').value;
       purposeText = document.getElementById('f_purpose_text').value.trim();
@@ -6779,10 +6883,7 @@ function exportTaskReportCSV(){
 /* ================= ANALYTICS: время на встречах ================= */
 // Считаем все рабочие события, в разрезе «назначения» (info/feedback/control/solutions/other; у старых
 // событий без назначения — none). Длительность — по времени начала/конца.
-const MEETING_CATS = ['info','feedback','control','solutions','other','none'];
-const PURPOSE_LABELS = {...EVENT_PURPOSES, none:'Без назначения'};
-const PURPOSE_COLORS = {info:'var(--indigo)', feedback:'var(--teal)', control:'var(--ochre)', solutions:'var(--plum)', other:'var(--sky)', none:'var(--ink-soft)'};
-function purposeKey(e){ return EVENT_PURPOSES[e.purpose] ? e.purpose : 'none'; }
+function purposeKey(e){ return PURPOSE_LABELS[e.purpose] && e.purpose!=='none' ? e.purpose : 'none'; }
 function timeToMin(t){
   const m = /^(\d{1,2}):(\d{2})$/.exec(t||'');
   return m ? (+m[1])*60 + (+m[2]) : null;
@@ -7395,7 +7496,7 @@ function renderAnalytics(root){
       ${Object.entries(MODES).map(([k,v])=>`<button class="cat-chip ${st.mode===k?'':'off'}" data-an-mode="${k}">${v}</button>`).join('')}
     </div>
     <div class="cat-filters" style="margin:0 0 12px;">
-      ${MEETING_CATS.map(c=>`<button class="cat-chip ${st.cats[c]?'':'off'}" data-an-cat="${c}"><span class="dot" style="background:${PURPOSE_COLORS[c]};"></span>${PURPOSE_LABELS[c]}</button>`).join('')}
+      ${MEETING_CATS.map(c=>`<button class="cat-chip ${st.cats[c]!==false?'':'off'}" data-an-cat="${c}"><span class="dot" style="background:${PURPOSE_COLORS[c]};"></span>${PURPOSE_LABELS[c]}</button>`).join('')}
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
       <button class="btn ghost small" id="anPrev">←</button>
@@ -7417,9 +7518,9 @@ function renderAnalytics(root){
   root.querySelectorAll('[data-an-mode]').forEach(b=>b.onclick=()=>{ st.mode=b.dataset.anMode; st.openEmp=null; render(); });
   root.querySelectorAll('[data-an-cat]').forEach(b=>b.onclick=()=>{
     const c = b.dataset.anCat;
-    const othersOn = MEETING_CATS.some(x=>x!==c && st.cats[x]);
-    if(st.cats[c] && !othersOn){ toast('Должна остаться выбрана хотя бы одна категория'); return; }
-    st.cats[c] = !st.cats[c]; render();
+    const othersOn = MEETING_CATS.some(x=>x!==c && st.cats[x]!==false);
+    if(st.cats[c]!==false && !othersOn){ toast('Должна остаться выбрана хотя бы одна категория'); return; }
+    st.cats[c] = st.cats[c]===false ? true : false; render();
   });
   document.getElementById('anPrev').onclick=()=>{ st.anchor=shiftAnalyticsAnchor(st.mode, st.anchor, -1); st.openEmp=null; render(); };
   document.getElementById('anNext').onclick=()=>{ st.anchor=shiftAnalyticsAnchor(st.mode, st.anchor, 1); st.openEmp=null; render(); };

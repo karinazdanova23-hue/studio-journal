@@ -814,6 +814,7 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
   let { value } = req.body || {};
   if (typeof value !== 'string') return res.status(400).json({ error: 'value должен быть строкой' });
   if (regsKeyDenied(key, req.employee.role)) return res.status(403).json({ error: 'Нет доступа' });
+  if (key === 'settings:eventPurposes' && !isPrivilegedRole(req.employee.role)) return res.status(403).json({ error: 'Список назначений меняют только Руководитель и Ассистент' });
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }

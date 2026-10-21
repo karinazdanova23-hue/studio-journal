@@ -154,10 +154,11 @@
     font-size:10.5px;background:var(--indigo);color:#fff;border-radius:4px;padding:2px 5px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:none;max-width:100%;
   }
-  .cal-evt.cat-planning{background:var(--teal);}
-  .cal-evt.cat-meeting{background:var(--ochre);}
+  .cal-evt.cat-work{background:var(--indigo);}
   .cal-evt.cat-personal{background:var(--plum);}
   .cal-evt.cat-vacation{background:var(--sky);}
+  .cal-evt.cat-birthday{background:var(--rose);}
+  .cal-bday{font-size:10px;font-weight:700;color:var(--rose);background:var(--rose-bg);border-radius:4px;padding:1px 5px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none;max-width:100%;}
   .cal-evt.cal-task{
     background:#fff;border:1.5px dashed var(--ink-soft);font-weight:600;
   }
@@ -868,7 +869,7 @@ const state = {
   regs:null,
   projListCollapsed:(()=>{ try{ const v = localStorage.getItem('lj:ui:projCollapsed'); return v===null ? true : v==='1'; }catch(e){ return true; } })(),
   regsState:{loading:false, error:false, loadedAt:0, prio:'all', openId:null, view:'board', q:''},
-  analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{planning:true, meeting:true, event:true}},
+  analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{info:true, feedback:true, control:true, solutions:true, other:true, none:true}},
   todayOrder:{}, todayOrderLoaded:{},
   taskBoardShowDone:false,
   reportStart:null,
@@ -898,7 +899,7 @@ const state = {
   checklistsWork:[],
   quickIdeasWork:[],
   personalProjects:[],
-  calFilters: {event:true, planning:true, meeting:true, vacation:true, birthday:true, personal:true},
+  calFilters: {work:true, vacation:true, birthday:true, personal:true},
   calEmployeeFilters: {},
   calOwnerFilter: {}, // «чьи события показывать» в календаре: {employeeId:true}; пусто — как обычно
   browserNotify:false,
@@ -931,8 +932,18 @@ const TABS = [
   {id:'analytics', label:'📊 Аналитика', roles:['Руководитель','Ассистент']},
   {id:'regs', label:'📜 Регламенты', roles:['Руководитель','Ассистент','Старший администратор']},
 ];
-const CATEGORIES = {event:'События', planning:'Планёрки', meeting:'Рабочие встречи', vacation:'Отпуска', birthday:'Дни рождения', personal:'Личные дела Карины'};
-const CATEGORY_COLORS = {event:'var(--indigo)', planning:'var(--teal)', meeting:'var(--ochre)', vacation:'var(--sky)', birthday:'var(--rose)', personal:'var(--plum)'};
+// Виды событий в календаре: рабочее, личное, отпуск, день рождения (различаются цветом).
+// Старые виды (события, планёрки, рабочие встречи, обучение) при загрузке превращаются в «Рабочее».
+const CATEGORIES = {work:'Рабочее', personal:'Личное', vacation:'Отпуск', birthday:'День рождения'};
+const CATEGORY_COLORS = {work:'var(--indigo)', personal:'var(--plum)', vacation:'var(--sky)', birthday:'var(--rose)'};
+const LEGACY_WORK_CATS = ['event','planning','meeting','training'];
+function normCat(c){ return LEGACY_WORK_CATS.includes(c) ? 'work' : c; }
+function catLabel(c){ return CATEGORIES[normCat(c)] || ''; }
+function normEvents(arr){
+  return (arr||[]).map(e=> (e && LEGACY_WORK_CATS.includes(e.category)) ? {...e, category:'work', legacyCategory:e.category} : e);
+}
+// Назначение рабочего события (обязательно): зачем оно проводится
+const EVENT_PURPOSES = {info:'Информационная встреча', feedback:'Выдача обратной связи', control:'Контроль и согласование задач', solutions:'Разработка решений', other:'Другое'};
 const STATUSES = {progress:'В работе', approval:'На согласовании', review:'На проверке', done:'Готово'};
 // Необязательная классификация задачи по функции управления — отдельно от рабочего статуса (STATUSES).
 const MANAGEMENT_STAGES = {planning:'Планирование', organization:'Организация', implementation:'Реализация', control:'Контроль', analysis:'Анализ'};
@@ -1150,7 +1161,7 @@ async function exportAllData(){
 async function importAllData(payload){ return await withConfirmEmpty(()=>importAllDataInner(payload)); }
 async function importAllDataInner(payload){
   state.employees = payload.employees || state.employees;
-  state.events = payload.events || [];
+  state.events = normEvents(payload.events || []);
   state.tasksWork = payload.tasksWork || [];
   state.projectsWork = payload.projectsWork || [];
   state.blocksWork = payload.blocksWork || [];
@@ -1202,7 +1213,7 @@ async function importEventsOnly(payload){
   (payload.events||[]).forEach(e=>{
     if(!e || !e.id || !e.title || !e.date) return;
     if(haveIds.has(e.id) || haveSigs.has(sig(e))){ skipped++; return; }
-    toAdd.push(e); haveIds.add(e.id); haveSigs.add(sig(e));
+    toAdd.push(normEvents([e])[0]); haveIds.add(e.id); haveSigs.add(sig(e));
   });
   if(!toAdd.length) return { added:0, skipped };
   state.events = before.concat(toAdd);
@@ -1434,11 +1445,7 @@ async function loadAll(){
     // Список сотрудников больше не «достраивается» ролями по умолчанию: раньше удалённый профиль
     // (например, «Администратор 1 смена») возвращался при следующем открытии страницы.
   }
-  state.events = evt ? JSON.parse(evt) : [];
-  if(state.events.some(e=>e.category==='training')){
-    state.events = state.events.map(e=>e.category==='training' ? {...e, category:'meeting'} : e);
-    await sSet('calendar:events', JSON.stringify(state.events), true);
-  }
+  state.events = normEvents(evt ? JSON.parse(evt) : []);
   state.tasksWork = tw ? JSON.parse(tw) : [];
   state.personalSalt = salt || null;
   state.fundsEntries = fl ? JSON.parse(fl) : [];
@@ -1774,38 +1781,60 @@ async function persistEventsFor(personal){ return personal ? await savePersonalE
 // Ищет конфликт дедлайна с отпуском сотрудника: попадает ли дедлайн на сам отпуск,
 // или отпуск начинается в течение недели после дедлайна (рискованно — не успеет доделать/сдать).
 // Возвращает текст предупреждения или null, если конфликта нет.
-function findVacationConflict(assigneeId, deadline){
-  if(!assigneeId || !deadline) return null;
+// Непрерывные периоды отпуска сотрудника (подряд идущие дни склеиваются)
+function vacationBlocksOf(empId){
   const vacationDates = state.events
-    .filter(e=>e.category==='vacation' && e.employeeIds && e.employeeIds.includes(assigneeId))
-    .map(e=>e.date)
-    .filter(Boolean)
-    .sort();
-  if(!vacationDates.length) return null;
-  // Группируем подряд идущие даты в непрерывные периоды отпуска
+    .filter(e=>e.category==='vacation' && e.employeeIds && e.employeeIds.includes(empId))
+    .map(e=>e.date).filter(Boolean).sort();
   const blocks = [];
   vacationDates.forEach(d=>{
     const last = blocks[blocks.length-1];
     if(last){
-      const prevDate = new Date(last.end);
-      const curDate = new Date(d);
-      const diffDays = Math.round((curDate-prevDate)/86400000);
-      if(diffDays<=1){ last.end = d; return; }
+      const diffDays = Math.round((new Date(d)-new Date(last.end))/86400000);
+      if(diffDays<=1){ if(d>last.end) last.end = d; return; }
     }
     blocks.push({start:d, end:d});
   });
-  for(const b of blocks){
-    if(deadline>=b.start && deadline<=b.end){
-      return `Дедлайн (${fmtDate(deadline)}) попадает на отпуск сотрудника (${fmtDate(b.start)}–${fmtDate(b.end)}).`;
-    }
+  return blocks;
+}
+function vacationBlockOn(empId, iso){
+  return vacationBlocksOf(empId).find(b=>iso>=b.start && iso<=b.end) || null;
+}
+function dayAfterISO(iso){ const d = new Date(iso+'T00:00:00'); d.setDate(d.getDate()+1); return dateToISO(d); }
+// Информация об отпуске исполнителя относительно дедлайна: {inside, start, end, after, text} или null.
+function findVacationInfo(assigneeId, deadline){
+  if(!assigneeId || !deadline) return null;
+  for(const b of vacationBlocksOf(assigneeId)){
+    if(deadline>=b.start && deadline<=b.end) return {inside:true, start:b.start, end:b.end, after:dayAfterISO(b.end)};
     if(deadline<b.start){
       const diffDays = Math.round((new Date(b.start)-new Date(deadline))/86400000);
-      if(diffDays<=7){
-        return `Через ${diffDays} дн. после дедлайна сотрудник уходит в отпуск (с ${fmtDate(b.start)}) — может не успеть.`;
-      }
+      if(diffDays<=7) return {inside:false, start:b.start, end:b.end, text:`Через ${diffDays} дн. после дедлайна сотрудник уходит в отпуск (с ${fmtDate(b.start)}) — может не успеть.`};
     }
   }
   return null;
+}
+// Окно с тремя вариантами: 'move' (перенести), 'keep' (всё равно сохранить), null (отмена)
+function showVacationChoice(message, moveLabel, keepLabel){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');
+    ov.className='overlay'; ov.style.zIndex=200;
+    ov.innerHTML=`
+      <div class="modal" style="max-width:420px;">
+        <h3>🌴 У исполнителя отпуск</h3>
+        <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;line-height:1.5;white-space:pre-line;">${escapeHtml(message)}</p>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <button class="btn" id="vcMove">${escapeHtml(moveLabel)}</button>
+          <button class="btn ghost" id="vcKeep">${escapeHtml(keepLabel)}</button>
+          <button class="btn ghost" id="vcCancel">Отмена</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const finish=v=>{ ov.remove(); resolve(v); };
+    ov.querySelector('#vcMove').onclick=()=>finish('move');
+    ov.querySelector('#vcKeep').onclick=()=>finish('keep');
+    ov.querySelector('#vcCancel').onclick=()=>finish(null);
+    ov.onclick=e=>{ if(e.target===ov) finish(null); };
+  });
 }
 // Пересекаются ли по времени два интервала. Событие без времени окончания считаем «точкой» —
 // конфликт только если она попадает внутрь чужого интервала (или совпадает с чужой точкой).
@@ -2303,7 +2332,7 @@ async function refreshEventsFromServer(personal){
     return;
   }
   const raw = await sGet('calendar:events', true);
-  if(raw !== null){ try{ state.events = JSON.parse(raw); }catch(e){} }
+  if(raw !== null){ try{ state.events = normEvents(JSON.parse(raw)); }catch(e){} }
 }
 // Та же защита — для остальных общих (не личных) списков: банк идей, чек-листы, быстрые идеи,
 // корзина и список сотрудников. Каждый из них тоже сохраняется целиком поверх ключа на сервере,
@@ -2630,7 +2659,7 @@ function checkNotificationsTick(){
     const [nh,nm] = nowMin.split(':').map(Number);
     const diff = (eh*60+em) - (nh*60+nm);
     if(diff>=0 && diff<=60){
-      new Notification('Через час: '+e.title, {body:(e.startTime||'')+' · '+(CATEGORIES[e.category]||'')});
+      new Notification('Через час: '+e.title, {body:(e.startTime||'')+' · '+(catLabel(e.category))});
       state.notifiedEventKeys.add(key);
     }
   });
@@ -2687,10 +2716,10 @@ async function checkNewEventsTick(){
   if(!newForMe.length) return;
   newForMe.forEach(e=>{
     new Notification('Новое событие: '+e.title, {
-      body: `${fmtDate(e.date)}${e.startTime?' · '+e.startTime:''} · ${CATEGORIES[e.category]||''}`
+      body: `${fmtDate(e.date)}${e.startTime?' · '+e.startTime:''} · ${catLabel(e.category)}`
     });
   });
-  state.events = fresh;
+  state.events = normEvents(fresh);
   const modalOpen = document.getElementById('modalRoot') && document.getElementById('modalRoot').innerHTML.trim() !== '';
   if(!modalOpen) render();
 }
@@ -2942,7 +2971,7 @@ function renderOverview(root){
   function eventRow(e){
     return `<div class="item" style="cursor:pointer;" data-ov-day="${e.date}">
       <div class="main"><div class="title">${e.startTime?e.startTime+' · ':''}${escapeHtml(e.title)}</div>
-      <div class="meta"><span>${CATEGORIES[e.category]||''}</span></div></div>
+      <div class="meta"><span>${catLabel(e.category)}</span></div></div>
     </div>`;
   }
 
@@ -3197,6 +3226,8 @@ function renderCalendar(root){
   const eventsByDate = {};
   calendarVisibleEvents().filter(e=>state.calFilters[e.category]!==false).forEach(e=>{ (eventsByDate[e.date]=eventsByDate[e.date]||[]).push(e); });
   const ownerIds = selectedEventOwnerIds();
+  // Дни рождения всегда подписаны сверху дня — независимо от фильтров вида и выбранных сотрудников.
+  const birthdayDates = new Set(calendarVisibleEvents().filter(e=>e.category==='birthday').map(e=>e.date));
 
   const activeEmpIds = state.employees.filter(e=>state.calEmployeeFilters[e.id]).map(e=>e.id);
   const tasksByDate = {};
@@ -3210,7 +3241,7 @@ function renderCalendar(root){
     <div class="row-between">
       <div>
         <h2 class="section-title">Общий календарь</h2>
-        <p class="subtitle">${ownerIds.length ? 'Показаны планёрки, встречи и события: '+ownerIds.map(empName).map(escapeHtml).join(', ') : (hasRole('Руководитель') && state.calendarFullView ? 'Полное расписание — видны все планёрки, встречи и события' : 'Показаны только те планёрки, встречи и события, где вы участвуете')}</p>
+        <p class="subtitle">${ownerIds.length ? 'Показаны события: '+ownerIds.map(empName).map(escapeHtml).join(', ') : (hasRole('Руководитель') && state.calendarFullView ? 'Полное расписание — видны все события' : 'Показаны только те события, где вы участвуете')}</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         ${hasRole('Руководитель') ? `<button class="btn ghost" id="toggleFullScheduleBtn">${state.calendarFullView?'👁 Скрыть до моих':'🔭 Показать общее расписание'}</button>` : ''}
@@ -3224,7 +3255,7 @@ function renderCalendar(root){
         </button>
       `).join('')}
     </div>
-    ${!personalAccessAllowed()?`<div class="note" id="calPersonalNote" style="margin-bottom:16px;">🔒 «Личные дела Карины» видны только Руководителю и Ассистенту. <button class="btn ghost small" id="calUnlockBtn" style="margin-left:6px;">🙋 Войти</button></div>`:''}
+    ${!personalAccessAllowed()?`<div class="note" id="calPersonalNote" style="margin-bottom:16px;">🔒 «Личное» видно только Руководителю и Ассистенту. <button class="btn ghost small" id="calUnlockBtn" style="margin-left:6px;">🙋 Войти</button></div>`:''}
     ${canPickEventOwners() ? `
     <div class="row-between" style="margin-bottom:6px;">
       <p class="subtitle" style="margin:0;">Чьи события и мероприятия показывать${ownerIds.length?'':' (ничего не выбрано — ваши как обычно)'}:</p>
@@ -3274,6 +3305,7 @@ function renderCalendar(root){
         const shown = allChips.slice(0,maxShown);
         const more = allChips.length - shown.length;
         return `<div class="cal-cell ${isToday?'today':''}" data-date="${iso}">
+          ${birthdayDates.has(iso)?`<div class="cal-bday">🎂 день рождения</div>`:''}
           <div class="cal-daynum">${d}</div>
           ${shown.join('')}
           ${more>0?`<div class="cal-more">+${more} ещё</div>`:''}
@@ -3356,7 +3388,7 @@ function openDayModal(iso){
               <div class="main">
                 <div class="title">${isPersonalEvent(e.id)?'🔒 ':''}${e.startTime?e.startTime+(e.endTime?'–'+e.endTime:'')+' · ':''}${escapeHtml(e.title)}</div>
                 <div class="meta">
-                  <span>${CATEGORIES[e.category]||''}</span>
+                  <span>${catLabel(e.category)}</span>
                   ${e.seriesId?'<span>🔁 Повтор</span>':''}
                   <span>${e.format==='online'?'💻 Онлайн':'📍 Оффлайн'}</span>
                   ${e.employeeIds&&e.employeeIds.length?`<span>${e.employeeIds.map(empName).join(', ')}</span>`:''}
@@ -3477,7 +3509,7 @@ function openEventModal(id, presetDate){
   const existingPersonal = id ? isPersonalEvent(id) : false;
   const existing = id ? (existingPersonal ? state.personalEvents : state.events).find(e=>e.id===id) : null;
   const initialFormat = existing ? (existing.format||'offline') : 'offline';
-  const initialCategory = existing ? (existing.category||'event') : 'event';
+  const initialCategory = existing ? (normCat(existing.category)||'work') : 'work';
   const isAllDayCategory = (cat)=> cat==='vacation' || cat==='birthday';
   const initialEmpIds = existing && existing.employeeIds ? existing.employeeIds : [];
   const initialHasManagerHostess = initialEmpIds.some(eid=>{
@@ -3504,7 +3536,7 @@ function openEventModal(id, presetDate){
         </div>
         <div class="field"><label>Название</label><input id="f_title" value="${existing?escapeHtml(existing.title):''}" placeholder="Например: Совещание с мастерами"></div>
         <div class="field-row">
-          <div class="field"><label>Дата</label><input type="date" id="f_date" value="${existing?existing.date:(presetDate||todayISO())}"></div>
+          <div class="field"><label id="f_date_label">Дата</label><input type="date" id="f_date" value="${existing?existing.date:(presetDate||todayISO())}"></div>
         </div>
         <div class="field-row" id="f_time_wrap" style="${isAllDayCategory(initialCategory)?'display:none;':''}">
           <div class="field"><label>Начало</label><input type="time" id="f_start" value="${existing?existing.startTime||'':''}"></div>
@@ -3513,15 +3545,32 @@ function openEventModal(id, presetDate){
         <div class="field-row">
           <div class="field"><label>Тип</label>
             <select id="f_cat">
-              ${Object.entries(CATEGORIES).map(([k,v])=>`<option value="${k}" ${existing&&existing.category===k?'selected':''}>${v}</option>`).join('')}
+              ${Object.entries(CATEGORIES).map(([k,v])=>`<option value="${k}" ${initialCategory===k?'selected':''}>${v}</option>`).join('')}
             </select>
           </div>
-          <div class="field"><label>Формат</label>
+          <div class="field" id="f_format_wrap"><label>Формат</label>
             <select id="f_format">
               <option value="offline" ${initialFormat==='offline'?'selected':''}>Оффлайн</option>
               <option value="online" ${initialFormat==='online'?'selected':''}>Онлайн</option>
             </select>
           </div>
+        </div>
+        <div class="field" id="f_purpose_wrap" style="${initialCategory==='work'?'':'display:none;'}">
+          <label>Назначение *</label>
+          <select id="f_purpose">
+            <option value="">— выберите назначение —</option>
+            ${Object.entries(EVENT_PURPOSES).map(([k,v])=>`<option value="${k}" ${existing&&existing.purpose===k?'selected':''}>${v}</option>`).join('')}
+          </select>
+          <input id="f_purpose_text" placeholder="Напишите назначение *" value="${existing?escapeHtml(existing.purposeText||''):''}" style="margin-top:6px;${existing&&existing.purpose==='other'?'':'display:none;'}">
+        </div>
+        <div class="field-row" id="f_vac_wrap" style="${initialCategory==='vacation'?'':'display:none;'}">
+          <div class="field"><label>Сотрудник *</label>
+            <select id="f_vac_emp">
+              <option value="">— выберите сотрудника —</option>
+              ${state.employees.map(e=>`<option value="${e.id}" ${existing&&(existing.employeeIds||[])[0]===e.id?'selected':''}>${escapeHtml(e.name)}${e.role?' — '+escapeHtml(e.role):''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" id="f_vac_to_wrap" style="${existing?'display:none;':''}"><label>Отпуск по (включительно) *</label><input type="date" id="f_vac_to"></div>
         </div>
         <div class="field" id="f_location_wrap" style="${initialFormat==='online'?'display:none;':''}">
           <label>Местоположение</label>
@@ -3531,8 +3580,8 @@ function openEventModal(id, presetDate){
           <label>Ссылка на созвон</label>
           <input id="f_link" value="${existing?escapeHtml(existing.link||''):''}" placeholder="https://...">
         </div>
-        <div class="field"><label>Дополнительная ссылка (необязательно)</label><input id="f_extra_link" type="text" value="${existing?escapeHtml(existing.extraLink||''):''}" placeholder="Например: резюме кандидата, отчёт, документ"></div>
-        <div class="field"><label>Участники (можно выбрать несколько)</label>
+        <div class="field" id="f_extra_wrap"><label>Дополнительная ссылка (необязательно)</label><input id="f_extra_link" type="text" value="${existing?escapeHtml(existing.extraLink||''):''}" placeholder="Например: резюме кандидата, отчёт, документ"></div>
+        <div class="field" id="f_emp_wrap"><label>Участники (можно выбрать несколько)</label>
           <div class="emp-checklist" id="f_emp_list">
             ${state.employees.map(e=>`
               <label>
@@ -3582,7 +3631,7 @@ function openEventModal(id, presetDate){
         </div>
         ` : ''}
         ${!existing ? `
-        <div class="field"><label>Повтор</label>
+        <div class="field" id="f_repeat_wrap"><label>Повтор</label>
           <select id="f_repeat">
             <option value="none">Не повторять</option>
             <option value="daily">Каждый день</option>
@@ -3612,8 +3661,31 @@ function openEventModal(id, presetDate){
     document.getElementById('f_location_wrap').style.display = isOnline?'none':'';
     document.getElementById('f_link_wrap').style.display = isOnline?'':'none';
   };
-  document.getElementById('f_cat').onchange=(e)=>{
-    document.getElementById('f_time_wrap').style.display = isAllDayCategory(e.target.value)?'none':'';
+  const applyCatUI = ()=>{
+    const cat = document.getElementById('f_cat').value;
+    const vac = cat==='vacation';
+    const show = (id, on)=>{ const el = document.getElementById(id); if(el) el.style.display = on?'':'none'; };
+    show('f_time_wrap', !isAllDayCategory(cat));
+    show('f_purpose_wrap', cat==='work');
+    show('f_vac_wrap', vac);
+    show('f_vac_to_wrap', vac && !existing);
+    // у отпуска нет формата/ссылок/участников-списка/повтора — только сотрудник и период
+    show('f_format_wrap', !vac);
+    show('f_extra_wrap', !vac);
+    show('f_emp_wrap', !vac);
+    show('f_repeat_wrap', !vac);
+    if(vac){ show('f_location_wrap', false); show('f_link_wrap', false); show('f_manual_wrap', false); }
+    else {
+      const online = document.getElementById('f_format').value==='online';
+      show('f_location_wrap', !online); show('f_link_wrap', online);
+      refreshManualWrap();
+    }
+    const dl = document.getElementById('f_date_label');
+    if(dl) dl.textContent = (vac && !existing) ? 'Отпуск с *' : 'Дата';
+  };
+  document.getElementById('f_cat').onchange=()=>applyCatUI();
+  document.getElementById('f_purpose').onchange=(e)=>{
+    document.getElementById('f_purpose_text').style.display = e.target.value==='other'?'':'none';
   };
   const empListEl = document.getElementById('f_emp_list');
   const getSelectedEmpIds = ()=> Array.from(empListEl.querySelectorAll('[data-emp-cb]:checked')).map(cb=>cb.value);
@@ -3626,6 +3698,7 @@ function openEventModal(id, presetDate){
     document.getElementById('f_manual_wrap').style.display = hasMgrHost?'':'none';
   };
   empListEl.querySelectorAll('[data-emp-cb]').forEach(cb=>cb.onchange=refreshManualWrap);
+  applyCatUI();
 
   if(existing && linkedTasks.length){
     modal.querySelectorAll('[data-linked-task-row]').forEach(row=>{
@@ -3687,10 +3760,35 @@ function openEventModal(id, presetDate){
     const category = document.getElementById('f_cat').value;
     const newPersonal = category==='personal';
     if(newPersonal && !personalAccessAllowed()){
-      toast('Категория «Личные дела Карины» доступна только Руководителю и Ассистенту — войдите через «🙋 Кто я?»');
+      toast('Вид «Личное» доступен только Руководителю и Ассистенту — войдите через «🙋 Кто я?»');
       return;
     }
-    const emp = getSelectedEmpIds();
+    // Рабочее событие: «Назначение» обязательно (если «Другое» — ещё и текст)
+    let purpose = '', purposeText = '';
+    if(category==='work'){
+      purpose = document.getElementById('f_purpose').value;
+      purposeText = document.getElementById('f_purpose_text').value.trim();
+      if(!purpose){ toast('Выберите назначение события'); document.getElementById('f_purpose').focus(); return; }
+      if(purpose==='other' && !purposeText){ toast('Напишите назначение — вы выбрали «Другое»'); document.getElementById('f_purpose_text').focus(); return; }
+      if(purpose!=='other') purposeText = '';
+    }
+    // Отпуск: сотрудник и период (первый и последний день)
+    const vacPeriod = category==='vacation' && !existing;
+    let vacEmpId = '';
+    if(category==='vacation'){
+      vacEmpId = document.getElementById('f_vac_emp').value;
+      if(!vacEmpId){ toast('Выберите сотрудника, у которого отпуск'); return; }
+      if(vacPeriod){
+        const from = document.getElementById('f_date').value, to = document.getElementById('f_vac_to').value;
+        if(!from || !to){ toast('Укажите период отпуска: с какого и по какое число'); return; }
+        if(to < from){ toast('Конец отпуска не может быть раньше начала'); return; }
+        if(Math.round((new Date(to)-new Date(from))/86400000) > 120){ toast('Слишком длинный период (больше 120 дней) — разбейте на части'); return; }
+      }
+    }
+    const emp = category==='vacation' ? [vacEmpId] : getSelectedEmpIds();
+    const rep_ = ()=> vacPeriod ? 'daily' : (repeatEl ? repeatEl.value : 'none');
+    const until_ = (fallback)=> vacPeriod ? document.getElementById('f_vac_to').value : (document.getElementById('f_repeat_until').value || fallback);
+    const weekdays_ = ()=> vacPeriod ? new Set([1,2,3,4,5,6,7]) : new Set(Array.from(document.querySelectorAll('#f_weekdays .cat-chip:not(.off)')).map(c=>parseInt(c.dataset.wd,10)));
     const format = document.getElementById('f_format').value;
     const hasMgrHost = emp.some(eid=>{
       const e = state.employees.find(x=>x.id===eid);
@@ -3703,6 +3801,7 @@ function openEventModal(id, presetDate){
       startTime: isAllDayCategory(category) ? '' : document.getElementById('f_start').value,
       endTime: isAllDayCategory(category) ? '' : document.getElementById('f_end').value,
       category,
+      purpose, purposeText,
       format,
       location: format==='offline' ? document.getElementById('f_location').value.trim() : '',
       link: format==='online' ? document.getElementById('f_link').value.trim() : '',
@@ -3724,11 +3823,11 @@ function openEventModal(id, presetDate){
     if(existingPersonal || newPersonal) await refreshEventsFromServer(true);
     if(category==='vacation'){
       if(!emp.length){ toast('Отпуск обязательно привязывается к конкретному сотруднику — отметьте его в «Участники»'); return; }
-      const repeatTypeEarly = repeatEl ? repeatEl.value : 'none';
+      const repeatTypeEarly = rep_();
       let vacDates;
       if(!existing && repeatTypeEarly!=='none'){
-        const untilVal = document.getElementById('f_repeat_until').value || data.date;
-        const weekdaySet = new Set(Array.from(document.querySelectorAll('#f_weekdays .cat-chip:not(.off)')).map(c=>parseInt(c.dataset.wd,10)));
+        const untilVal = until_(data.date);
+        const weekdaySet = weekdays_();
         vacDates = generateRecurrenceDates(data.date, repeatTypeEarly, weekdaySet, untilVal, 300);
         if(!vacDates.length) vacDates = [data.date];
       } else {
@@ -3761,6 +3860,23 @@ function openEventModal(id, presetDate){
     // которые сейчас перезаписываются, чтобы событие не конфликтовало само с собой.
     async function confirmNoDoubleBooking(datesToCheck, excludeIds){
       if(isAllDayCategory(category) || !emp.length) return true;
+      // участник в отпуске в день события — отдельное подтверждение (только для рабочих событий)
+      if(category==='work'){
+        const clashes = [];
+        emp.forEach(empId=>{
+          datesToCheck.forEach(d=>{
+            const vb = vacationBlockOn(empId, d);
+            if(vb) clashes.push(`• ${empName(empId)} — отпуск ${fmtDate(vb.start)}${vb.end!==vb.start?'–'+fmtDate(vb.end):''} (событие ${fmtDate(d)})`);
+          });
+        });
+        const uniq = [...new Set(clashes)];
+        if(uniq.length){
+          const shown = uniq.slice(0,8).join('\n');
+          const more = uniq.length>8 ? `\n…и ещё ${uniq.length-8}` : '';
+          const okVac = await showConfirm(`🌴 У участников в эти даты отпуск:\n${shown}${more}\n\nТочно сохранить событие с их участием?`, 'Всё равно сохранить');
+          if(!okVac) return false;
+        }
+      }
       const excludeSet = new Set(excludeIds);
       let conflicts = [];
       datesToCheck.forEach(d=>{
@@ -3781,10 +3897,10 @@ function openEventModal(id, presetDate){
       const more = conflicts.length>8 ? `\n…и ещё ${conflicts.length-8}` : '';
       return await showConfirm(`⚠️ Пересечение по времени с другим событием:\n${shown}${more}\n\nВсё равно сохранить?`, 'Всё равно сохранить');
     }
-    const repeatType = repeatEl ? repeatEl.value : 'none';
+    const repeatType = rep_();
     if(!existing && repeatType!=='none'){
-      const untilVal = document.getElementById('f_repeat_until').value || data.date;
-      const weekdaySet = new Set(Array.from(document.querySelectorAll('#f_weekdays .cat-chip:not(.off)')).map(c=>parseInt(c.dataset.wd,10)));
+      const untilVal = until_(data.date);
+      const weekdaySet = weekdays_();
       let dates = generateRecurrenceDates(data.date, repeatType, weekdaySet, untilVal, 300);
       if(!dates.length) dates = [data.date];
       if(!(await confirmNoDoubleBooking(dates, []))) return;
@@ -5111,9 +5227,20 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
     }
 
     if(assigneeId){
-      const vacationWarning = findVacationConflict(assigneeId, deadline);
-      if(vacationWarning){
-        const proceed = await showConfirm(`⚠️ ${vacationWarning} Всё равно поставить задачу с этим сроком?`, 'Всё равно поставить');
+      const vi = findVacationInfo(assigneeId, deadline);
+      if(vi && vi.inside){
+        const rng = `${fmtDate(vi.start)}${vi.end!==vi.start?' — '+fmtDate(vi.end):''}`;
+        const choice = await showVacationChoice(
+          `У сотрудника «${empName(assigneeId)}» отпуск: ${rng}.\nДедлайн задачи (${fmtDate(deadline)}) попадает на отпуск.\n\nТочно сохранить с этим сроком или перенести дедлайн на первый день после отпуска?`,
+          `Перенести дедлайн на ${fmtDate(vi.after)}`, 'Всё равно сохранить');
+        if(choice==='move'){
+          document.getElementById('t_deadline').value = vi.after;
+          toast(`Дедлайн перенесён на ${fmtDate(vi.after)}`);
+          return saveTaskBtn.onclick();
+        }
+        if(choice!=='keep') return;
+      } else if(vi){
+        const proceed = await showConfirm(`⚠️ ${vi.text} Всё равно поставить задачу с этим сроком?`, 'Всё равно поставить');
         if(!proceed) return;
       }
     }
@@ -6650,8 +6777,12 @@ function exportTaskReportCSV(){
 }
 
 /* ================= ANALYTICS: время на встречах ================= */
-// Считаем категории «Планёрки» (planning), «Рабочие встречи» (meeting) и «События» (event). Длительность — по времени начала/конца.
-const MEETING_CATS = ['planning','meeting','event'];
+// Считаем все рабочие события, в разрезе «назначения» (info/feedback/control/solutions/other; у старых
+// событий без назначения — none). Длительность — по времени начала/конца.
+const MEETING_CATS = ['info','feedback','control','solutions','other','none'];
+const PURPOSE_LABELS = {...EVENT_PURPOSES, none:'Без назначения'};
+const PURPOSE_COLORS = {info:'var(--indigo)', feedback:'var(--teal)', control:'var(--ochre)', solutions:'var(--plum)', other:'var(--sky)', none:'var(--ink-soft)'};
+function purposeKey(e){ return EVENT_PURPOSES[e.purpose] ? e.purpose : 'none'; }
 function timeToMin(t){
   const m = /^(\d{1,2}):(\d{2})$/.exec(t||'');
   return m ? (+m[1])*60 + (+m[2]) : null;
@@ -6704,16 +6835,18 @@ function shiftAnalyticsAnchor(mode, anchorISO, dir){
 function computeMeetingStats(fromISO, toISO, pastOnly, employees, events, nowDate, cats){
   const today = dateToISO(nowDate || new Date());
   const on = c => !cats || cats[c]!==false;
-  const meetings = events.filter(e=> MEETING_CATS.includes(e.category) && on(e.category) && e.date>=fromISO && e.date<=toISO && (!pastOnly || e.date<=today));
+  const meetings = events.filter(e=> normCat(e.category)==='work' && on(purposeKey(e)) && e.date>=fromISO && e.date<=toISO && (!pastOnly || e.date<=today));
   const rows = employees.map(emp=>{
     const mine = meetings.filter(e=>(e.employeeIds||[]).includes(emp.id)).sort((a,b)=> a.date===b.date ? (a.startTime||'').localeCompare(b.startTime||'') : a.date.localeCompare(b.date));
-    let planMin=0, meetMin=0, evtMin=0, unknown=0;
+    const by = {}; MEETING_CATS.forEach(k=>by[k]=0);
+    let unknown = 0;
     mine.forEach(e=>{
       const dur = eventDurationMin(e);
       if(dur===null){ unknown++; return; }
-      if(e.category==='planning') planMin += dur; else if(e.category==='event') evtMin += dur; else meetMin += dur;
+      by[purposeKey(e)] += dur;
     });
-    return {emp, count:mine.length, planMin, meetMin, evtMin, totalMin:planMin+meetMin+evtMin, unknown, list:mine};
+    const totalMin = MEETING_CATS.reduce((sum,k)=>sum+by[k],0);
+    return {emp, count:mine.length, by, totalMin, unknown, list:mine};
   });
   rows.sort((a,b)=> b.totalMin-a.totalMin || b.count-a.count || a.emp.name.localeCompare(b.emp.name));
   return {rows, meetingsTotal:meetings.length};
@@ -7223,7 +7356,7 @@ function renderAnalytics(root){
   const st = state.analytics;
   if(!st.anchor) st.anchor = todayISO();
   const range = analyticsRange(st.mode, st.anchor);
-  const allEvents = (state.events||[]).concat(state.archiveEvents||[]);
+  const allEvents = normEvents((state.events||[]).concat(state.archiveEvents||[]));
   const {rows, meetingsTotal} = computeMeetingStats(range.from, range.to, st.pastOnly, state.employees, allEvents, new Date(), st.cats);
   const active = rows.filter(r=>r.count>0);
   const idle = rows.filter(r=>r.count===0);
@@ -7232,7 +7365,6 @@ function renderAnalytics(root){
   const noEndCount = new Set(rows.flatMap(r=>r.list.filter(e=>eventDurationMin(e)===null).map(e=>e.id))).size;
   const MODES = {week:'Неделя', month:'Месяц', quarter:'Квартал', year:'Год'};
   const barRow = r => {
-    const wPlan = r.planMin/maxMin*100, wMeet = r.meetMin/maxMin*100, wEvt = r.evtMin/maxMin*100;
     const open = st.openEmp===r.emp.id;
     return `
       <div class="item" style="display:block;cursor:pointer;" data-an-emp="${r.emp.id}">
@@ -7241,14 +7373,12 @@ function renderAnalytics(root){
           <div><strong>${fmtDur(r.totalMin)}</strong> <span class="subtitle">· записей: ${r.count}</span></div>
         </div>
         <div style="display:flex;height:12px;border-radius:6px;background:var(--line,#eee);overflow:hidden;margin:6px 0 2px;">
-          <div title="Планёрки: ${fmtDur(r.planMin)}" style="width:${wPlan}%;background:${CATEGORY_COLORS.planning};"></div>
-          <div title="Рабочие встречи: ${fmtDur(r.meetMin)}" style="width:${wMeet}%;background:${CATEGORY_COLORS.meeting};"></div>
-          <div title="События: ${fmtDur(r.evtMin)}" style="width:${wEvt}%;background:${CATEGORY_COLORS.event};"></div>
+          ${MEETING_CATS.filter(k=>r.by[k]>0).map(k=>`<div title="${PURPOSE_LABELS[k]}: ${fmtDur(r.by[k])}" style="width:${r.by[k]/maxMin*100}%;background:${PURPOSE_COLORS[k]};"></div>`).join('')}
         </div>
-        <div class="subtitle" style="font-size:12px;">Планёрки ${fmtDur(r.planMin)} · Рабочие встречи ${fmtDur(r.meetMin)} · События ${fmtDur(r.evtMin)}${r.count? ` · в среднем ${fmtDur(r.totalMin/Math.max(1,r.count-r.unknown))}`:''}${r.unknown?` · без времени окончания: ${r.unknown}`:''}</div>
+        <div class="subtitle" style="font-size:12px;">${MEETING_CATS.filter(k=>r.by[k]>0).map(k=>`${PURPOSE_LABELS[k]} ${fmtDur(r.by[k])}`).join(' · ') || 'время не указано'}${r.count? ` · в среднем ${fmtDur(r.totalMin/Math.max(1,r.count-r.unknown))}`:''}${r.unknown?` · без времени окончания: ${r.unknown}`:''}</div>
         ${open ? `<div style="margin-top:8px;border-top:1px solid var(--line,#ddd);padding-top:6px;">
           ${r.list.map(e=>{ const d = eventDurationMin(e); return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:2px 0;">
-            <span>${fmtDate(e.date)} ${e.startTime?escapeHtml(e.startTime)+(e.endTime?'–'+escapeHtml(e.endTime):''):''} · ${escapeHtml(e.title||'')} <span class="subtitle">(${escapeHtml(CATEGORIES[e.category]||'')})</span></span>
+            <span>${fmtDate(e.date)} ${e.startTime?escapeHtml(e.startTime)+(e.endTime?'–'+escapeHtml(e.endTime):''):''} · ${escapeHtml(e.title||'')} <span class="subtitle">(${escapeHtml(PURPOSE_LABELS[purposeKey(e)])}${e.purpose==='other'&&e.purposeText?': '+escapeHtml(e.purposeText):''})</span></span>
             <span>${d===null?'—':fmtDur(d)}</span></div>`; }).join('')}
         </div>` : ''}
       </div>`;
@@ -7257,7 +7387,7 @@ function renderAnalytics(root){
     <div class="row-between">
       <div>
         <h2 class="section-title">Аналитика: встречи и события</h2>
-        <p class="subtitle">Планёрки, рабочие встречи и события — сколько времени каждый сотрудник проводит на них. Считается по времени начала и конца в календаре.</p>
+        <p class="subtitle">Рабочие события по назначению — сколько времени каждый сотрудник проводит на них. Считается по времени начала и конца в календаре. У событий, поставленных до появления «назначения», оно не указано — они в группе «Без назначения».</p>
       </div>
       <button class="btn ghost small" id="anCsv">⬇ CSV</button>
     </div>
@@ -7265,7 +7395,7 @@ function renderAnalytics(root){
       ${Object.entries(MODES).map(([k,v])=>`<button class="cat-chip ${st.mode===k?'':'off'}" data-an-mode="${k}">${v}</button>`).join('')}
     </div>
     <div class="cat-filters" style="margin:0 0 12px;">
-      ${MEETING_CATS.map(c=>`<button class="cat-chip ${st.cats[c]?'':'off'}" data-an-cat="${c}"><span class="dot" style="background:${CATEGORY_COLORS[c]};"></span>${CATEGORIES[c]}</button>`).join('')}
+      ${MEETING_CATS.map(c=>`<button class="cat-chip ${st.cats[c]?'':'off'}" data-an-cat="${c}"><span class="dot" style="background:${PURPOSE_COLORS[c]};"></span>${PURPOSE_LABELS[c]}</button>`).join('')}
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
       <button class="btn ghost small" id="anPrev">←</button>
@@ -7276,9 +7406,6 @@ function renderAnalytics(root){
     </div>
     <div class="note" style="margin-bottom:14px;">
       Всего за период: <strong>${meetingsTotal}</strong> · суммарно по сотрудникам: <strong>${fmtDur(sumMin)}</strong>
-      <span style="margin-left:10px;"><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.planning};"></span> Планёрки
-      <span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.meeting};margin-left:8px;"></span> Рабочие встречи
-      <span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CATEGORY_COLORS.event};margin-left:8px;"></span> События</span>
       ${noEndCount ? `<div class="subtitle" style="margin-top:4px;">У ${noEndCount} записей не указано время начала или конца — в часы они не входят, но учтены в количестве.</div>` : ''}
     </div>
     <div class="item-list">
@@ -7300,8 +7427,8 @@ function renderAnalytics(root){
   document.getElementById('anPast').onchange=(ev)=>{ st.pastOnly=ev.target.checked; render(); };
   root.querySelectorAll('[data-an-emp]').forEach(el=>el.onclick=()=>{ st.openEmp = st.openEmp===el.dataset.anEmp ? null : el.dataset.anEmp; render(); });
   document.getElementById('anCsv').onclick=()=>{
-    const lines = [['Сотрудник','Роль','Количество','Планёрки (мин)','Рабочие встречи (мин)','События (мин)','Всего (мин)','Всего (ч)','Без времени окончания'].map(csvEscape).join(';')];
-    rows.forEach(r=>lines.push([r.emp.name, r.emp.role||'', r.count, r.planMin, r.meetMin, r.evtMin, r.totalMin, (r.totalMin/60).toFixed(2).replace('.',','), r.unknown].map(csvEscape).join(';')));
+    const lines = [['Сотрудник','Роль','Количество'].concat(MEETING_CATS.map(k=>PURPOSE_LABELS[k]+' (мин)'), ['Всего (мин)','Всего (ч)','Без времени окончания']).map(csvEscape).join(';')];
+    rows.forEach(r=>lines.push([r.emp.name, r.emp.role||'', r.count].concat(MEETING_CATS.map(k=>r.by[k]), [r.totalMin, (r.totalMin/60).toFixed(2).replace('.',','), r.unknown]).map(csvEscape).join(';')));
     downloadTextFile(`vstrechi-${range.from}_${range.to}.csv`, 'text/csv;charset=utf-8', '﻿'+lines.join('\n'));
   };
 }
@@ -7697,7 +7824,7 @@ function openSearchModal(){
       html += res.events.map(e=>`
         <div class="item" style="cursor:pointer;" data-sr-day="${e.date}">
           <div class="main"><div class="title">${e.__personal?'🔒 ':''}${escapeHtml(e.title)}</div>
-          <div class="meta"><span>${CATEGORIES[e.category]||''}</span><span>${fmtDate(e.date)}</span></div></div>
+          <div class="meta"><span>${catLabel(e.category)}</span><span>${fmtDate(e.date)}</span></div></div>
         </div>`).join('');
       html += `</div>`;
     }
@@ -7921,7 +8048,7 @@ function openDataModal(){
           <div class="item-list" style="margin-bottom:20px;">
             ${state.archiveEvents.length ? state.archiveEvents.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e=>`
               <div class="item">
-                <div class="main"><div class="title">${escapeHtml(e.title)}</div><div class="meta"><span>${fmtDate(e.date)}</span><span>${CATEGORIES[e.category]||''}</span></div></div>
+                <div class="main"><div class="title">${escapeHtml(e.title)}</div><div class="meta"><span>${fmtDate(e.date)}</span><span>${catLabel(e.category)}</span></div></div>
                 <div class="actions"><button class="btn ghost small" data-restore-archive-event="${e.id}">Вернуть</button></div>
               </div>
             `).join('') : `<p class="subtitle" style="margin:0;">Архив событий пуст</p>`}
@@ -7942,7 +8069,7 @@ function openDataModal(){
           <div class="item-list" style="margin-bottom:10px;">
             ${state.personalArchiveEvents.length ? state.personalArchiveEvents.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e=>`
               <div class="item">
-                <div class="main"><div class="title">${escapeHtml(e.title)}</div><div class="meta"><span>${fmtDate(e.date)}</span><span>${CATEGORIES[e.category]||''}</span></div></div>
+                <div class="main"><div class="title">${escapeHtml(e.title)}</div><div class="meta"><span>${fmtDate(e.date)}</span><span>${catLabel(e.category)}</span></div></div>
                 <div class="actions"><button class="btn ghost small" data-restore-personal-archive-event="${e.id}">Вернуть</button></div>
               </div>
             `).join('') : `<p class="subtitle" style="margin:0;">Архив событий пуст</p>`}
@@ -8309,7 +8436,7 @@ async function startFamilyApp(){
         ${list.length ? list.map(e=>`
           <div class="item"><div class="main">
             <div class="title">${escapeHtml(e.title||'')}</div>
-            <div class="meta"><span>${fmtDate(e.date)}</span>${e.startTime?`<span>${escapeHtml(e.startTime)}${e.endTime?'–'+escapeHtml(e.endTime):''}</span>`:'<span>весь день</span>'}${CATEGORIES[e.category]?`<span>${escapeHtml(CATEGORIES[e.category])}</span>`:''}${e.location?`<span>📍 ${escapeHtml(e.location)}</span>`:''}</div>
+            <div class="meta"><span>${fmtDate(e.date)}</span>${e.startTime?`<span>${escapeHtml(e.startTime)}${e.endTime?'–'+escapeHtml(e.endTime):''}</span>`:'<span>весь день</span>'}${catLabel(e.category)?`<span>${escapeHtml(catLabel(e.category))}</span>`:''}${e.location?`<span>📍 ${escapeHtml(e.location)}</span>`:''}</div>
             ${e.notes?`<div class="desc">${escapeHtml(e.notes)}</div>`:''}
           </div></div>`).join('') : `<p class="subtitle" style="margin:0;">Событий нет</p>`}
       </div>`;

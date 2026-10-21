@@ -866,7 +866,8 @@ const state = {
   taskSubtab:'work',
   archiveSubtab:'work',
   regs:null,
-  regsState:{loading:false, error:false, loadedAt:0, prio:'all', openId:null},
+  projListCollapsed:(()=>{ try{ const v = localStorage.getItem('lj:ui:projCollapsed'); return v===null ? true : v==='1'; }catch(e){ return true; } })(),
+  regsState:{loading:false, error:false, loadedAt:0, prio:'all', openId:null, view:'board', q:''},
   analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{planning:true, meeting:true, event:true}},
   todayOrder:{}, todayOrderLoaded:{},
   taskBoardShowDone:false,
@@ -2934,6 +2935,11 @@ function renderOverview(root){
       <div class="sum-card"><div class="label">Событий сегодня</div><div class="val mono" style="color:var(--indigo);">${todayEvents.length}</div></div>
       ${reworkCount ? `<div class="sum-card"><div class="label">↩️ На доработке</div><div class="val mono" style="color:var(--brick);">${reworkCount}</div></div>` : ''}
       ${createdTodayTasks.length ? `<div class="sum-card" id="createdTodayCard" style="cursor:pointer;"><div class="label">📋 Поставлено сегодня</div><div class="val mono" style="color:var(--indigo);">${createdTodayTasks.length}</div></div>` : ''}
+      ${(()=>{ if(!regsAccess() || !Array.isArray(state.regs)) return ''; const today=todayISO();
+        const mine = state.regs.filter(r=>r.stage!=='done' && r.holderId===state.currentUserId);
+        if(!mine.length) return '';
+        const od = mine.filter(r=>r.deadline && r.deadline<today).length;
+        return `<div class="sum-card" id="ovRegsCard" style="cursor:pointer;"><div class="label">📜 Регламентов у меня</div><div class="val mono" style="color:${od?'var(--brick)':'var(--indigo)'};">${mine.length}${od?` <span style="font-size:13px;">· просрочено ${od}</span>`:''}</div></div>`; })()}
       ${reviewQueue.length ? `<div class="sum-card"><div class="label">🔍 Нужно проверить</div><div class="val mono" style="color:var(--ochre);">${reviewQueue.length}</div></div>` : ''}
       ${recentlyApproved.length ? `<div class="sum-card"><div class="label">✅ Недавно принято</div><div class="val mono" style="color:var(--teal);">${recentlyApproved.length}</div></div>` : ''}
       ${hasRole('Руководитель','Ассистент') ? `
@@ -3051,6 +3057,9 @@ function renderOverview(root){
     state.overviewOverdueCollapsed = !state.overviewOverdueCollapsed;
     render();
   };
+  const ovRegsCard = document.getElementById('ovRegsCard');
+  if(ovRegsCard) ovRegsCard.onclick=()=>{ state.tab='regs'; render(); };
+  if(regsAccess() && state.regs===null && !state.regsState.loading && !state.regsState.error) loadRegs(true);
   const createdTodayCard = document.getElementById('createdTodayCard');
   if(createdTodayCard) createdTodayCard.onclick=()=>openCreatedTodayModal(createdTodayTasks, canChooseWhoToView);
   async function saveTodayOrder(ids){
@@ -4066,10 +4075,15 @@ function renderTaskBoard(el, personal){
     return `<button class="cat-chip ${isSel?'':'off'}" data-proj="${p.id}"><span class="dot" style="background:var(--indigo);"></span>${escapeHtml(p.name)}</button>`;
   }
   const noSelection = !state.taskFilterNoProject[selKey] && state.taskFilterProjectIds[selKey].size===0;
+  // Список проектов можно свернуть (запоминается в этом браузере). В свёрнутом виде видны только
+  // выбранные проекты — фильтр продолжает работать, но список не занимает пол-экрана.
+  const projCollapsed = !!state.projListCollapsed;
+  const selNames = projectsInScope.filter(p=>state.taskFilterProjectIds[selKey].has(p.id));
   projRow.innerHTML = `
-    <button class="cat-chip ${noSelection?'':'off'}" data-proj="all"><span class="dot" style="background:var(--ink-soft);"></span>Все${!personal && activeBlockId?' (в блоке)':''}</button>
-    <button class="cat-chip ${state.taskFilterNoProject[selKey]?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>
-    ${projectsInScope.map(projChip).join('')}
+    <button class="btn ghost small" id="projListToggle" title="${projCollapsed?'Показать все проекты':'Скрыть список проектов'}">${projCollapsed?'▸ Проекты ('+projectsInScope.length+')':'▾ Скрыть проекты'}</button>
+    ${(!projCollapsed || noSelection) ? `<button class="cat-chip ${noSelection?'':'off'}" data-proj="all"><span class="dot" style="background:var(--ink-soft);"></span>Все${!personal && activeBlockId?' (в блоке)':''}</button>` : ''}
+    ${(!projCollapsed || state.taskFilterNoProject[selKey]) ? `<button class="cat-chip ${state.taskFilterNoProject[selKey]?'':'off'}" data-proj="none"><span class="dot" style="background:transparent;border:1px solid var(--ink-soft);"></span>Без проекта</button>` : ''}
+    ${(projCollapsed ? selNames : projectsInScope).map(projChip).join('')}
     <button class="btn ghost small" id="manageProjBtn">+ Проект</button>
     ${!personal?`<button class="btn ghost small" id="bulkSelectToggle">${state.bulkSelectMode?'✕ Отменить выбор':'☑️ Выбрать несколько'}</button>`:''}
   `;
@@ -4084,12 +4098,19 @@ function renderTaskBoard(el, personal){
       render();
     };
   });
-  projRow.querySelector('[data-proj="all"]').onclick=()=>{
+  projRow.querySelector('#projListToggle').onclick=()=>{
+    state.projListCollapsed = !state.projListCollapsed;
+    try{ localStorage.setItem('lj:ui:projCollapsed', state.projListCollapsed?'1':'0'); }catch(e){}
+    render();
+  };
+  const projAllBtn = projRow.querySelector('[data-proj="all"]');
+  if(projAllBtn) projAllBtn.onclick=()=>{
     state.taskFilterProjectIds[selKey] = new Set();
     state.taskFilterNoProject[selKey] = false;
     render();
   };
-  projRow.querySelector('[data-proj="none"]').onclick=()=>{
+  const projNoneBtn = projRow.querySelector('[data-proj="none"]');
+  if(projNoneBtn) projNoneBtn.onclick=()=>{
     state.taskFilterNoProject[selKey] = !state.taskFilterNoProject[selKey];
     if(state.taskFilterNoProject[selKey]) state.taskFilterProjectIds[selKey] = new Set();
     render();
@@ -4499,6 +4520,7 @@ function renderPersonalTasks(el){
 
 function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
   opts = opts || {};
+  const taskOpts = opts;
   // Постановка главной задачи из чек-листа: название и описание подтягиваются из чек-листа,
   // шаги становятся подзадачами (их можно поправить кнопкой «Редактировать подзадачи»).
   const checklist = opts.checklist || null;
@@ -4520,7 +4542,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
   const soleSelectedProjectId = state.taskFilterProjectIds[selKey].size===1 ? Array.from(state.taskFilterProjectIds[selKey])[0] : null;
   const initialProjectId = parentId
     ? (parentTask ? parentTask.projectId : null)
-    : (existing ? (existing.projectId||null) : (allProjects.some(p=>p.id===soleSelectedProjectId) ? soleSelectedProjectId : null));
+    : (existing ? (existing.projectId||null) : (opts.projectId && allProjects.some(p=>p.id===opts.projectId) ? opts.projectId : (allProjects.some(p=>p.id===soleSelectedProjectId) ? soleSelectedProjectId : null)));
   const initialIsPurchases = !!(purchasesProject && initialProjectId===purchasesProject.id);
   const assistantEmp = state.employees.find(e=>e.role==='Ассистент');
   // Блок формы по умолчанию: у уже существующей задачи — её собственный блок (а если он почему-то
@@ -4577,7 +4599,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
                 ${(()=>{
                   const scoped = (!personal && initialBlockId) ? projects.filter(p=>p.blockId===initialBlockId) : projects;
                   const opts = [`<option value="">${!personal?'— выберите проект —':'Без проекта'}</option>`]
-                    .concat(scoped.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (soleSelectedProjectId===p.id?'selected':'')}>${escapeHtml(p.name)}</option>`));
+                    .concat(scoped.map(p=>`<option value="${p.id}" ${existing? (existing.projectId===p.id?'selected':'') : (((taskOpts.projectId||soleSelectedProjectId)===p.id)?'selected':'')}>${escapeHtml(p.name)}</option>`));
                   return opts.join('');
                 })()}
               </select>
@@ -4603,7 +4625,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
             <select id="t_assignee">
               <option value="">— выберите —</option>
               ${state.employees.filter(e=>!personal || e.role==='Руководитель' || e.role==='Ассистент').map(e=>{
-                const isSelected = existing ? existing.assigneeId===e.id : (initialIsPurchases && assistantEmp && e.id===assistantEmp.id);
+                const isSelected = existing ? existing.assigneeId===e.id : (opts.assigneeId ? e.id===opts.assigneeId : (initialIsPurchases && assistantEmp && e.id===assistantEmp.id));
                 return `<option value="${e.id}" ${isSelected?'selected':''}>${escapeHtml(e.name)}</option>`;
               }).join('')}
             </select>
@@ -4623,7 +4645,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
         `:''}
         <div class="field-row">
           <div class="field"><label>Дата постановки *</label><input type="date" id="t_createdDate" value="${existing?existing.createdDate||todayISO():todayISO()}"></div>
-          <div class="field"><label>Дедлайн *</label><input type="date" id="t_deadline" value="${existing?existing.deadline||'':''}"></div>
+          <div class="field"><label>Дедлайн *</label><input type="date" id="t_deadline" value="${existing?existing.deadline||'':(opts.deadline||'')}"></div>
           <div class="field"><label>Время дедлайна (необязательно)</label><input type="time" id="t_deadlineTime" value="${existing?existing.deadlineTime||'':''}"></div>
           <div class="field"><label>Приоритет *</label>
             <select id="t_priority">
@@ -5163,7 +5185,7 @@ function openTaskModal(id, personal, presetParentId, presetTitle, onDone, opts){
       toast(draftSubs ? `Задача создана с подзадачами: ${draftSubs.length}` : 'Задача сохранена');
       if(!existing){
         notifySelfSaved('✅ Задача создана', data.title);
-        if(onDone) onDone();
+        if(onDone) onDone(data.id);
       }
     }
     await saveTaskMain();
@@ -6640,7 +6662,7 @@ async function loadRegs(force){
     else { st.error = true; }
   } else if(r.status==='missing'){ state.regs = []; st.error = false; st.loadedAt = Date.now(); }
   else if(r.status==='failed'){ st.error = true; }
-  if(state.tab==='regs') render();
+  if(state.tab==='regs' || state.tab==='overview') render();
 }
 // Любое изменение: берём свежий список с сервера, применяем правку к нему и сохраняем (чтобы не
 // затереть то, что за это время поменял кто-то другой). Читать не удалось — НЕ пишем.
@@ -6676,6 +6698,7 @@ function openRegEditModal(regId){
     <div class="field-row">
       <div class="field"><label>Приоритет</label><select id="rgPrio">${[1,2,3].map(p=>`<option value="${p}" ${(reg?reg.priority:1)===p?'selected':''}>${REG_PRIORITIES[p]}</option>`).join('')}</select></div>
       <div class="field"><label>Этап</label><select id="rgStage">${Object.keys(REG_STAGES).map(s=>`<option value="${s}" ${(reg?reg.stage:'todo')===s?'selected':''}>${REG_STAGES[s]}</option>`).join('')}</select></div>
+      <div class="field"><label>Срок готовности</label><input type="date" id="rgDeadline" value="${reg?reg.deadline||'':''}"></div>
     </div>
     ${reg?'':`<div class="field"><label>У кого сейчас</label><select id="rgHolder">${holderOpts}</select></div>`}
     <div class="field"><label>Ссылка на документ</label><input id="rgLink" value="${escapeHtml(reg?reg.link||'':'')}" placeholder="https://docs.google.com/…"></div>
@@ -6716,23 +6739,24 @@ function openRegEditModal(regId){
     const stage = document.getElementById('rgStage').value;
     const link = document.getElementById('rgLink').value.trim();
     const note = document.getElementById('rgNote').value.trim();
+    const deadline = document.getElementById('rgDeadline').value || '';
     const today = todayISO();
     // привязки к задачам, которых этот пользователь не видит, не трогаем
     const hidden = reg ? (reg.taskIds||[]).filter(id=>!known.has(id)) : [];
     const taskIds = [...picked].concat(hidden);
     const ok = await mutateRegs(a=>{
       if(reg){
-        return a.map(x=> x.id!==reg.id ? x : {...x, title, priority, stage, link, note, taskIds,
+        return a.map(x=> x.id!==reg.id ? x : {...x, title, priority, stage, link, note, deadline, taskIds,
           doneAt: stage==='done' ? (x.doneAt||today) : null});
       }
       const holderId = document.getElementById('rgHolder').value || null;
-      return a.concat([{id:uid(), title, priority, stage, link, note, taskIds, holderId, since: today, createdAt: today,
+      return a.concat([{id:uid(), title, priority, stage, link, note, deadline, taskIds, holderId, since: today, createdAt: today,
         doneAt: stage==='done'?today:null, moves:[]}]);
     });
     if(ok){ closeModal(); toast('Сохранено'); render(); }
   };
 }
-function openRegMoveModal(regId){
+function openRegMoveModal(regId, presetTo){
   const reg = (state.regs||[]).find(r=>r.id===regId);
   if(!reg) return;
   const quick = regQuickHolders();
@@ -6745,7 +6769,7 @@ function openRegMoveModal(regId){
     </div>
     <div class="field"><label>Кому</label><select id="rmTo">
       <option value="">Не назначен</option>
-      ${state.employees.map(e=>`<option value="${e.id}" ${reg.holderId===e.id?'selected':''}>${escapeHtml(e.name)} — ${escapeHtml(e.role||'')}</option>`).join('')}
+      ${state.employees.map(e=>`<option value="${e.id}" ${(presetTo!==undefined ? presetTo===e.id : reg.holderId===e.id)?'selected':''}>${escapeHtml(e.name)} — ${escapeHtml(e.role||'')}</option>`).join('')}
     </select></div>
     <div class="field-row">
       <div class="field"><label>Этап</label><select id="rmStage">${Object.keys(REG_STAGES).map(s=>`<option value="${s}" ${reg.stage===s?'selected':''}>${REG_STAGES[s]}</option>`).join('')}</select></div>
@@ -6779,6 +6803,79 @@ function openRegMoveModal(regId){
     }
   };
 }
+function exportRegsCSV(regs){
+  const today = todayISO();
+  const lines = [['Регламент','Приоритет','Этап','Сейчас у','Дней у текущего','Срок','Задач привязано','Задач выполнено','Всего дней в работе','Передач','Путь'].map(csvEscape).join(';')];
+  regs.forEach(r=>{
+    const segs = computeRegPath(r, today);
+    const lt = (r.taskIds||[]).map(id=>state.tasksWork.find(t=>t.id===id)).filter(Boolean);
+    const total = regDayDiff(r.createdAt||today, r.stage==='done'&&r.doneAt?r.doneAt:today);
+    lines.push([r.title, r.priority, REG_STAGES[r.stage], regHolderName(r.holderId), r.stage==='done'?'':segs[segs.length-1].days, r.deadline||'',
+      lt.length, lt.filter(t=>t.status==='done').length, total, (r.moves||[]).filter(m=>m.from!==m.to).length,
+      segs.map(s=>`${regHolderName(s.holderId)} ${s.days} дн.`).join(' → ')].map(csvEscape).join(';'));
+  });
+  downloadTextFile(`reglamenty-${today}.csv`, 'text/csv;charset=utf-8', '﻿'+lines.join('\n'));
+}
+// Аналитика движения регламентов: по людям (сколько регламентов прошло, сколько дней держит) и по регламентам.
+function computeRegStats(regs, today){
+  const people = {};
+  const per = regs.map(r=>{
+    const segs = computeRegPath(r, today);
+    segs.forEach(sg=>{
+      const k = sg.holderId||'—';
+      const p = people[k] || (people[k] = {id:sg.holderId||null, regIds:new Set(), days:0, holds:0, doneHolds:0, doneDays:0, current:0, overdue:0, maxHold:0});
+      p.regIds.add(r.id); p.days += sg.days; p.holds++; p.maxHold = Math.max(p.maxHold, sg.days);
+      if(!sg.current){ p.doneHolds++; p.doneDays += sg.days; }
+      if(sg.current && r.stage!=='done'){ p.current++; if(r.deadline && r.deadline<today) p.overdue++; }
+    });
+    const total = regDayDiff(r.createdAt||today, r.stage==='done'&&r.doneAt?r.doneAt:today);
+    return {reg:r, segs, total, handoffs:(r.moves||[]).filter(m=>m.from!==m.to).length,
+      stuck: r.stage!=='done' ? segs[segs.length-1].days : 0,
+      overdue: !!(r.deadline && r.stage!=='done' && r.deadline<today)};
+  });
+  const doneRows = per.filter(x=>x.reg.stage==='done');
+  return {
+    people: Object.values(people).map(p=>({...p, regCount:p.regIds.size, avgHold: p.holds? p.days/p.holds : 0})).sort((a,b)=>b.days-a.days),
+    per, doneCount: doneRows.length,
+    avgToDone: doneRows.length ? doneRows.reduce((s,x)=>s+x.total,0)/doneRows.length : null,
+    overdueCount: per.filter(x=>x.overdue).length,
+    stuckCount: per.filter(x=>x.stuck>=7).length,
+  };
+}
+function regStatsHTML(regs, today){
+  const st = computeRegStats(regs, today);
+  const maxDays = Math.max(1, ...st.people.map(p=>p.days));
+  const slowest = st.people.filter(p=>p.holds>=2 && p.id).sort((a,b)=>b.avgHold-a.avgHold)[0];
+  const fmt1 = n => (Math.round(n*10)/10).toString().replace('.',',');
+  return `
+    <div class="ledger-summary" style="margin-bottom:16px;">
+      <div class="sum-card"><div class="label">Всего регламентов</div><div class="val mono">${regs.length}</div></div>
+      <div class="sum-card"><div class="label">Готово</div><div class="val mono" style="color:var(--teal);">${st.doneCount}</div></div>
+      <div class="sum-card"><div class="label">Просрочено по сроку</div><div class="val mono" style="color:${st.overdueCount?'var(--brick)':'inherit'};">${st.overdueCount}</div></div>
+      <div class="sum-card"><div class="label">Застряли (7+ дней у одного)</div><div class="val mono" style="color:${st.stuckCount?'var(--ochre)':'inherit'};">${st.stuckCount}</div></div>
+      <div class="sum-card"><div class="label">В среднем до «Готово»</div><div class="val mono">${st.avgToDone===null?'—':fmt1(st.avgToDone)+' дн.'}</div></div>
+    </div>
+    <h3 style="margin:0 0 8px;">По людям</h3>
+    ${st.people.length ? st.people.map(p=>`
+      <div class="item" style="display:block;">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
+          <div><strong>${escapeHtml(p.id?empName(p.id):'Не назначен')}</strong> <span class="subtitle">${escapeHtml(p.id?((state.employees.find(e=>e.id===p.id)||{}).role||''):'')}</span></div>
+          <div><strong>${p.days} ${regDaysWord(p.days)}</strong> <span class="subtitle">· регламентов: ${p.regCount}</span></div>
+        </div>
+        <div style="height:10px;border-radius:5px;background:var(--paper-line);overflow:hidden;margin:6px 0 2px;"><div style="width:${p.days/maxDays*100}%;height:100%;background:var(--indigo);"></div></div>
+        <div class="subtitle" style="font-size:12.5px;">Сейчас на нём: ${p.current}${p.overdue?` (просрочено ${p.overdue})`:''} · в среднем держит ${fmt1(p.avgHold)} дн. · дольше всего ${p.maxHold} дн.</div>
+      </div>`).join('') : '<div class="subtitle">Данных пока нет</div>'}
+    ${slowest?`<div class="subtitle" style="margin:6px 0 16px;">⏳ Дольше всех в среднем держит регламент: <strong>${escapeHtml(empName(slowest.id))}</strong> — ${fmt1(slowest.avgHold)} дн. за передачу.</div>`:'<div style="height:12px;"></div>'}
+    <h3 style="margin:0 0 8px;">По регламентам <span class="subtitle" style="font-weight:400;">(дольше всего в работе — сверху)</span></h3>
+    ${st.per.slice().sort((a,b)=>b.total-a.total).map(x=>`
+      <div class="item" style="display:block;">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
+          <strong>${escapeHtml(x.reg.title)} <span class="subtitle">П${x.reg.priority} · ${REG_STAGES[x.reg.stage]}</span></strong>
+          <span><strong>${x.total} ${regDaysWord(x.total)}</strong> <span class="subtitle">· передач: ${x.handoffs}</span></span>
+        </div>
+        <div class="subtitle" style="font-size:12.5px;">${x.segs.map(sg=>`${escapeHtml(regHolderName(sg.holderId))} ${sg.days} дн.${sg.current?' (сейчас)':''}`).join(' → ')}${x.overdue?` · <span style="color:var(--brick);font-weight:600;">срок ${fmtDate(x.reg.deadline)} прошёл</span>`:''}</div>
+      </div>`).join('')}`;
+}
 function renderRegs(root){
   if(!regsAccess()){ root.innerHTML = accessDeniedScreen('Регламенты доступны Руководителю, Ассистенту и Старшему администратору.'); return; }
   const st = state.regsState;
@@ -6792,7 +6889,8 @@ function renderRegs(root){
   }
   loadRegs(false); // мягкое обновление, если данные старше минуты
   const today = todayISO();
-  const regs = state.regs.filter(r=> st.prio==='all' || String(r.priority)===st.prio);
+  const q = (st.q||'').trim().toLowerCase();
+  const regs = state.regs.filter(r=> (st.prio==='all' || String(r.priority)===st.prio) && (!q || (r.title||'').toLowerCase().includes(q)));
   const cols = computeRegColumns(regs, state.employees);
   const done = regs.filter(r=>r.stage==='done');
   const card = r=>{
@@ -6802,22 +6900,28 @@ function renderRegs(root){
     const stale = days>=7 && r.stage!=='done';
     const lastMove = (r.moves||[]).slice().reverse().find(m=>m.note);
     const open = st.openId===r.id;
+    const dlOver = r.deadline && r.stage!=='done' && r.deadline<today;
     const lt = (r.taskIds||[]).map(id=>state.tasksWork.find(t=>t.id===id)).filter(Boolean);
     const ltDone = lt.filter(t=>t.status==='done').length;
-    return `<div class="item" style="display:block;" data-rg-id="${r.id}">
+    return `<div class="item" style="display:block;" data-rg-id="${r.id}" draggable="true">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
         <strong style="cursor:pointer;" data-rg-toggle="${r.id}">${escapeHtml(r.title)}</strong>
         <span class="badge prio-${r.priority===1?'high':r.priority===2?'med':'low'}">П${r.priority}</span>
       </div>
       <div class="subtitle" style="margin:3px 0;">
         <span class="badge ${r.stage==='done'?'done':r.stage==='review'?'review':r.stage==='work'?'progress':'prio-low'}">${REG_STAGES[r.stage]}</span>
-        <span style="${stale?'color:var(--brick);font-weight:600;':''}"> · у него ${days} ${regDaysWord(days)}${stale?' ⚠️':''}</span>
+        ${r.stage==='done'
+          ? `<span> · ${r.doneAt?'утверждён '+fmtDate(r.doneAt)+' · ':''}последний: ${escapeHtml(regHolderName(r.holderId))}</span>`
+          : `<span style="${stale?'color:var(--brick);font-weight:600;':''}"> · у него ${days} ${regDaysWord(days)}${stale?' ⚠️':''}</span>`}
       </div>
+      ${r.deadline && r.stage!=='done'?`<div class="subtitle" style="font-size:12.5px;${dlOver?'color:var(--brick);font-weight:600;':''}">⏰ Срок: ${fmtDate(r.deadline)}${dlOver?' — просрочен':''}</div>`:''}
       ${lt.length?`<div class="subtitle" style="font-size:12.5px;cursor:pointer;" data-rg-toggle="${r.id}">🔗 Задачи: ${ltDone}/${lt.length} выполнено</div>`:''}
       ${lastMove?`<div class="subtitle" style="font-size:12.5px;">💬 ${escapeHtml(lastMove.note)}</div>`:''}
       ${r.link?`<div style="font-size:12.5px;margin-top:3px;"><a href="${escapeHtml(/^https?:/i.test(r.link)?r.link:'https://'+r.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--indigo);">📄 Документ</a></div>`:''}
       <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
-        <button class="btn small" data-rg-move="${r.id}">Передать →</button>
+        ${r.stage==='done'
+          ? `<button class="btn small" data-rg-stage="${r.id}:work">↩ Вернуть в работу</button>`
+          : `<button class="btn small" data-rg-move="${r.id}">Передать →</button><button class="btn ghost small" data-rg-stage="${r.id}:done">✓ Готово</button><button class="btn ghost small" data-rg-newtask="${r.id}">+ Задача</button>`}
         <button class="btn ghost small" data-rg-edit="${r.id}">Изм.</button>
       </div>
       ${open?`<div style="margin-top:8px;border-top:1px solid var(--paper-line);padding-top:6px;font-size:12.5px;">
@@ -6836,33 +6940,77 @@ function renderRegs(root){
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
       <div><h2 style="margin:0;">📜 Регламенты</h2><div class="subtitle">В работе: ${nOpen} · утверждено: ${done.length}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn ghost small" id="rgCsv">⬇ CSV</button>
         <button class="btn ghost small" id="rgRefresh">↻ Обновить</button>
         <button class="btn" id="rgAdd">+ Регламент</button>
       </div>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
       ${['all','1','2','3'].map(p=>`<button class="subtab-btn ${st.prio===p?'active':''}" data-rg-prio="${p}">${p==='all'?'Все':REG_PRIORITIES[p]}</button>`).join('')}
+      <input id="rgSearch" type="search" placeholder="🔎 Поиск по названию" value="${escapeHtml(st.q||'')}" style="width:auto;min-width:170px;flex:1;max-width:260px;">
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+      <button class="subtab-btn ${st.view!=='stats'?'active':''}" data-rg-view="board">📋 Доска</button>
+      <button class="subtab-btn ${st.view==='stats'?'active':''}" data-rg-view="stats">📈 Аналитика</button>
     </div>
     ${state.regs.length===0 ? `<div class="empty" style="padding:24px 8px;text-align:center;">
         Регламентов пока нет.<br><br>
         <button class="btn" id="rgSeed">Добавить из вашего списка (Приоритет 1 и 2)</button>
         <div class="subtitle" style="margin-top:8px;">Добавятся: ${REG_SEED.map(s=>escapeHtml(s.title)).join(', ')}. Все — «Не назначен»; дальше вы раздаёте их кнопкой «Передать».</div>
-      </div>` : `
+      </div>` : (st.view==='stats' ? regStatsHTML(regs, today) : `
     <div class="rg-board" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:start;">
-      ${cols.map(c=>`<div style="background:var(--paper,#faf8f3);border:1px solid var(--paper-line);border-radius:10px;padding:10px;">
+      ${cols.map(c=>`<div data-rg-drop="${c.id||''}" style="background:var(--paper,#faf8f3);border:1px solid var(--paper-line);border-radius:10px;padding:10px;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
           <div><strong>${escapeHtml(c.name)}</strong>${c.role&&c.role!==c.name?` <span class="subtitle">${escapeHtml(c.role)}</span>`:''}</div>
           <span class="count">${c.items.length}</span>
         </div>
         ${c.items.length ? c.items.map(card).join('') : '<div class="subtitle" style="font-size:12.5px;">Сейчас ничего нет</div>'}
       </div>`).join('')}
+      <div data-rg-drop="__done" style="background:var(--teal-bg);border:1px solid var(--paper-line);border-radius:10px;padding:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+          <strong>✅ Готово</strong><span class="count">${done.length}</span>
+        </div>
+        ${done.length ? done.map(card).join('') : '<div class="subtitle" style="font-size:12.5px;">Пока ничего</div>'}
+      </div>
     </div>
-    ${done.length?`<details style="margin-top:16px;"><summary style="cursor:pointer;"><strong>✅ Утверждённые (${done.length})</strong></summary><div style="margin-top:8px;display:grid;gap:8px;">${done.map(card).join('')}</div></details>`:''}
     <details style="margin-top:16px;"><summary style="cursor:pointer;"><strong>⏱ Сколько дней регламенты провели у каждого</strong></summary>
       <div style="margin-top:8px;font-size:13.5px;">${Object.keys(totals).sort((a,b)=>totals[b]-totals[a]).map(k=>`<div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${escapeHtml(k==='—'?'Не назначен':empName(k))}</span><strong>${totals[k]} ${regDaysWord(totals[k])}</strong></div>`).join('')}
       <div class="subtitle" style="margin-top:6px;">Суммарно по всем регламентам, включая утверждённые.</div></div>
-    </details>`}`;
+    </details>`)}`;
   root.querySelector('#rgAdd').onclick = ()=>openRegEditModal(null);
+  root.querySelector('#rgCsv').onclick = ()=>exportRegsCSV(regs);
+  const sInp = root.querySelector('#rgSearch');
+  sInp.oninput = ()=>{ st.q = sInp.value; render(); const n = document.getElementById('rgSearch'); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } };
+  root.querySelectorAll('[data-rg-view]').forEach(b=> b.onclick = ()=>{ st.view = b.dataset.rgView; render(); });
+  // перетаскивание карточки в другую колонку (на телефоне — кнопки «Передать →» / «Готово»)
+  root.querySelectorAll('[data-rg-id][draggable]').forEach(c=>{
+    c.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain', c.dataset.rgId); e.dataTransfer.effectAllowed='move'; });
+  });
+  root.querySelectorAll('[data-rg-drop]').forEach(col=>{
+    col.addEventListener('dragover', e=>{ e.preventDefault(); col.style.outline='2px dashed var(--indigo)'; });
+    col.addEventListener('dragleave', ()=>{ col.style.outline=''; });
+    col.addEventListener('drop', async e=>{
+      e.preventDefault(); col.style.outline='';
+      const rid = e.dataTransfer.getData('text/plain');
+      const reg = state.regs.find(x=>x.id===rid); if(!reg) return;
+      const target = col.dataset.rgDrop;
+      if(target==='__done'){ if(reg.stage!=='done') root.querySelector(`[data-rg-stage="${rid}:done"]`)?.click(); return; }
+      if(reg.stage==='done'){ toast('Сначала верните регламент в работу'); return; }
+      if((reg.holderId||'')===target) return;
+      openRegMoveModal(rid, target||null);
+    });
+  });
+  // создать задачу из карточки: исполнитель — текущий держатель, срок — срок регламента,
+  // проект «Регламенты» (если есть); созданная задача сразу привязывается к регламенту
+  root.querySelectorAll('[data-rg-newtask]').forEach(b=> b.onclick = ()=>{
+    const reg = state.regs.find(x=>x.id===b.dataset.rgNewtask); if(!reg) return;
+    const proj = (state.projectsWork||[]).find(pr=>!pr.archived && /регламент/i.test(pr.name||''));
+    openTaskModal(null, false, null, `${reg.title}: `, async (newId)=>{
+      if(!newId) return;
+      const ok = await mutateRegs(a=> a.map(x=> x.id!==reg.id ? x : {...x, taskIds:(x.taskIds||[]).concat([newId])}));
+      if(ok){ toast('Задача привязана к регламенту'); render(); }
+    }, {assigneeId: reg.holderId||'', deadline: reg.deadline||'', projectId: proj?proj.id:null, description:`Регламент «${reg.title}»`});
+  });
   root.querySelector('#rgRefresh').onclick = async ()=>{ await loadRegs(true); toast('Обновлено'); };
   const seed = root.querySelector('#rgSeed');
   if(seed) seed.onclick = async ()=>{
@@ -6876,6 +7024,15 @@ function renderRegs(root){
   root.querySelectorAll('[data-rg-task]').forEach(b=> b.onclick = ()=>{
     const t = state.tasksWork.find(x=>x.id===b.dataset.rgTask); if(!t) return;
     if(canEditTask(t,false)) openTaskModal(t.id,false); else openTaskViewModal(t);
+  });
+  root.querySelectorAll('[data-rg-stage]').forEach(b=> b.onclick = async ()=>{
+    const [rid, stg] = b.dataset.rgStage.split(':');
+    const reg = state.regs.find(x=>x.id===rid); if(!reg) return;
+    if(stg==='done' && !await showConfirm(`Отметить регламент «${reg.title}» готовым?`, 'Готово')) return;
+    const today = todayISO();
+    const ok = await mutateRegs(a=> a.map(x=> x.id!==rid ? x : {...x, stage:stg, doneAt: stg==='done'?today:null,
+      moves:(x.moves||[]).concat([{id:uid(), date:today, from:x.holderId||null, to:x.holderId||null, note: stg==='done'?'Утверждён':'Возвращён в работу', by:state.currentUserId, stage:stg}])}));
+    if(ok){ logAudit('reg_moved', `«${reg.title}»: этап → ${REG_STAGES[stg]}`); toast(stg==='done'?'Регламент готов':'Возвращён в работу'); render(); }
   });
   root.querySelectorAll('[data-rg-move]').forEach(b=> b.onclick = ()=>openRegMoveModal(b.dataset.rgMove));
   root.querySelectorAll('[data-rg-edit]').forEach(b=> b.onclick = ()=>openRegEditModal(b.dataset.rgEdit));

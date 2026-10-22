@@ -505,10 +505,13 @@ function mergeVisibleTasks(oldAll, visible, clientArr) {
 const PERSONAL_LEGACY_RE = /^personal:(tasks|projects|funds|events|trash|archiveTasks|archiveEvents)$/;
 // Исключение: личные ФИНАНСЫ Руководителя общие с Ассистентом — Ассистент работает с теми же записями
 // (по решению владельца студии). Личные задачи, события и т. д. по-прежнему закрыты от всех, кроме хозяина.
+// Ассистент ведёт личные финансы и личные события (календарь) Руководителя — для него эти ключи
+// указывают на данные Руководителя. Личные ЗАДАЧИ, проекты, корзина и архив задач остаются закрытыми.
+const ASSISTANT_SHARED_PERSONAL = ['personal:funds', 'personal:events', 'personal:archiveEvents'];
 function personalKeyFor(key, empId, role) {
-  if (key === 'personal:funds' && role === 'Ассистент') {
+  if (ASSISTANT_SHARED_PERSONAL.includes(key) && role === 'Ассистент') {
     const leaderId = getLeaderId();
-    if (leaderId) return `personal:${leaderId}:funds`;
+    if (leaderId) return `personal:${leaderId}:${key.slice('personal:'.length)}`;
   }
   return key.startsWith('personal:') ? `personal:${empId}:${key.slice('personal:'.length)}` : key;
 }
@@ -525,7 +528,7 @@ function stripForeignPersonal(rawSnapshot, empId, role) {
     const leaderId = getLeaderId();
     Object.keys(parsed.data).forEach(k => {
       if (!k.startsWith('personal:')) return;
-      const mine = k.startsWith(`personal:${empId}:`) || (role === 'Ассистент' && k === `personal:${leaderId}:funds`) || (PERSONAL_LEGACY_RE.test(k) && empId === leaderId);
+      const mine = k.startsWith(`personal:${empId}:`) || (role === 'Ассистент' && ASSISTANT_SHARED_PERSONAL.some(sk => k === `personal:${leaderId}:${sk.slice('personal:'.length)}`)) || (PERSONAL_LEGACY_RE.test(k) && empId === leaderId);
       if (!mine) delete parsed.data[k];
     });
     return JSON.stringify(parsed);

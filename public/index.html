@@ -2970,7 +2970,7 @@ function renderOverview(root){
   const orderSiblings = (list0)=>{
     // Если в блоке есть и сама задача, и её подзадачи — подзадачи идут сразу под ней, в порядке шагов.
     const inList = new Set(list0.map(t=>t.id));
-    const siblingCmp = (a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
+    const siblingCmp = compareSiblings;
     const emit = (t, acc)=>{
       acc.push(t);
       list0.filter(c=>c.parentId===t.id).sort(siblingCmp).forEach(c=>emit(c, acc));
@@ -2983,7 +2983,7 @@ function renderOverview(root){
     out.forEach((t,i)=>{ if(t.parentId){ (byParent[t.parentId] = byParent[t.parentId]||[]).push(i); } });
     Object.values(byParent).forEach(idxs=>{
       if(idxs.length<2) return;
-      const sorted = idxs.map(i=>out[i]).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999'));
+      const sorted = idxs.map(i=>out[i]).sort(compareSiblings);
       idxs.forEach((pos,k)=>{ out[pos] = sorted[k]; });
     });
     return out;
@@ -2994,7 +2994,8 @@ function renderOverview(root){
     const timePassed = !overdue && t.deadline===todayISO() && t.deadlineTime && t.deadlineTime < new Date().toTimeString().slice(0,5);
     const personal = state.personalTasks.some(pt=>pt.id===t.id);
     const canComplete = canCompleteTask(t, personal);
-    return `<div class="item"${rank?` data-ov-rank="${t.id}"`:''}${depth?` style="margin-left:${depth*22}px;border-left:2px solid var(--paper-line);"`:''}>
+    return `<div class="item"${rank?` data-ov-rank="${t.id}"`:''}${t.parentId?` data-sub-parent="${t.parentId}" data-sub-row-id="${t.id}"`:''}${depth?` style="margin-left:${depth*22}px;border-left:2px solid var(--paper-line);"`:''}>
+      ${depth>0 ? subMoveHtml(t, personal) : ''}
       ${rank?`<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:none;">
         <button type="button" class="btn ghost small" data-ov-move="${t.id}|up" ${rank.pos===1?'disabled':''} title="Поднять выше" style="padding:0 7px;line-height:1.3;">▲</button>
         <span class="mono" style="font-size:12px;font-weight:700;color:var(--indigo);" title="Место в очереди на сегодня">№${rank.pos}</span>
@@ -3122,7 +3123,7 @@ function renderOverview(root){
           // Подзадачи показываем сразу под главной задачей (в порядке шагов). Блок, в который попадает
           // задача с подзадачами, определяется самым срочным из её пунктов; блоки сортируются по сроку и времени.
           const openIds = new Set(allOpen.map(t=>t.id));
-          const siblingCmp = (x,y)=>((x.sortOrder||0)-(y.sortOrder||0)) || byDeadline(x,y);
+          const siblingCmp = compareSiblings;
           const flatten = (t, depth, acc)=>{
             acc.push({t, depth});
             allOpen.filter(c=>c.parentId===t.id).sort(siblingCmp).forEach(c=>flatten(c, depth+1, acc));
@@ -3197,6 +3198,7 @@ function renderOverview(root){
     state.overviewApprovedCollapsed = !state.overviewApprovedCollapsed;
     render();
   };
+  wireSubtaskMoves(root);
   const toggleOverdueBtn = document.getElementById('toggleOverdueList');
   if(toggleOverdueBtn) toggleOverdueBtn.onclick=()=>{
     state.overviewOverdueCollapsed = !state.overviewOverdueCollapsed;
@@ -4170,6 +4172,62 @@ function renderOverdueReasonBlock(t, personal){
     <div class="overdue-reason-label">⚠️ Задача просрочена — ожидается причина задержки от ${t.assigneeId?escapeHtml(empName(t.assigneeId)):'исполнителя (не назначен)'}</div>
   </div>`;
 }
+/* ---------------- порядок подзадач ----------------
+   Подзадачи одной задачи везде (в «Задачах» и в «Обзоре») идут в одном порядке: ручной (sortOrder),
+   а пока он не задан — по сроку (дате); при равенстве остаётся порядок, в котором их поставили. */
+function compareSiblings(a,b){
+  return ((a.sortOrder||0)-(b.sortOrder||0)) || (a.deadline||'9999').localeCompare(b.deadline||'9999');
+}
+function canReorderSubtasks(parentId, personal){
+  if(hasRole('Руководитель','Ассистент')) return true;
+  const parent = tasksFor(personal).find(x=>x.id===parentId);
+  return !!parent && canEditTask(parent, personal);
+}
+// Стрелки ▲▼ у подзадачи (рисуются слева; доступность крайних кнопок выставляет wireSubtaskMoves)
+function subMoveHtml(t, personal){
+  if(!t.parentId || !canReorderSubtasks(t.parentId, personal)) return '';
+  return `<div class="sub-move" style="display:flex;flex-direction:column;gap:2px;flex:none;">
+    <button type="button" class="btn ghost small" data-sub-move="${t.id}|up" title="Поднять подзадачу выше" style="padding:0 7px;line-height:1.3;">▲</button>
+    <button type="button" class="btn ghost small" data-sub-move="${t.id}|down" title="Опустить подзадачу ниже" style="padding:0 7px;line-height:1.3;">▼</button>
+  </div>`;
+}
+async function moveSubtask(id, neighborId, personal){
+  await refreshTasksFromServer(personal);
+  const before = tasksFor(personal);
+  const me = before.find(t=>t.id===id);
+  if(!me || !me.parentId) return;
+  if(!canReorderSubtasks(me.parentId, personal)){ toast('Менять порядок подзадач может тот, кто поставил задачу, либо Руководитель/Ассистент'); return; }
+  const sibs = before.filter(t=>t.parentId===me.parentId).sort(compareSiblings);
+  const i = sibs.findIndex(t=>t.id===id), j = sibs.findIndex(t=>t.id===neighborId);
+  if(i<0 || j<0) return;
+  [sibs[i], sibs[j]] = [sibs[j], sibs[i]];
+  const orderMap = {}; sibs.forEach((t,k)=>{ orderMap[t.id] = (k+1)*10; });
+  async function saveSubOrder(){
+    setTasksFor(personal, before.map(t=> orderMap[t.id]!==undefined ? {...t, sortOrder: orderMap[t.id]} : t));
+    const ok = await persistTasksFor(personal);
+    if(!ok){ setTasksFor(personal, before); saveFailedToast(saveSubOrder); }
+    render();
+  }
+  await saveSubOrder();
+}
+function wireSubtaskMoves(container){
+  const rows = Array.from(container.querySelectorAll('[data-sub-parent]'));
+  const byParent = {};
+  rows.forEach(r=>{ (byParent[r.dataset.subParent] = byParent[r.dataset.subParent]||[]).push(r); });
+  container.querySelectorAll('[data-sub-move]').forEach(btn=>{
+    const [id, dir] = btn.dataset.subMove.split('|');
+    const row = btn.closest('[data-sub-parent]'); if(!row) return;
+    const sibs = byParent[row.dataset.subParent] || [];
+    const idx = sibs.indexOf(row);
+    const nb = sibs[dir==='up' ? idx-1 : idx+1];
+    if(!nb){ btn.disabled = true; return; }
+    btn.onclick = (e)=>{
+      e.stopPropagation();
+      const personal = state.personalTasks.some(pt=>pt.id===id);
+      moveSubtask(id, nb.dataset.subRowId, personal);
+    };
+  });
+}
 function taskItemHtml(t, personal, opts){
   opts = opts || {};
   const depth = opts.depth||0;
@@ -4181,9 +4239,10 @@ function taskItemHtml(t, personal, opts){
   const checkInteractive = t.status==='done' ? false : canComplete;
   const checkTitle = t.status==='done' ? 'Задача принята постановщиком' : (canComplete ? (t.status==='review' ? 'Отменить и вернуть в работу' : 'Отметить выполненной') : whyCantComplete(t, personal));
   return `
-    <div class="item ${t.status==='done'?'is-done':''}" data-task-row="${t.id}" data-depth="${depth}" style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
+    <div class="item ${t.status==='done'?'is-done':''}" data-task-row="${t.id}" data-depth="${depth}"${t.parentId?` data-sub-parent="${t.parentId}" data-sub-row-id="${t.id}"`:''} style="${depth>0?`margin-left:${depth*24}px;border-left:2px solid var(--paper-line);`:''}">
       ${opts.bulkSelect && depth===0?`<input type="checkbox" class="task-check" data-bulk-select="${t.id}" ${opts.bulkSelected?'checked':''} title="Выбрать для массового действия">`:''}
       ${depth===0 && opts.dragEnabled!==false?`<span class="drag-handle" data-drag-handle="${t.id}" title="Перетащить, чтобы изменить порядок">⠿</span>`:''}
+      ${depth>0 ? subMoveHtml(t, personal) : ''}
       <input type="checkbox" class="task-check${checkInteractive?'':' task-check-locked'}" data-done="${t.id}" ${isChecked?'checked':''} ${checkInteractive?'':'disabled'} title="${checkTitle}">
       <div class="main">
         <div class="title">
@@ -4491,7 +4550,7 @@ function renderTaskBoard(el, personal){
   roots.sort(taskComparator);
 
   function renderNode(t, depth){
-    const children = list.filter(c=>c.parentId===t.id).sort(taskComparator);
+    const children = list.filter(c=>c.parentId===t.id).sort(compareSiblings);
     const allTasks = tasksFor(personal);
     const orphanParent = (t.parentId && !byId[t.parentId]) ? allTasks.find(x=>x.id===t.parentId) : null;
     const collapsed = state.collapsedTaskIds.has(t.id);
@@ -4523,6 +4582,7 @@ function renderTaskBoard(el, personal){
   if(toggleBtn) toggleBtn.onclick = ()=>{ state.taskBoardShowDone = !state.taskBoardShowDone; render(); };
   wireTaskActions(listEl, personal);
   wireTaskDragReorder(listEl, personal, roots.map(t=>t.id));
+  wireSubtaskMoves(listEl);
 
   const bulkBarEl = el.querySelector('#bulkActionBar');
   if(bulkBarEl){

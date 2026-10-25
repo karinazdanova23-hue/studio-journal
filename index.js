@@ -479,6 +479,8 @@ function makeTaskVisibility(employee) {
   return (t) => {
     if (!t) return false;
     if (t.assigneeId === employee.id || t.creatorId === employee.id) return true;
+    // задачи по заявкам B2B общие для менеджеров по продажам (база заявок у них общая; иначе при передаче заявки задачи задваивались бы)
+    if (t.b2bLeadId && employee.role === 'Менеджер') return true;
     const a = t.assigneeId ? byId[t.assigneeId] : null;
     return !!(a && isSubordinateRole(employee.role, a.role));
   };
@@ -794,7 +796,10 @@ app.post('/api/employees/:id/password', async (req, res) => {
 // ---------- универсальное хранилище ключ-значение (замена window.storage) ----------
 // Регламенты (кто сейчас держит какой регламент) — только Руководитель, Ассистент, Старший администратор
 function regsKeyDenied(key, role) {
-  return key === 'regs:list' && !['Руководитель', 'Ассистент', 'Старший администратор'].includes(role);
+  if (key === 'regs:list') return !['Руководитель', 'Ассистент', 'Старший администратор'].includes(role);
+  // B2B-заявки и клиентская база — Руководитель, Ассистент и менеджеры по продажам
+  if (key === 'b2b:data') return !['Руководитель', 'Ассистент', 'Менеджер'].includes(role);
+  return false;
 }
 app.get('/api/storage/:key', requireAuth, (req, res) => {
   const key = req.params.key;

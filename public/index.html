@@ -868,7 +868,7 @@ const state = {
   archiveSubtab:'work',
   regs:null,
   b2b:null,
-  b2bState:{loading:false, error:false, loadedAt:0, view:'funnel', dir:'all', mgr:null, q:'', showClosed:false, openId:null, clientQ:'', pipe:'main', tag:'all'},
+  b2bState:{loading:false, error:false, loadedAt:0, view:'funnel', dir:'all', mgr:null, q:'', showClosed:false, openId:null, clientQ:'', pipe:'main', tag:'all', sel:null, noStep:false, robotsAt:0, robotsRunning:false},
   projListCollapsed:(()=>{ try{ const v = localStorage.getItem('lj:ui:projCollapsed'); return v===null ? true : v==='1'; }catch(e){ return true; } })(),
   regsState:{loading:false, error:false, loadedAt:0, prio:'all', openId:null, view:'board', q:''},
   analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{info:true, feedback:true, control:true, solutions:true, pr:true, other:true, none:true}},
@@ -2844,6 +2844,7 @@ async function checkTaskApprovedTick(){
 
 function render(){
   renderTabs();
+  { const wr = document.querySelector('.wrap'); if(wr) wr.style.maxWidth = ''; }
   const root = document.getElementById('appContent');
   if(!state.loaded){ root.innerHTML = `<div class="empty-state"><div class="big">Загрузка…</div></div>`; return; }
   if(state.tab==='overview') renderOverview(root);
@@ -7576,7 +7577,8 @@ function b2bNormalize(o){
   const base = (o && typeof o==='object' && !Array.isArray(o)) ? o : {};
   return {clients:Array.isArray(base.clients)?base.clients:[], leads:Array.isArray(base.leads)?base.leads:[], schedule:(base.schedule&&typeof base.schedule==='object')?base.schedule:{},
     pipelines:(Array.isArray(base.pipelines)&&base.pipelines.length)?base.pipelines:[{id:'main', name:'Основная'}],
-    lostReasons:Array.isArray(base.lostReasons)?base.lostReasons:[]};
+    lostReasons:Array.isArray(base.lostReasons)?base.lostReasons:[],
+    fields:Array.isArray(base.fields)?base.fields:null, robots:Array.isArray(base.robots)?base.robots:null};
 }
 async function loadB2B(force){
   const st = state.b2bState;
@@ -7593,15 +7595,16 @@ async function loadB2B(force){
   if(state.tab==='b2b' || state.tab==='overview') render();
 }
 // как и у регламентов: берём свежие данные, применяем правку, сохраняем. Не прочитали — не пишем.
-async function mutateB2B(mutator){
+async function mutateB2B(mutator, opts){
   const r = await sGetState('b2b:data', true);
   let base;
   if(r.status==='ok'){ let o=null; try{ o=JSON.parse(r.value); }catch(e){} if(!o || typeof o!=='object'){ toast('⚠️ Не удалось прочитать B2B-данные — изменение не сохранено'); return false; } base = b2bNormalize(o); }
   else if(r.status==='missing'){ base = b2bNormalize(null); }
   else { if(r.status==='failed') toast('⚠️ Нет связи с сервером — изменение не сохранено, повторите'); return false; }
-  const copy = {clients:base.clients.map(x=>({...x})), leads:base.leads.map(x=>({...x, log:(x.log||[]).slice(), tasks:(x.tasks||[]).slice(), tags:(x.tags||[]).slice(), links:(x.links||[]).slice()})), schedule:{...base.schedule}, pipelines:base.pipelines.map(x=>({...x})), lostReasons:base.lostReasons.map(x=>({...x}))};
+  const copy = {clients:base.clients.map(x=>({...x})), leads:base.leads.map(x=>({...x, log:(x.log||[]).slice(), tasks:(x.tasks||[]).slice(), tags:(x.tags||[]).slice(), links:(x.links||[]).slice(), custom:{...(x.custom||{})}, fired:(x.fired||[]).slice()})), schedule:{...base.schedule}, pipelines:base.pipelines.map(x=>({...x})), lostReasons:base.lostReasons.map(x=>({...x})), fields:base.fields?base.fields.map(x=>({...x})):null, robots:base.robots?base.robots.map(x=>({...x})):null};
   const next = mutator(copy);
   if(!next) return false;
+  if(!(opts && opts.skipRobots)) b2bApplyRobots(next, false);
   const ok = await sSet('b2b:data', JSON.stringify(next), true);
   if(!ok){ saveFailedToast(); return false; }
   state.b2b = next; state.b2bState.loadedAt = Date.now(); state.b2bState.error = false;
@@ -7649,6 +7652,7 @@ function b2bLeadCard(l, today, open){
     ${(()=>{ const rs=b2bClientStats(l.clientId,l.id); return rs.others.length?`<div class="subtitle" style="font-size:12.5px;">🔁 ${rs.won?`уже ${rs.won} сделк. на ${b2bMoney(rs.sum)}`:'есть другие заявки: '+rs.others.length}</div>`:''; })()}
     ${(l.links||[]).length?`<div class="subtitle" style="font-size:12.5px;">📎 документов: ${l.links.length}</div>`:''}
     ${b2bIsOpen(l)?`<div style="font-size:13px;margin-top:4px;">${escapeHtml(b2bNextAction(l))}</div>`:''}
+    ${b2bIsOpen(l)&&!due?`<div class="subtitle" style="font-size:12.5px;color:var(--brick);font-weight:600;">⚠ нет следующего шага</div>`:''}
     ${due?`<div class="subtitle" style="font-size:12.5px;${over?'color:var(--brick);font-weight:600;':isToday?'color:var(--ochre);font-weight:600;':''}">⏰ ${isToday?'сегодня':fmtDate(due)}${over?' — просрочено':''}${off?' ⚠️ у менеджера выходной':''}</div>`:''}
     ${l.stage==='won'?`<div class="subtitle" style="font-size:12.5px;">💰 ${b2bMoney(l.dealSum||l.forecast)} · ${l.doneAt?fmtDate(l.doneAt):''}</div>`:(l.forecast?`<div class="subtitle" style="font-size:12.5px;">💰 прогноз ${b2bMoney(l.forecast)}</div>`:'')}
     ${l.stage==='lost'&&l.lostReason?`<div class="subtitle" style="font-size:12.5px;">Причина: ${escapeHtml(l.lostReason)}</div>`:''}
@@ -7671,6 +7675,7 @@ function b2bLeadCard(l, today, open){
 function renderB2B(root){
   if(!b2bAccess()){ root.innerHTML = accessDeniedScreen('B2B доступен Руководителю, Ассистенту и менеджерам по продажам.'); return; }
   const st = state.b2bState;
+  { const wr = document.querySelector('.wrap'); if(wr && st.view==='funnel') wr.style.maxWidth = 'min(1900px,98vw)'; }
   if(st.mgr===null || st.mgr===undefined) st.mgr = (hasRole('Менеджер') && !b2bLeader()) ? 'me' : 'all';
   if(state.b2b===null){
     if(!st.loading && !st.error) loadB2B(true);
@@ -7688,6 +7693,7 @@ function renderB2B(root){
   const match = l=>{
     if(b2bPipeOf(l)!==st.pipe) return false;
     if(st.tag!=='all' && !(l.tags||[]).includes(st.tag)) return false;
+    if(st.noStep && !(b2bIsOpen(l) && !b2bDue(l))) return false;
     if(st.dir!=='all' && l.direction!==st.dir) return false;
     if(mgrId!=='all' && (l.managerId||'')!==(mgrId==='none'?'':mgrId)) return false;
     if(q){ const c=b2bClient(l.clientId)||{}; const hay=[c.name,c.person,c.phone,c.niche,l.source,l.comment].join(' ').toLowerCase(); if(!hay.includes(q)) return false; }
@@ -7698,6 +7704,7 @@ function renderB2B(root){
   const closed = leads.filter(l=>!b2bIsOpen(l));
   const onShift = b2bManagers().filter(e=>b2bWorks(e.id,today)===true).map(e=>e.name);
   const overdueN = open.filter(l=>b2bDue(l) && b2bDue(l)<today).length;
+  const noStepN = state.b2b.leads.filter(l=>b2bPipeOf(l)===st.pipe && b2bIsOpen(l) && !b2bDue(l)).length;
   const mgrOpts = `<option value="all" ${st.mgr==='all'?'selected':''}>Все менеджеры</option><option value="me" ${st.mgr==='me'?'selected':''}>Мои</option>` +
     b2bManagers().filter(e=>e.id!==state.currentUserId).map(e=>`<option value="${e.id}" ${st.mgr===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('') +
     `<option value="none" ${st.mgr==='none'?'selected':''}>Не назначен</option>`;
@@ -7718,7 +7725,7 @@ function renderB2B(root){
     const cq = (st.clientQ||'').trim().toLowerCase();
     const cl = state.b2b.clients.filter(c=>!cq || [c.name,c.person,c.phone,c.niche,c.instagram].join(' ').toLowerCase().includes(cq))
       .sort((a,b)=>(a.name||'').localeCompare(b.name||'','ru'));
-    body = `<div style="margin-bottom:10px;"><input id="b2ClientSearch" type="search" placeholder="🔎 Поиск по клиентам" value="${escapeHtml(st.clientQ||'')}" style="max-width:320px;"></div>` +
+    body = `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><input id="b2ClientSearch" type="search" placeholder="🔎 Поиск по клиентам" value="${escapeHtml(st.clientQ||'')}" style="max-width:320px;"><button class="btn ghost small" id="b2Dups">🔍 Дубли${b2bDupGroups().length?' ('+b2bDupGroups().length+')':''}</button></div>` +
       (cl.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px;">${cl.map(c=>{
         const ls = state.b2b.leads.filter(l=>l.clientId===c.id); const op = ls.filter(b2bIsOpen).length;
         return `<div class="item" style="display:block;">
@@ -7736,26 +7743,26 @@ function renderB2B(root){
     body = b2bFunnelHTML(open, closed, today);
   }
   root.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
-      <div><h2 style="margin:0;">🤝 B2B — заявки от бизнеса</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+      <div><h2 style="margin:0;font-size:20px;">🤝 B2B — заявки от бизнеса</h2>
         <div class="subtitle">В работе: ${open.length}${overdueN?` · <span style="color:var(--brick);font-weight:600;">просрочено ${overdueN}</span>`:''} · закрыто: ${closed.length} · сегодня на смене: ${onShift.length?escapeHtml(onShift.join(', ')):'график не задан'}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button class="btn ghost small" id="b2Sched">🗓 График менеджеров</button>
-        ${b2bLeader()?'<button class="btn ghost small" id="b2Reasons">⚙ Причины отказов</button><button class="btn ghost small" id="b2Import">📥 Импорт</button>':''}
+        ${b2bLeader()?'<button class="btn ghost small" id="b2Settings">⚙ Настройки</button>':''}
         <button class="btn ghost small" id="b2Csv">⬇ CSV</button>
         <button class="btn ghost small" id="b2Refresh">↻ Обновить</button>
         <button class="btn" id="b2Add">+ Заявка</button>
       </div>
     </div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center;">
       ${state.b2b.pipelines.map(pp=>{ const n=state.b2b.leads.filter(l=>b2bPipeOf(l)===pp.id && b2bIsOpen(l)).length; return `<button class="cat-chip ${st.pipe===pp.id?'':'off'}" data-b2-pipe="${pp.id}">${escapeHtml(pp.name)} <span class="count">${n}</span></button>`; }).join('')}
       ${b2bLeader()?`<button class="btn ghost small" id="b2PipeAdd" title="Новая воронка">＋ воронка</button><button class="btn ghost small" id="b2PipeEdit" title="Переименовать или удалить текущую воронку">✎</button>`:''}
-    </div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+      <span style="width:10px;"></span>
       ${Object.entries(views).map(([k,v])=>`<button class="subtab-btn ${st.view===k?'active':''}" data-b2-view="${k}">${v}</button>`).join('')}
     </div>
-    ${st.view!=='clients'?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
+    ${st.view!=='clients'?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center;">
       ${[['all','Все'],['in','⬇ Входящие'],['out','⬆ Исходящие']].map(([k,v])=>`<button class="subtab-btn ${st.dir===k?'active':''}" data-b2-dir="${k}">${v}</button>`).join('')}
+      <button class="subtab-btn ${st.noStep?'active':''}" id="b2NoStep" title="Открытые заявки, у которых нет срока и задачи">⚠ Без шага${noStepN?' ('+noStepN+')':''}</button>
       <select id="b2Mgr" style="width:auto;">${mgrOpts}</select>
       ${b2bAllTags().length?`<select id="b2Tag" style="width:auto;"><option value="all">Все теги</option>${b2bAllTags().map(t=>`<option value="${escapeHtml(t)}" ${st.tag===t?'selected':''}>#${escapeHtml(t)}</option>`).join('')}</select>`:''}
       <input id="b2Search" type="search" placeholder="🔎 Поиск" value="${escapeHtml(st.q||'')}" style="width:auto;min-width:150px;flex:1;max-width:240px;">
@@ -7764,8 +7771,9 @@ function renderB2B(root){
   const $ = s=>root.querySelector(s);
   $('#b2Add').onclick = ()=>openB2bLeadModal(null);
   $('#b2Sched').onclick = openB2bScheduleModal;
-  const rb = $('#b2Reasons'); if(rb) rb.onclick = openB2bReasonsModal;
-  const ib = $('#b2Import'); if(ib) ib.onclick = openB2bImportModal;
+  const nsb = $('#b2NoStep'); if(nsb) nsb.onclick = ()=>{ st.noStep=!st.noStep; render(); };
+  const sb = $('#b2Settings'); if(sb) sb.onclick = openB2bSettingsModal;
+  b2bMaybeRunRobots();
   $('#b2Csv').onclick = ()=>exportB2bCSV(leads);
   $('#b2Refresh').onclick = async ()=>{ await loadB2B(true); toast('Обновлено'); };
   root.querySelectorAll('[data-b2-view]').forEach(b=>b.onclick=()=>{ st.view=b.dataset.b2View; render(); });
@@ -7793,6 +7801,7 @@ function renderB2B(root){
   const ms = $('#b2Mgr'); if(ms) ms.onchange = ()=>{ st.mgr=ms.value; render(); };
   const si = $('#b2Search'); if(si) si.oninput = ()=>{ st.q=si.value; render(); const n=document.getElementById('b2Search'); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
   const cs = $('#b2ClientSearch'); if(cs) cs.oninput = ()=>{ st.clientQ=cs.value; render(); const n=document.getElementById('b2ClientSearch'); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } };
+  const dpb = $('#b2Dups'); if(dpb) dpb.onclick = openB2bDupsModal;
   const sc = $('#b2ShowClosed'); if(sc) sc.onclick = ()=>{ st.showClosed=!st.showClosed; render(); };
   root.querySelectorAll('[data-b2-toggle]').forEach(b=>b.onclick=()=>openB2bCardModal(b.dataset.b2Toggle));
   b2bWireFunnel(root);
@@ -7830,9 +7839,9 @@ function b2bStatsHTML(leads){
 }
 
 function exportB2bCSV(leads){
-  const head = ['Воронка','Теги','Источник','Направление','Менеджер','Название','Имя','Должность','Instagram','Ниша','Описание деятельности','Штат','Адрес','Контакт','Дата заведения','Этап','Дедлайн','Формат встречи','Дата встречи/звонка','Дата проведения','Дата отправки КП','Прогнозная выручка','Сумма сделки','Причина отказа','Комментарий'];
+  const head = ['Воронка','Теги','Источник','Направление','Менеджер','Название','Имя','Должность','Instagram','Ниша','Описание деятельности','Штат','Адрес','Контакт','Дата заведения','Этап','Дедлайн','Формат встречи','Дата встречи/звонка','Дата проведения','Дата отправки КП','Прогнозная выручка','Сумма сделки','Причина отказа','Комментарий'].concat(b2bFields().filter(f=>!f.hidden).map(f=>f.label));
   const rows = leads.map(l=>{ const c=b2bClient(l.clientId)||{};
-    return [b2bPipeName(b2bPipeOf(l)),(l.tags||[]).join(', '),l.source,l.direction==='out'?'исходящая':'входящая',l.managerId?empName(l.managerId):'',c.name,c.person,c.position,c.instagram,c.niche,c.activity,c.staff,c.address,c.phone,l.createdAt,B2B_STAGES[l.stage],l.deadline,l.meetingKind==='call'?'звонок':(l.meetingKind?'встреча':''),l.meetingDate,l.meetingDoneDate,l.kpDate,l.forecast,l.dealSum,l.lostReason,l.comment].map(csvEscape).join(';'); });
+    return [b2bPipeName(b2bPipeOf(l)),(l.tags||[]).join(', '),l.source,l.direction==='out'?'исходящая':'входящая',l.managerId?empName(l.managerId):'',c.name,c.person,c.position,c.instagram,c.niche,c.activity,c.staff,c.address,c.phone,l.createdAt,B2B_STAGES[l.stage],l.deadline,l.meetingKind==='call'?'звонок':(l.meetingKind?'встреча':''),l.meetingDate,l.meetingDoneDate,l.kpDate,l.forecast,l.dealSum,l.stage==='lost'?b2bReasonLabel(l):'',l.comment].concat(b2bFields().filter(f=>!f.hidden).map(f=>(l.custom||{})[f.id]===undefined?'':(l.custom||{})[f.id])).map(csvEscape).join(';'); });
   downloadTextFile(`b2b-${todayISO()}.csv`, 'text/csv;charset=utf-8', '\uFEFF'+[head.map(csvEscape).join(';')].concat(rows).join('\r\n'));
 }
 
@@ -7877,7 +7886,7 @@ function openB2bLeadModal(leadId, presetClientId){
       ${lead?'':`<option value="">＋ Новый клиент</option>`}
       ${clients.map(c=>`<option value="${c.id}" ${c.id===curClient?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select></div>
     <div id="b2RepeatHint">${curClient?b2bRepeatHTML(curClient, leadId):''}</div>
-    <div id="b2NewClient" style="${curClient?'display:none;':''}">${b2bClientFieldsHTML(null,'b2n_')}</div>
+    <div id="b2NewClient" style="${curClient?'display:none;':''}">${b2bClientFieldsHTML(null,'b2n_')}<div id="b2DupHint" style="font-size:12.5px;color:var(--brick);"></div></div>
     <div class="field-row">
       <div class="field"><label>Направление</label><select id="b2Dir">
         <option value="in" ${!lead||lead.direction!=='out'?'selected':''}>⬇ Входящая (клиент сам написал)</option>
@@ -7901,6 +7910,7 @@ function openB2bLeadModal(leadId, presetClientId){
       ${lead?`<div class="field"><label>Этап</label><select id="b2Stage">${Object.keys(B2B_STAGES).map(s=>`<option value="${s}" ${lead.stage===s?'selected':''}>${B2B_STAGES[s]}</option>`).join('')}</select></div>`:''}
       <div class="field"><label>Прогнозная выручка, ₽</label><input type="number" min="0" id="b2Forecast" value="${lead&&lead.forecast?lead.forecast:''}"></div>
     </div>
+    ${b2bCustomInputsHTML(lead)}
     <div class="field"><label>Комментарий</label><textarea id="b2Comment" rows="2">${escapeHtml(lead?lead.comment||'':'')}</textarea></div>
     <div class="modal-actions">
       ${lead&&b2bLeader()?'<button class="btn danger" id="b2Del" style="margin-right:auto;">Удалить</button>':''}
@@ -7918,6 +7928,10 @@ function openB2bLeadModal(leadId, presetClientId){
     $('b2DlHint').textContent = (m && dl && b2bWorks(m,dl)===false) ? `⚠️ у менеджера выходной; ближайший рабочий: ${fmtDate(b2bNextWork(m,dl,true))}` : '';
   };
   $('b2Client').onchange = ()=>{ $('b2NewClient').style.display = $('b2Client').value ? 'none' : ''; $('b2RepeatHint').innerHTML = $('b2Client').value ? b2bRepeatHTML($('b2Client').value, leadId) : ''; };
+  const dupHint = ()=>{ const el=$('b2DupHint'); if(!el||!$('b2n_name')) return; const d0=b2bFindDupClient($('b2n_name').value,$('b2n_phone').value);
+    el.innerHTML = d0 ? `⚠️ Такой клиент уже есть: <strong>${escapeHtml(d0.name)}</strong>${d0.phone?' ('+escapeHtml(d0.phone)+')':''} <button class="btn small" id="b2DupUse" type="button">Выбрать его</button>` : '';
+    const u=$('b2DupUse'); if(u) u.onclick=()=>{ $('b2Client').value=d0.id; $('b2Client').onchange(); }; };
+  if($('b2n_name')){ $('b2n_name').oninput = dupHint; $('b2n_phone').oninput = dupHint; }
   $('b2Created').onchange = recompute;
   $('b2Mgr2').onchange = ()=>{ mgrTouched = true; recompute(); };
   $('b2Deadline').onchange = ()=>{ dlTouched = true; recompute();
@@ -7938,7 +7952,9 @@ function openB2bLeadModal(leadId, presetClientId){
     if(!clientId){
       const v = b2bReadClient('b2n_');
       if(!v.name){ toast('Укажите название компании'); return; }
-      const dup = state.b2b.clients.find(c=>(c.name||'').trim().toLowerCase()===v.name.toLowerCase());
+      let dup = state.b2b.clients.find(c=>(c.name||'').trim().toLowerCase()===v.name.toLowerCase());
+      if(!dup){ const byPhone = b2bFindDupClient(v.name, v.phone);
+        if(byPhone && await showConfirm(`Телефон совпадает с клиентом «${byPhone.name}». Добавить заявку ему, а не создавать нового клиента?`, 'Да, ему')) dup = byPhone; }
       if(dup){ clientId = dup.id; }
       else { newClient = {id:uid(), ...v, createdAt:today}; clientId = newClient.id; }
     }
@@ -7946,7 +7962,7 @@ function openB2bLeadModal(leadId, presetClientId){
       direction: $('b2Dir').value, source: $('b2Source').value.trim(), createdAt: $('b2Created').value || today,
       managerId: $('b2Mgr2').value || '', deadline: $('b2Deadline').value || '',
       forecast: Number($('b2Forecast').value)||0, comment: $('b2Comment').value.trim(),
-      pipelineId: $('b2Pipe').value, tags: b2bParseTags($('b2Tags').value),
+      pipelineId: $('b2Pipe').value, tags: b2bParseTags($('b2Tags').value), custom: b2bReadCustom(lead?lead.custom:null),
     };
     const stageSel = $('b2Stage') ? $('b2Stage').value : null;
     const ok = await mutateB2B(d=>{
@@ -8102,40 +8118,64 @@ function b2bMoveTo(id, target){
   else if(target==='kp') openB2bStepModal(id, l.stage==='meet'?'done':'kp');
   else openB2bStepModal(id, target); // sent / won / lost
 }
+// компактная карточка для доски (как в amoCRM): подробности, «Отказ», «Передать», «Изм.» — в карточке сделки по клику
+function b2bLeadCardCompact(l, today){
+  const c = b2bClient(l.clientId) || {};
+  const due = b2bDue(l);
+  const over = !!due && due<today, isToday = due===today;
+  const off = !!due && l.managerId && b2bWorks(l.managerId,due)===false;
+  const prim = {
+    new: `<button class="btn small" data-b2-act="${l.id}:kp" title="Сразу коммерческое предложение">КП</button><button class="btn small" data-b2-act="${l.id}:meet">Встреча</button>`,
+    meet: `<button class="btn small" data-b2-act="${l.id}:done">Проведена → КП</button><button class="btn ghost small" data-b2-act="${l.id}:meet" title="Перенести встречу / звонок">↻</button>`,
+    kp: `<button class="btn small" data-b2-act="${l.id}:sent">КП отправлено</button>`,
+    sent: `<button class="btn small" data-b2-act="${l.id}:won">Сделка ✓</button>`,
+  }[l.stage] || `<button class="btn ghost small" data-b2-act="${l.id}:reopen">↩ В работу</button>`;
+  const rs = b2bClientStats(l.clientId, l.id);
+  const extra = [ (l.stage==='won' ? '💰 '+b2bMoney(l.dealSum||l.forecast) : (l.forecast?'💰 '+b2bMoney(l.forecast):'')),
+    rs.others.length?'🔁':'', (l.links||[]).length?'📎'+l.links.length:'', b2bOpenTasks(l).length?'☑'+b2bOpenTasks(l).length:'' ].filter(Boolean).join(' · ');
+  return `<div class="item" style="display:block;padding:8px 9px;margin-bottom:6px;" data-b2-id="${l.id}" draggable="true">
+    <div style="display:flex;justify-content:space-between;gap:4px;align-items:baseline;">
+      <input type="checkbox" data-b2-sel="${l.id}" style="margin:0 2px 0 0;flex:none;">
+      <strong style="flex:1;min-width:0;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" data-b2-toggle="${l.id}" title="${escapeHtml(c.name||'')}">${escapeHtml(c.name||'(клиент удалён)')}</strong>
+      <span title="${l.direction==='out'?'исходящая':'входящая'}" style="font-size:12px;">${l.direction==='out'?'⬆':'⬇'}</span></div>
+    <div class="subtitle" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml([l.managerId?empName(l.managerId):'не назначен', l.source].filter(Boolean).join(' · '))}</div>
+    ${b2bIsOpen(l)?`<div style="font-size:12.5px;line-height:1.25;margin-top:2px;">${escapeHtml(b2bNextAction(l))}</div>`:''}
+    ${b2bIsOpen(l)&&!due?`<div style="font-size:12px;color:var(--brick);font-weight:600;">⚠ нет следующего шага</div>`:''}
+    ${due?`<div style="font-size:12px;${over?'color:var(--brick);font-weight:600;':isToday?'color:var(--ochre);font-weight:600;':'color:var(--ink-soft);'}">⏰ ${isToday?'сегодня':fmtDate(due)}${over?' · просрочено':''}${off?' ⚠️':''}</div>`:''}
+    ${l.stage==='lost'?`<div class="subtitle" style="font-size:12px;">${escapeHtml(b2bReasonLabel(l))}</div>`:''}
+    ${(l.tags||[]).length?`<div style="margin-top:2px;">${b2bTagChips(l)}</div>`:''}
+    ${extra?`<div class="subtitle" style="font-size:12px;">${extra}</div>`:''}
+    <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">${prim}</div>
+  </div>`;
+}
 function b2bFunnelHTML(open, closed, today){
   const st = state.b2bState;
   const sumOf = (arr,f)=>arr.reduce((s,l)=>s+(Number(f(l))||0),0);
   const byDue = (a,b)=>(b2bDue(a)||'9999').localeCompare(b2bDue(b)||'9999');
   const cols = B2B_OPEN.map(s=>{ const items=open.filter(l=>l.stage===s).sort(byDue); return {s, items, sum:sumOf(items,l=>l.forecast)}; });
-  const wonL = closed.filter(l=>l.stage==='won').sort((a,b)=>(b.doneAt||'').localeCompare(a.doneAt||''));
-  const lostL = closed.filter(l=>l.stage==='lost').sort((a,b)=>(b.doneAt||'').localeCompare(a.doneAt||''));
-  const total = Math.max(1, open.length + closed.length);
-  const lim = st.showClosed ? 1000 : 4;
+  const byDone = (a,b)=>(b.doneAt||'').localeCompare(a.doneAt||'');
+  const wonL = closed.filter(l=>l.stage==='won').sort(byDone);
+  const lostL = closed.filter(l=>l.stage==='lost').sort(byDone);
+  cols.push({s:'won', items:wonL, sum:sumOf(wonL,l=>l.dealSum||l.forecast)});
+  cols.push({s:'lost', items:lostL, sum:sumOf(lostL,l=>l.forecast)});
+  const col = c=>`<div data-b2-drop="${c.s}" style="flex:1 1 0;min-width:175px;display:flex;flex-direction:column;min-height:0;background:${c.s==='won'?'var(--teal-bg)':'var(--paper,#faf8f3)'};border:1px solid var(--paper-line);border-top:4px solid ${B2B_COLORS[c.s]};border-radius:10px;">
+      <div style="padding:8px 9px 4px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:4px;"><label style="display:flex;gap:5px;align-items:baseline;cursor:pointer;"><input type="checkbox" data-b2-selcol="${c.s}" title="Выбрать все в колонке" style="margin:0;"><strong style="font-size:13.5px;">${B2B_STAGES[c.s]}</strong></label><span class="count">${c.items.length}</span></div>
+        <div class="subtitle" style="font-size:12px;">${c.s==='lost'?'потеряно ':''}${b2bMoney(c.sum)}</div>
+        ${c.s==='new'?`<div style="display:flex;gap:3px;margin-top:6px;"><input id="b2QName" placeholder="＋ Быстро: компания" style="flex:1;min-width:0;padding:5px 7px;font-size:12.5px;"><input id="b2QPhone" placeholder="Тел." style="width:62px;padding:5px 6px;font-size:12.5px;"><button class="btn small" id="b2QAdd">＋</button></div>`:''}
+      </div>
+      <div style="overflow-y:auto;flex:1;padding:4px 7px 7px;">
+        ${c.items.length?c.items.slice(0,60).map(l=>b2bLeadCardCompact(l,today)).join(''):'<div class="subtitle" style="font-size:12px;padding:4px;">Перетащите заявку сюда</div>'}
+      </div></div>`;
+  const total = open.length + closed.length;
   const bar = Object.keys(B2B_STAGES).map(s=>{ const n = (b2bIsOpen({stage:s})?open:closed).filter(l=>l.stage===s).length;
-    return n ? `<div title="${B2B_STAGES[s]}: ${n}" style="flex:${n};background:${B2B_COLORS[s]};color:#fff;font-size:11.5px;padding:3px 6px;overflow:hidden;white-space:nowrap;">${B2B_STAGES[s]} · ${n}</div>` : ''; }).join('');
-  const box = 'background:var(--paper,#faf8f3);border:1px solid var(--paper-line);border-radius:10px;padding:10px;';
-  return `<div style="display:flex;border-radius:8px;overflow:hidden;margin-bottom:12px;min-height:22px;">${bar||''}</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;align-items:start;">
-    ${cols.map(c=>`<div data-b2-drop="${c.s}" style="${box}border-top:4px solid ${B2B_COLORS[c.s]};">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;"><strong>${B2B_STAGES[c.s]}</strong><span class="count">${c.items.length}</span></div>
-      <div class="subtitle" style="font-size:12.5px;margin-bottom:8px;">${b2bMoney(c.sum)}</div>
-      ${c.s==='new'?`<div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;"><input id="b2QName" placeholder="Быстро: компания" style="flex:2;min-width:110px;"><input id="b2QPhone" placeholder="Телефон" style="flex:1;min-width:80px;"><button class="btn small" id="b2QAdd">＋</button></div>`:''}
-      ${c.items.length?c.items.map(l=>b2bLeadCard(l,today,false)).join(''):'<div class="subtitle" style="font-size:12.5px;">Перетащите заявку сюда</div>'}
-    </div>`).join('')}
-    <div style="display:flex;flex-direction:column;gap:12px;">
-      <div data-b2-drop="won" style="${box}background:var(--teal-bg);border-top:4px solid ${B2B_COLORS.won};">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;"><strong>Сделка ✅</strong><span class="count">${wonL.length}</span></div>
-        <div class="subtitle" style="font-size:12.5px;margin-bottom:8px;">${b2bMoney(sumOf(wonL,l=>l.dealSum||l.forecast))}</div>
-        ${wonL.slice(0,lim).map(l=>b2bLeadCard(l,today,false)).join('')||'<div class="subtitle" style="font-size:12.5px;">Перетащите сюда успешную</div>'}
-      </div>
-      <div data-b2-drop="lost" style="${box}border-top:4px solid ${B2B_COLORS.lost};">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;"><strong>Отказ</strong><span class="count">${lostL.length}</span></div>
-        ${lostL.slice(0,lim).map(l=>b2bLeadCard(l,today,false)).join('')||'<div class="subtitle" style="font-size:12.5px;margin-top:6px;">Перетащите сюда отказ</div>'}
-      </div>
-      ${closed.length>4?`<button class="btn ghost small" id="b2ShowClosed">${st.showClosed?'Свернуть закрытые':'Показать все закрытые ('+closed.length+')'}</button>`:''}
-    </div></div>`;
+    return n ? `<div title="${B2B_STAGES[s]}: ${n}" style="flex:${n};background:${B2B_COLORS[s]};color:#fff;font-size:11px;padding:2px 6px;overflow:hidden;white-space:nowrap;">${B2B_STAGES[s]} · ${n}</div>` : ''; }).join('');
+  return `<div id="b2Bar" style="display:none;gap:10px;align-items:center;background:var(--paper,#faf8f3);border:1px solid var(--paper-line);border-radius:8px;padding:6px 10px;margin-bottom:8px;"></div>
+    <div style="display:flex;border-radius:7px;overflow:hidden;margin-bottom:8px;min-height:18px;">${bar}</div>
+    <div class="b2b-board" style="display:flex;gap:8px;overflow-x:auto;align-items:stretch;height:calc(100vh - 372px);min-height:360px;">${cols.map(col).join('')}</div>`;
 }
 function b2bWireFunnel(root){
+  b2bWireSelection(root);
   root.querySelectorAll('[data-b2-id][draggable]').forEach(c=>{
     c.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain', c.dataset.b2Id); e.dataTransfer.effectAllowed='move'; });
   });
@@ -8151,7 +8191,7 @@ function b2bWireFunnel(root){
       if(!name){ toast('Укажите название компании'); return; }
       const today = todayISO(); const mgr = b2bPickManager(today); const dl = b2bNextWork(mgr, today, false);
       const ok = await mutateB2B(d=>{
-        let c = d.clients.find(x=>(x.name||'').trim().toLowerCase()===name.toLowerCase());
+        let c = d.clients.find(x=>(x.name||'').trim().toLowerCase()===name.toLowerCase() || (b2bPhoneKey(phone) && b2bPhoneKey(x.phone)===b2bPhoneKey(phone)));
         if(!c){ c = {id:uid(), name, phone, createdAt:today}; d.clients.push(c); }
         d.leads.push({id:uid(), clientId:c.id, stage:'new', direction:'in', source:'', createdAt:today, managerId:mgr, deadline:dl, forecast:0, comment:'', tasks:[], tags:[], pipelineId:state.b2bState.pipe,
           log:[b2bLogEntry('new', `Заявка заведена${mgr?' · ответственный: '+empName(mgr):''}`)]});
@@ -8172,7 +8212,7 @@ function openB2bCardModal(leadId){
   const all = [...B2B_OPEN, 'won', 'lost'];
   const tasks = (l.tasks||[]).slice().sort((a,b)=>(a.done?1:0)-(b.done?1:0) || (a.deadline||'9999').localeCompare(b.deadline||'9999'));
   const feed = (l.log||[]).slice().reverse();
-  const info = [['Должность',c.position],['Ниша',c.niche],['Деятельность',c.activity],['Штат',c.staff],['Адрес',c.address],['Instagram',c.instagram],['Источник',l.source],['Прогноз',l.forecast?b2bMoney(l.forecast):''],['Сумма сделки',l.dealSum?b2bMoney(l.dealSum):'']].filter(x=>x[1]);
+  const info = [['Должность',c.position],['Ниша',c.niche],['Деятельность',c.activity],['Штат',c.staff],['Адрес',c.address],['Instagram',c.instagram],['Источник',l.source],['Прогноз',l.forecast?b2bMoney(l.forecast):''],['Сумма сделки',l.dealSum?b2bMoney(l.dealSum):'']].concat(b2bCustomRows(l)).filter(x=>x[1]);
   const hhmm = ts=> ts ? ' '+new Date(ts).toTimeString().slice(0,5) : '';
   root.innerHTML = `<div class="overlay"><div class="modal" style="max-width:900px;width:96vw;">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap;">
@@ -8424,6 +8464,7 @@ function b2bMapColumns(header){
 function b2bRowsToLeads(rows, pipelineId){
   if(rows.length<2) return {items:[], error:'Не нашёл строк с данными. Вставьте таблицу вместе со строкой заголовков.'};
   const map = b2bMapColumns(rows[0]);
+  const cfIdx = {}; b2bFields().forEach(f=>{ const i = rows[0].findIndex(h=>String(h||'').toLowerCase().replace(/\s+/g,' ').trim()===f.label.toLowerCase()); if(i>=0) cfIdx[f.id]=i; });
   if(map.name===undefined) return {items:[], error:'Не нашёл столбец «название». Скопируйте таблицу вместе со строкой заголовков.'};
   const today = todayISO();
   const g = (r,k)=> map[k]===undefined ? '' : String(r[map[k]]==null?'':r[map[k]]).trim();
@@ -8453,7 +8494,7 @@ function b2bRowsToLeads(rows, pipelineId){
     const notes = [res2&&('Результат: '+res2), res3&&('Результат: '+res3), g(r,'comment')&&('Комментарий: '+g(r,'comment'))].filter(Boolean);
     items.push({
       client:{name, person:g(r,'person'), position:g(r,'position'), phone:phoneRaw, instagram:g(r,'instagram'), niche:g(r,'niche'), activity:g(r,'activity'), staff:g(r,'staff'), address:g(r,'address')},
-      lead:{direction:'in', source, createdAt:created, managerId:mgr, stage, deadline: closedNow?'':deadline, forecast, comment:'', pipelineId, meetingDate, meetingDoneDate, meetingKind: meetingDate?'meeting':'', tags:[], links:[],
+      lead:{custom:(()=>{ const o={}; b2bFields().forEach(f=>{ if(cfIdx[f.id]===undefined) return; const raw=String(r[cfIdx[f.id]]==null?'':r[cfIdx[f.id]]).trim(); if(raw==='') return; o[f.id] = f.type==='date' ? b2bParseDate(raw) : f.type==='number' ? (Number(raw.replace(/[^\d.]/g,''))||'') : raw; }); return o; })(), direction:'in', source, createdAt:created, managerId:mgr, stage, deadline: closedNow?'':deadline, forecast, comment:'', pipelineId, meetingDate, meetingDoneDate, meetingKind: meetingDate?'meeting':'', tags:[], links:[],
         doneAt: closedNow?today:null},
       task: res1 ? {text:res1, deadline: closedNow?today:deadline} : null,
       notes,
@@ -8495,7 +8536,7 @@ function openB2bImportModal(){
     const today = todayISO();
     const ok = await mutateB2B(d=>{
       fresh.forEach(it=>{
-        let c = d.clients.find(x=>(x.name||'').trim().toLowerCase()===it.client.name.toLowerCase());
+        let c = d.clients.find(x=>(x.name||'').trim().toLowerCase()===it.client.name.toLowerCase() || (b2bPhoneKey(it.client.phone) && b2bPhoneKey(x.phone)===b2bPhoneKey(it.client.phone)));
         if(!c){ c = {id:uid(), ...it.client, createdAt:it.lead.createdAt}; d.clients.push(c); }
         const log = [{date:today, ts:Date.now(), stage:it.lead.stage, note:'Импортировано из таблицы', by:state.currentUserId}];
         it.notes.forEach(n=>log.push({date:today, ts:Date.now(), stage:null, note:n, by:state.currentUserId, kind:'note'}));
@@ -8581,6 +8622,317 @@ async function b2bReconcileTasks(){
       if(!ok) toast('⚠️ Не удалось обновить задачу по заявке B2B');
     }
   }catch(e){ console.warn('b2bReconcileTasks', e); }
+}
+
+// ================= свои поля, автосценарии, массовые действия, дубли =================
+const B2B_FIELD_DEFAULTS = [
+  {id:'guests', label:'Количество гостей', type:'number'},
+  {id:'eventDate', label:'Дата мероприятия', type:'date'},
+  {id:'budget', label:'Бюджет клиента, ₽', type:'number'}];
+const B2B_ROBOT_DEFAULTS = [
+  {id:'rb_kp2', name:'После отправки КП — позвонить через 2 дня', enabled:false, trigger:'enter', stage:'sent', days:0, text:'Позвонить клиенту по КП', type:'call', offset:2, to:'owner'},
+  {id:'rb_stuck', name:'Заявка не двигается 3 дня — напомнить менеджеру', enabled:false, trigger:'stuck', stage:'new', days:3, text:'Заявка зависла: определить следующий шаг', type:'other', offset:0, to:'owner'}];
+function b2bFields(){ const f = state.b2b && state.b2b.fields; return Array.isArray(f) ? f : B2B_FIELD_DEFAULTS; }
+function b2bRobots(){ const r = state.b2b && state.b2b.robots; return Array.isArray(r) ? r : B2B_ROBOT_DEFAULTS; }
+function b2bCustomShow(f, v){ if(v===undefined||v===null||v==='') return ''; return f.type==='date' ? fmtDate(v) : f.type==='number' ? Number(v).toLocaleString('ru-RU') : String(v); }
+function b2bCustomRows(l){ return b2bFields().filter(f=>!f.hidden).map(f=>[f.label, b2bCustomShow(f,(l.custom||{})[f.id])]); }
+function b2bCustomInputsHTML(l){
+  const fs = b2bFields().filter(f=>!f.hidden); if(!fs.length) return '';
+  return `<div class="field-row">${fs.map(f=>{ const v=((l&&l.custom)||{})[f.id]; const val=(v===undefined||v===null)?'':v;
+    const inp = f.type==='select'
+      ? `<select data-cf="${f.id}"><option value="">—</option>${(f.options||[]).map(o=>`<option value="${escapeHtml(o)}" ${o===val?'selected':''}>${escapeHtml(o)}</option>`).join('')}</select>`
+      : `<input data-cf="${f.id}" type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" value="${escapeHtml(String(val))}">`;
+    return `<div class="field"><label>${escapeHtml(f.label)}</label>${inp}</div>`; }).join('')}</div>`;
+}
+function b2bReadCustom(base){
+  const o = {...(base||{})};
+  document.querySelectorAll('[data-cf]').forEach(el=>{ const f=b2bFields().find(x=>x.id===el.dataset.cf); const v=el.value;
+    o[el.dataset.cf] = (f&&f.type==='number') ? (v===''?'':Number(v)) : v; });
+  return o;
+}
+function openB2bFieldsModal(){
+  const list = b2bFields().map(f=>({...f}));
+  const root = document.getElementById('modalRoot');
+  const TYPES = {text:'Текст', number:'Число', date:'Дата', select:'Список'};
+  const draw = ()=>{
+    root.innerHTML = `<div class="overlay"><div class="modal" style="max-width:640px;width:96vw;"><h3>⚙ Поля заявки</h3>
+      <div class="subtitle" style="margin-bottom:8px;">Свои поля появятся в окне заявки, в карточке сделки и в выгрузке CSV. Поле нельзя удалить — только скрыть, чтобы не потерять уже введённое.</div>
+      ${list.map((f,i)=>`<div style="display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap;${f.hidden?'opacity:.5;':''}">
+        <input data-fd-label="${i}" value="${escapeHtml(f.label)}" style="flex:2;min-width:140px;">
+        <select data-fd-type="${i}" style="width:auto;">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}" ${f.type===k?'selected':''}>${v}</option>`).join('')}</select>
+        ${f.type==='select'?`<input data-fd-opts="${i}" value="${escapeHtml((f.options||[]).join(', '))}" placeholder="Варианты через запятую" style="flex:2;min-width:140px;">`:''}
+        <button class="btn ghost small" data-fd-hide="${i}">${f.hidden?'Показать':'Скрыть'}</button></div>`).join('')}
+      <div style="display:flex;gap:6px;margin-top:10px;"><input id="fdNew" placeholder="Новое поле, например: Формат мероприятия" style="flex:1;"><button class="btn ghost small" id="fdAdd">＋ Добавить</button></div>
+      <div class="modal-actions"><button class="btn ghost" id="fdCancel">Отмена</button><button class="btn" id="fdSave">Сохранить</button></div></div></div>`;
+    const sync = ()=>{
+      root.querySelectorAll('[data-fd-label]').forEach(i=>{ const f=list[+i.dataset.fdLabel]; f.label = i.value.trim()||f.label; });
+      root.querySelectorAll('[data-fd-type]').forEach(i=>{ list[+i.dataset.fdType].type = i.value; });
+      root.querySelectorAll('[data-fd-opts]').forEach(i=>{ list[+i.dataset.fdOpts].options = i.value.split(',').map(x=>x.trim()).filter(Boolean); });
+    };
+    root.querySelectorAll('[data-fd-type]').forEach(i=>i.onchange=()=>{ sync(); draw(); });
+    root.querySelectorAll('[data-fd-hide]').forEach(b=>b.onclick=()=>{ sync(); const f=list[+b.dataset.fdHide]; f.hidden=!f.hidden; draw(); });
+    document.getElementById('fdAdd').onclick = ()=>{ sync(); const v=document.getElementById('fdNew').value.trim(); if(!v) return; list.push({id:'f_'+uid(), label:v, type:'text'}); draw(); };
+    document.getElementById('fdCancel').onclick = closeModal;
+    document.getElementById('fdSave').onclick = async ()=>{ sync(); const ok = await mutateB2B(d=>{ d.fields = list; return d; }); if(ok){ closeModal(); toast('Поля сохранены'); render(); } };
+  };
+  draw();
+}
+
+// ---------- автосценарии («роботы») ----------
+function b2bStageEntered(l){ const e=(l.log||[]).filter(m=>m.stage===l.stage && !m.kind).map(m=>m.date).sort().pop(); return e || l.createdAt || todayISO(); }
+function b2bRobotCond(r){
+  const c = [];
+  if(r.cSource) c.push(`источник «${r.cSource}»`); if(r.cTag) c.push(`тег #${r.cTag}`);
+  if(r.cDir) c.push(r.cDir==='in'?'входящая':'исходящая'); if(Number(r.cMin)>0) c.push(`прогноз от ${Number(r.cMin).toLocaleString('ru-RU')} ₽`);
+  return c.length ? ` (только если: ${c.join(', ')})` : '';
+}
+function b2bRobotAction(r){
+  const act = r.action || 'task';
+  if(act==='owner'){ const who = r.ownerTo==='leader' ? 'Руководителя' : (r.ownerTo==='onshift' || !r.ownerTo) ? 'менеджера, который сегодня на смене' : empName(r.ownerTo); return `назначить ответственным ${who}`; }
+  if(act==='tag') return `поставить тег #${r.tagText}`;
+  if(act==='field'){ const f = b2bFields().find(x=>x.id===r.fieldId); return `заполнить поле «${f?f.label:'?'}» значением «${r.fieldValue}»`; }
+  const who = r.to==='leader' ? 'Руководителю' : 'ответственному менеджеру';
+  const unit = r.offsetUnit==='h' ? 'ч.' : 'дн.';
+  return `поставить задачу «${r.text}» ${who}${Number(r.offset)?` со сроком через ${r.offset} ${unit}`:' на ближайший рабочий день'}`;
+}
+function b2bRobotText(r){
+  const when = r.trigger==='stuck' ? `Если заявка на этапе «${B2B_STAGES[r.stage]}» уже ${r.days} дн.` : `Когда заявка переходит на этап «${B2B_STAGES[r.stage]}»`;
+  return `${when}${b2bRobotCond(r)} → ${b2bRobotAction(r)}`;
+}
+function b2bRobotMatches(r, l){
+  if(r.cSource && String(l.source||'').trim().toLowerCase()!==String(r.cSource).trim().toLowerCase()) return false;
+  if(r.cTag && !(l.tags||[]).includes(r.cTag)) return false;
+  if(r.cDir && (l.direction||'in')!==r.cDir) return false;
+  if(Number(r.cMin)>0 && (Number(l.forecast)||0) < Number(r.cMin)) return false;
+  return true;
+}
+// применяет сценарии к данным d; dry=true — только посчитать, сколько действий выполнилось бы
+function b2bApplyRobots(d, dry){
+  // несколько проходов: действие одного сценария (например, тег) может включить условие другого
+  let total = 0;
+  for(let i=0;i<3;i++){ const k = b2bApplyRobotsOnce(d, dry); total += k; if(!k || dry) break; }
+  return total;
+}
+function b2bApplyRobotsOnce(d, dry){
+  const robots = (Array.isArray(d.robots)?d.robots:B2B_ROBOT_DEFAULTS).filter(r=>r.enabled);
+  const today = todayISO(); let n = 0;
+  const leader = state.employees.find(e=>e.role==='Руководитель');
+  const leads = d.leads.map(l=>{
+    let cur = l;
+    // автозакрытие: задачи сценария закрываются, когда заявка ушла с этапа (или закрыта)
+    const open0 = b2bIsOpen(cur);
+    if((cur.tasks||[]).some(t=>t.robot && !t.done && (!open0 || (t.fromStage && t.fromStage!==cur.stage)))){
+      n++;
+      if(!dry) cur = {...cur, tasks:cur.tasks.map(t=> (t.robot && !t.done && (!open0 || (t.fromStage && t.fromStage!==cur.stage))) ? {...t, done:true, doneAt:today, auto:true} : t)};
+    }
+    if(!open0) return cur;
+    robots.forEach(r=>{
+      if(r.stage!==cur.stage) return;
+      if(!b2bRobotMatches(r, cur)) return;
+      const ent = b2bStageEntered(cur), key = `${r.id}|${cur.stage}|${ent}`;
+      if((cur.fired||[]).includes(key)) return;
+      if(r.trigger==='stuck'){ if(isoDiff(today,ent) < (Number(r.days)||0)) return; }
+      else if(ent < (r.since||'0000-00-00')) return;
+      n++; if(dry) return;
+      const fired = (cur.fired||[]).concat([key]);
+      const act = r.action || 'task';
+      const logIt = txt => (cur.log||[]).concat([{date:today, ts:Date.now(), stage:null, note:`🤖 ${r.name||'Автосценарий'}: ${txt}`, by:null}]);
+      if(act==='owner'){
+        const to = r.ownerTo==='leader' ? (leader?leader.id:cur.managerId) : (r.ownerTo==='onshift'||!r.ownerTo) ? (b2bPickManager(today)||cur.managerId) : r.ownerTo;
+        cur = {...cur, fired, managerId:to, log:logIt(`ответственный → ${to?empName(to):'не назначен'}`)};
+      } else if(act==='tag'){
+        cur = {...cur, fired, tags:[...new Set((cur.tags||[]).concat([r.tagText]))], log:logIt(`тег #${r.tagText}`)};
+      } else if(act==='field'){
+        const f = b2bFields().find(x=>x.id===r.fieldId);
+        cur = {...cur, fired, custom:{...(cur.custom||{}), [r.fieldId]: (f&&f.type==='number') ? (Number(r.fieldValue)||0) : r.fieldValue}, log:logIt(`поле «${f?f.label:'?'}» = ${r.fieldValue}`)};
+      } else {
+        const to = r.to==='leader' ? (leader?leader.id:'') : cur.managerId;
+        let deadline, time = '';
+        if(r.offsetUnit==='h'){ const dt = new Date(Date.now() + (Number(r.offset)||0)*3600000); deadline = isoOf(dt); time = String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0'); }
+        else deadline = b2bNextWork(to||cur.managerId, isoAdd(today, Number(r.offset)||0), true);
+        cur = {...cur, fired, tasks:(cur.tasks||[]).concat([{id:uid(), type:r.type||'other', text:r.text, deadline, time, managerId:to||'', done:false, robot:r.id, fromStage:cur.stage}]),
+          log:logIt(`задача «${r.text}» до ${fmtDate(deadline)}${time?' '+time:''}`)};
+      }
+    });
+    return cur;
+  });
+  if(!dry) d.leads = leads;
+  return n;
+}
+function b2bMaybeRunRobots(){
+  const st = state.b2bState;
+  if(!state.b2b || st.robotsRunning || Date.now()-(st.robotsAt||0) < 300000) return;
+  if(b2bApplyRobots(state.b2b, true) === 0){ st.robotsAt = Date.now(); return; }
+  st.robotsAt = Date.now(); st.robotsRunning = true;
+  mutateB2B(d=> b2bApplyRobots(d,false) ? d : null, {skipRobots:true}).then(ok=>{ st.robotsRunning=false; if(ok) render(); });
+}
+function openB2bRobotsModal(){
+  const list = b2bRobots().map(r=>({...r}));
+  const root = document.getElementById('modalRoot');
+  const people = state.employees.filter(e=>e.role==='Менеджер');
+  const draw = ()=>{
+    root.innerHTML = `<div class="overlay"><div class="modal" style="max-width:740px;width:96vw;"><h3>🤖 Автосценарии</h3>
+      <div class="subtitle" style="margin-bottom:8px;">Как «цифровая воронка» в amoCRM: когда заявка попадает на этап или «зависает», система сама ставит задачу, назначает ответственного, ставит тег или заполняет поле. Задачи сценария закрываются сами, когда заявка уходит с этапа. Включённый сценарий «перешла на этап» работает только для заявок, которые перешли на этап <strong>после</strong> включения; «стоит N дней» — для всех, кто уже стоит дольше срока.</div>
+      ${list.map((r,i)=>`<div style="border:1px solid var(--paper-line);border-radius:8px;padding:8px 10px;margin:6px 0;display:flex;gap:8px;align-items:flex-start;">
+        <input type="checkbox" data-rb-on="${i}" ${r.enabled?'checked':''} style="margin-top:4px;">
+        <div style="flex:1;font-size:13.5px;"><strong>${escapeHtml(r.name)}</strong><div class="subtitle" style="font-size:12.5px;">${escapeHtml(b2bRobotText(r))}</div></div>
+        <button class="btn ghost small" data-rb-del="${i}">×</button></div>`).join('') || '<div class="subtitle">Сценариев нет</div>'}
+      <div style="border-top:1px solid var(--paper-line);margin-top:10px;padding-top:8px;"><strong>Новый сценарий</strong>
+        <div class="field-row" style="margin-top:6px;">
+          <div class="field"><label>Когда</label><select id="rbTrig"><option value="enter">Заявка перешла на этап</option><option value="stuck">Заявка стоит на этапе N дней</option></select></div>
+          <div class="field"><label>Этап</label><select id="rbStage">${B2B_OPEN.map(s=>`<option value="${s}">${B2B_STAGES[s]}</option>`).join('')}</select></div>
+          <div class="field" id="rbDaysF" style="display:none;"><label>Дней на этапе</label><input id="rbDays" type="number" min="1" value="3"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Только если источник</label><input id="rbCSrc" list="rbSrcList" placeholder="любой"><datalist id="rbSrcList">${B2B_SOURCES.map(s=>`<option value="${escapeHtml(s)}">`).join('')}</datalist></div>
+          <div class="field"><label>Только если тег</label><input id="rbCTag" list="rbTagList" placeholder="любой"><datalist id="rbTagList">${b2bAllTags().map(t=>`<option value="${escapeHtml(t)}">`).join('')}</datalist></div>
+          <div class="field"><label>Направление</label><select id="rbCDir"><option value="">любое</option><option value="in">входящая</option><option value="out">исходящая</option></select></div>
+          <div class="field"><label>Прогноз от, ₽</label><input id="rbCMin" type="number" min="0" placeholder="0"></div>
+        </div>
+        <div class="field"><label>Что сделать</label><select id="rbAct"><option value="task">Поставить задачу</option><option value="owner">Назначить ответственного</option><option value="tag">Поставить тег</option><option value="field">Заполнить поле</option></select></div>
+        <div id="rbA_task"><div class="field-row">
+          <div class="field" style="flex:2;"><label>Текст задачи</label><input id="rbText" placeholder="Например: Позвонить и узнать решение"></div>
+          <div class="field"><label>Тип</label><select id="rbType">${Object.entries(B2B_TASK_TYPES).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div></div>
+          <div class="field-row">
+          <div class="field"><label>Срок: через</label><div style="display:flex;gap:4px;"><input id="rbOff" type="number" min="0" value="0" style="width:80px;"><select id="rbUnit"><option value="d">дней</option><option value="h">часов</option></select></div></div>
+          <div class="field"><label>Кому</label><select id="rbTo"><option value="owner">Ответственному менеджеру</option><option value="leader">Руководителю</option></select></div></div></div>
+        <div id="rbA_owner" style="display:none;"><div class="field"><label>Кого назначить</label><select id="rbOwnerTo"><option value="onshift">Менеджера, который сегодня на смене</option><option value="leader">Руководителя</option>${people.map(e=>`<option value="${e.id}">${escapeHtml(e.name)}</option>`).join('')}</select></div></div>
+        <div id="rbA_tag" style="display:none;"><div class="field"><label>Тег</label><input id="rbTagText" placeholder="например: горячая"></div></div>
+        <div id="rbA_field" style="display:none;"><div class="field-row"><div class="field"><label>Поле</label><select id="rbFieldId">${b2bFields().filter(f=>!f.hidden&&f.type!=='select').map(f=>`<option value="${f.id}">${escapeHtml(f.label)}</option>`).join('')}</select></div>
+          <div class="field"><label>Значение</label><input id="rbFieldVal"></div></div></div>
+        <div class="field"><label>Название (необязательно)</label><input id="rbName"></div>
+        <button class="btn ghost small" id="rbAdd">＋ Добавить сценарий</button></div>
+      <div class="modal-actions"><button class="btn ghost" id="rbCancel">Отмена</button><button class="btn" id="rbSave">Сохранить</button></div></div></div>`;
+    const $ = id=>document.getElementById(id);
+    const sync = ()=>root.querySelectorAll('[data-rb-on]').forEach(c=>{ const r=list[+c.dataset.rbOn]; const on=c.checked; if(on && !r.enabled) r.since = todayISO(); r.enabled=on; });
+    $('rbTrig').onchange = ()=>{ $('rbDaysF').style.display = $('rbTrig').value==='stuck' ? '' : 'none'; };
+    $('rbAct').onchange = ()=>{ ['task','owner','tag','field'].forEach(k=>{ $('rbA_'+k).style.display = $('rbAct').value===k ? '' : 'none'; }); };
+    root.querySelectorAll('[data-rb-del]').forEach(b=>b.onclick=()=>{ sync(); list.splice(+b.dataset.rbDel,1); draw(); });
+    $('rbAdd').onclick = ()=>{ sync();
+      const act = $('rbAct').value, t = $('rbTrig').value, stage = $('rbStage').value;
+      const r = {id:'rb_'+uid(), enabled:true, since:todayISO(), trigger:t, stage, days: t==='stuck' ? (Number($('rbDays').value)||3) : 0, action:act,
+        cSource:$('rbCSrc').value.trim(), cTag:$('rbCTag').value.trim().replace(/^#/,''), cDir:$('rbCDir').value, cMin:Number($('rbCMin').value)||0};
+      if(act==='task'){ r.text=$('rbText').value.trim(); if(!r.text){ toast('Напишите текст задачи'); return; }
+        r.type=$('rbType').value; r.offset=Number($('rbOff').value)||0; r.offsetUnit=$('rbUnit').value; r.to=$('rbTo').value; }
+      else if(act==='owner'){ r.ownerTo=$('rbOwnerTo').value; }
+      else if(act==='tag'){ r.tagText=$('rbTagText').value.trim().replace(/^#/,''); if(!r.tagText){ toast('Укажите тег'); return; } }
+      else { r.fieldId=$('rbFieldId').value; r.fieldValue=$('rbFieldVal').value.trim(); if(!r.fieldId||r.fieldValue===''){ toast('Выберите поле и значение'); return; } }
+      r.name = $('rbName').value.trim() || `${t==='stuck'?`Стоит ${r.days} дн. на`:'На'} «${B2B_STAGES[stage]}» — ${b2bRobotAction(r)}`.slice(0,90);
+      list.push(r); draw(); };
+    $('rbCancel').onclick = closeModal;
+    $('rbSave').onclick = async ()=>{ sync(); const ok = await mutateB2B(d=>{ d.robots = list; return d; }); if(ok){ closeModal(); toast('Автосценарии сохранены'); render(); } };
+  };
+  draw();
+}
+
+// ---------- дубли клиентов ----------
+function b2bPhoneKey(p){ const dg = String(p||'').replace(/\D/g,''); return dg.length>=10 ? dg.slice(-10) : ''; }
+function b2bFindDupClient(name, phone, exceptId){
+  const pk = b2bPhoneKey(phone), nm = String(name||'').trim().toLowerCase();
+  return (state.b2b?state.b2b.clients:[]).find(c=> c.id!==exceptId && ((pk && b2bPhoneKey(c.phone)===pk) || (nm && String(c.name||'').trim().toLowerCase()===nm)));
+}
+function b2bDupGroups(){
+  const cl = state.b2b.clients, parent = cl.map((_,i)=>i);
+  const find = i=>{ while(parent[i]!==i){ parent[i]=parent[parent[i]]; i=parent[i]; } return i; };
+  const seen = {};
+  cl.forEach((c,i)=>{ [b2bPhoneKey(c.phone)&&'p'+b2bPhoneKey(c.phone), String(c.name||'').trim().toLowerCase()&&'n'+String(c.name).trim().toLowerCase()].filter(Boolean).forEach(k=>{
+    if(seen[k]===undefined) seen[k]=i; else parent[find(i)] = find(seen[k]); }); });
+  const groups = {}; cl.forEach((c,i)=>{ (groups[find(i)] = groups[find(i)]||[]).push(c); });
+  return Object.values(groups).filter(g=>g.length>1);
+}
+function openB2bDupsModal(){
+  const groups = b2bDupGroups();
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = `<div class="overlay"><div class="modal" style="max-width:640px;width:96vw;"><h3>🔍 Дубли клиентов</h3>
+    <div class="subtitle" style="margin-bottom:8px;">Считаются дублями клиенты с одинаковым телефоном (по последним 10 цифрам) или одинаковым названием. При объединении все заявки переходят к одному клиенту, пустые поля дозаполняются.</div>
+    ${groups.length ? groups.map((g,i)=>`<div style="border:1px solid var(--paper-line);border-radius:8px;padding:8px 10px;margin:6px 0;">
+      ${g.map(c=>`<div style="font-size:13.5px;"><strong>${escapeHtml(c.name)}</strong> <span class="subtitle">${escapeHtml([c.phone,c.person].filter(Boolean).join(' · '))} · заявок: ${state.b2b.leads.filter(l=>l.clientId===c.id).length}</span></div>`).join('')}
+      ${b2bLeader()?`<button class="btn small" data-dup-merge="${i}" style="margin-top:6px;">Объединить в «${escapeHtml(g[0].name)}»</button>`:''}</div>`).join('') : '<div class="empty" style="padding:16px;text-align:center;">Дублей не найдено 👍</div>'}
+    <div class="modal-actions"><button class="btn ghost" id="dpClose">Закрыть</button></div></div></div>`;
+  document.getElementById('dpClose').onclick = closeModal;
+  root.querySelectorAll('[data-dup-merge]').forEach(b=>b.onclick = async ()=>{
+    const g = groups[+b.dataset.dupMerge]; const keep = g.slice().sort((a,b2)=>state.b2b.leads.filter(l=>l.clientId===b2.id).length - state.b2b.leads.filter(l=>l.clientId===a.id).length)[0];
+    const drop = g.filter(c=>c.id!==keep.id).map(c=>c.id);
+    if(!await showConfirm(`Объединить ${g.length} карточки в «${keep.name}»? Заявки перейдут к ней.`, 'Объединить')) return;
+    const ok = await mutateB2B(d=>{
+      const k = d.clients.find(c=>c.id===keep.id);
+      d.clients.filter(c=>drop.includes(c.id)).forEach(c=>{ Object.keys(c).forEach(f=>{ if(f!=='id' && f!=='createdAt' && !k[f] && c[f]) k[f]=c[f]; }); });
+      d.leads = d.leads.map(l=> drop.includes(l.clientId) ? {...l, clientId:keep.id} : l);
+      d.clients = d.clients.filter(c=>!drop.includes(c.id));
+      return d; });
+    if(ok){ toast('Клиенты объединены'); openB2bDupsModal(); render(); }
+  });
+}
+
+// ---------- массовые действия ----------
+function b2bRenderBar(root){
+  const st = state.b2bState; const bar = root.querySelector('#b2Bar'); if(!bar) return;
+  const n = st.sel ? st.sel.size : 0;
+  bar.style.display = n ? '' : 'none';
+  bar.innerHTML = n ? `<span><strong>Выбрано: ${n}</strong></span><button class="btn small" id="b2BulkGo">Действия…</button><button class="btn ghost small" id="b2BulkClear">Снять выделение</button>` : '';
+  const go = bar.querySelector('#b2BulkGo'); if(go) go.onclick = ()=>openB2bBulkModal([...st.sel]);
+  const cl = bar.querySelector('#b2BulkClear'); if(cl) cl.onclick = ()=>{ st.sel.clear(); root.querySelectorAll('[data-b2-sel]').forEach(c=>c.checked=false); root.querySelectorAll('[data-b2-selcol]').forEach(c=>c.checked=false); b2bRenderBar(root); };
+}
+function b2bWireSelection(root){
+  const st = state.b2bState; if(!st.sel) st.sel = new Set();
+  root.querySelectorAll('[data-b2-sel]').forEach(c=>{ c.checked = st.sel.has(c.dataset.b2Sel);
+    c.onclick = e=>e.stopPropagation(); c.onchange = ()=>{ if(c.checked) st.sel.add(c.dataset.b2Sel); else st.sel.delete(c.dataset.b2Sel); b2bRenderBar(root); }; });
+  root.querySelectorAll('[data-b2-selcol]').forEach(c=>c.onchange = ()=>{
+    root.querySelectorAll(`[data-b2-drop="${c.dataset.b2Selcol}"] [data-b2-sel]`).forEach(x=>{ x.checked = c.checked; if(c.checked) st.sel.add(x.dataset.b2Sel); else st.sel.delete(x.dataset.b2Sel); });
+    b2bRenderBar(root); });
+  b2bRenderBar(root);
+}
+function openB2bBulkModal(ids){
+  const people = state.employees.filter(e=>e.role==='Менеджер' || ['Руководитель','Ассистент'].includes(e.role));
+  const root = document.getElementById('modalRoot');
+  const acts = [['transfer','Передать менеджеру'],['tag','Добавить тег'],['pipe','Перенести в воронку'],['lost','Закрыть как отказ']].concat(b2bLeader()?[['delete','Удалить заявки']]:[]);
+  root.innerHTML = `<div class="overlay"><div class="modal"><h3>Выбрано заявок: ${ids.length}</h3>
+    <div class="field"><label>Действие</label><select id="bkAct">${acts.map(a=>`<option value="${a[0]}">${a[1]}</option>`).join('')}</select></div>
+    <div id="bkTransfer"><div class="field"><label>Кому</label><select id="bkTo">${people.map(e=>`<option value="${e.id}">${escapeHtml(e.name)}${e.role!=='Менеджер'?' — '+escapeHtml(e.role):''}</option>`).join('')}</select></div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px;"><input type="checkbox" id="bkTasks" checked> вместе с открытыми задачами заявок</label></div>
+    <div id="bkTag" style="display:none;"><div class="field"><label>Тег</label><input id="bkTagIn" list="b2TagList2" placeholder="например: VIP"><datalist id="b2TagList2">${b2bAllTags().map(t=>`<option value="${escapeHtml(t)}">`).join('')}</datalist></div></div>
+    <div id="bkPipe" style="display:none;"><div class="field"><label>Воронка</label><select id="bkPipeSel">${state.b2b.pipelines.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}</select></div></div>
+    <div id="bkLost" style="display:none;"><div class="field"><label>Причина отказа *</label><select id="bkReason"><option value="">— выберите —</option>${b2bReasons().filter(r=>!r.hidden).map(r=>`<option value="${r.id}">${escapeHtml(r.label)}</option>`).join('')}</select>
+      <input id="bkReasonText" placeholder="Что именно (для «Другое»)" style="margin-top:6px;display:none;"></div></div>
+    <div id="bkDelete" class="subtitle" style="display:none;color:var(--brick);">Заявки будут удалены безвозвратно, клиенты в базе останутся.</div>
+    <div class="modal-actions"><button class="btn ghost" id="bkCancel">Отмена</button><button class="btn" id="bkGo">Применить</button></div></div></div>`;
+  const $ = id=>document.getElementById(id);
+  const show = ()=>{ ['transfer','tag','pipe','lost','delete'].forEach(k=>{ $('bk'+k[0].toUpperCase()+k.slice(1)).style.display = $('bkAct').value===k ? '' : 'none'; }); };
+  $('bkAct').onchange = show; show();
+  $('bkReason').onchange = ()=>{ $('bkReasonText').style.display = $('bkReason').value==='other' ? '' : 'none'; };
+  $('bkCancel').onclick = closeModal;
+  $('bkGo').onclick = async ()=>{
+    const act = $('bkAct').value, today = todayISO(), set = new Set(ids);
+    let note = '', fn = null, sync = false;
+    if(act==='transfer'){ const to=$('bkTo').value, wt=$('bkTasks').checked; sync=true;
+      fn = l=>({...l, managerId:to, tasks: wt ? (l.tasks||[]).map(t=>t.done?t:{...t,managerId:to}) : l.tasks, log:(l.log||[]).concat([b2bTransferLog(l.managerId,to,'массово')])}); }
+    else if(act==='tag'){ const tg=$('bkTagIn').value.trim().replace(/^#/,''); if(!tg){ toast('Введите тег'); return; }
+      fn = l=>({...l, tags:[...new Set((l.tags||[]).concat([tg]))], log:(l.log||[]).concat([b2bLogEntry(null,'Добавлен тег #'+tg)])}); }
+    else if(act==='pipe'){ const pid=$('bkPipeSel').value; fn = l=>({...l, pipelineId:pid, log:(l.log||[]).concat([b2bLogEntry(null,'Перенесена в воронку «'+b2bPipeName(pid)+'»')])}); }
+    else if(act==='lost'){ const rid=$('bkReason').value, rt=$('bkReasonText').value.trim();
+      if(!rid){ toast('Выберите причину отказа'); return; } if(rid==='other' && !rt){ toast('Для «Другое» напишите причину'); return; } sync=true;
+      fn = l=>{ if(!b2bIsOpen(l)) return l; const n={...l, prevStage:l.stage, stage:'lost', doneAt:today, deadline:'', lostReasonId:rid, lostReason:rt}; n.log=(l.log||[]).concat([b2bLogEntry('lost','Отказ: '+b2bReasonLabel(n)+' (массово)')]); return n; }; }
+    else if(act==='delete'){ if(!await showConfirm(`Удалить заявок: ${ids.length}?`, 'Удалить')) return; sync=true; }
+    const ok = await mutateB2B(d=>{ if(act==='delete') d.leads = d.leads.filter(l=>!set.has(l.id)); else d.leads = d.leads.map(l=> set.has(l.id) ? fn({...l}) : l); return d; });
+    if(ok){ if(sync){ for(const id of ids) await b2bSyncEvent(id); }
+      logAudit('b2b_bulk', `Массовое действие «${act}»: ${ids.length}`); state.b2bState.sel.clear(); closeModal(); toast('Готово'); render(); }
+  };
+}
+
+// ---------- настройки B2B ----------
+function openB2bSettingsModal(){
+  const root = document.getElementById('modalRoot');
+  const items = [['Причины отказов','b2sReasons','Список, который менеджеры видят при отказе'],['Поля заявки','b2sFields','Количество гостей, дата мероприятия, бюджет и свои поля'],
+    ['🤖 Автосценарии','b2sRobots','Сами ставят задачи при переходе на этап или «зависании»'],['🔍 Дубли клиентов','b2sDups','Найти и объединить одинаковых клиентов'],['📥 Импорт из таблицы','b2sImport','Загрузить заявки из Google Таблицы или файла']];
+  root.innerHTML = `<div class="overlay"><div class="modal"><h3>⚙ Настройки B2B</h3>
+    ${items.map(i=>`<button class="btn ghost" id="${i[1]}" style="display:block;width:100%;text-align:left;margin:6px 0;"><strong>${i[0]}</strong><div class="subtitle" style="font-size:12.5px;">${i[2]}</div></button>`).join('')}
+    <div class="modal-actions"><button class="btn ghost" id="b2sClose">Закрыть</button></div></div></div>`;
+  document.getElementById('b2sClose').onclick = closeModal;
+  document.getElementById('b2sReasons').onclick = openB2bReasonsModal;
+  document.getElementById('b2sFields').onclick = openB2bFieldsModal;
+  document.getElementById('b2sRobots').onclick = openB2bRobotsModal;
+  document.getElementById('b2sDups').onclick = openB2bDupsModal;
+  document.getElementById('b2sImport').onclick = openB2bImportModal;
 }
 
 function renderAnalytics(root){

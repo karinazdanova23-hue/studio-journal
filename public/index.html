@@ -7556,7 +7556,11 @@ function b2bMoney(n){ return (Number(n)||0).toLocaleString('ru-RU')+' ₽'; }
 
 function b2bManagers(){ return state.employees.filter(e=>e.role==='Менеджер'); }
 // true — работает, false — выходной, null — график не задан
+function b2bDuty(){ const du = state.b2b && state.b2b.schedule && state.b2b.schedule.__duty; return (du && typeof du==='object' && Object.keys(du).length) ? du : null; }
 function b2bWorks(empId, iso){
+  // график ведётся в календаре «Расписания студии» и приходит автоматически; дня нет в календаре — «не задан» (null)
+  const du = b2bDuty();
+  if(du){ if(!empId) return null; return du[iso] ? du[iso]===empId : null; }
   const a = state.b2b && state.b2b.schedule && state.b2b.schedule[empId];
   if(!empId || !a) return null;
   const k = ((isoDiff(iso, a) % 4) + 4) % 4;
@@ -8066,18 +8070,20 @@ function openB2bStepModal(leadId, kind, toStage){
 // ---------- график менеджеров 2/2 ----------
 function openB2bScheduleModal(){
   const mgrs = b2bManagers();
-  const can = b2bLeader();
+  const dutyOn = !!b2bDuty();
+  const can = b2bLeader() && !dutyOn;
   const today = todayISO();
   const preview = id => { let h=''; for(let i=0;i<14;i++){ const d=isoAdd(today,i); const w=b2bWorks(id,d);
     h += `<span title="${fmtDate(d)}" style="display:inline-block;width:22px;text-align:center;font-size:11px;margin:1px;border-radius:4px;padding:2px 0;${w===true?'background:var(--teal-bg);color:var(--teal);font-weight:600;':'background:var(--line,#eee);color:var(--ink-soft);'}">${isoParse(d).getDate()}</span>`; } return h; };
   const root = document.getElementById('modalRoot');
-  root.innerHTML = `<div class="overlay"><div class="modal"><h3>🗓 График менеджеров (2 через 2)</h3>
+  root.innerHTML = `<div class="overlay"><div class="modal"><h3>🗓 График менеджеров</h3>
+    ${dutyOn?'<div class="subtitle" style="margin-bottom:10px;color:var(--teal);font-weight:600;">График ведётся в календаре «Расписания студии» — менять его нужно там, здесь он подгружается сам.</div>':''}
     <div class="subtitle" style="margin-bottom:10px;">Заявка, пришедшая в рабочий день менеджера, достаётся ему, а дедлайны шагов выставляются на его рабочие дни. Укажите <strong>первый день любой рабочей пары</strong> (например, когда он вышел в последний раз).</div>
     ${mgrs.length ? mgrs.map(e=>`<div class="field"><label>${escapeHtml(e.name)}</label>
       <input type="date" data-b2-anchor="${e.id}" value="${(state.b2b.schedule||{})[e.id]||''}" ${can?'':'disabled'}>
       <div style="margin-top:4px;" data-b2-prev="${e.id}">${preview(e.id)}</div></div>`).join('')
       : `<div class="empty">В списке сотрудников нет ролей «Менеджер».</div>`}
-    <div class="subtitle" style="font-size:12px;">Зелёные — рабочие дни на ближайшие 2 недели.${can?'':' Менять график могут Руководитель и Ассистент.'}</div>
+    <div class="subtitle" style="font-size:12px;">Зелёные — рабочие дни на ближайшие 2 недели.${can||dutyOn?'':' Менять график могут Руководитель и Ассистент.'}</div>
     <div class="modal-actions"><button class="btn ghost" id="b2gCancel">${can?'Отмена':'Закрыть'}</button>${can&&mgrs.length?'<button class="btn" id="b2gSave">Сохранить</button>':''}</div></div></div>`;
   document.getElementById('b2gCancel').onclick = closeModal;
   const save = document.getElementById('b2gSave');

@@ -868,7 +868,7 @@ const state = {
   archiveSubtab:'work',
   regs:null,
   b2b:null,
-  b2bState:{loading:false, error:false, loadedAt:0, view:'funnel', dir:'all', mgr:null, q:'', showClosed:false, openId:null, clientQ:'', pipe:'main', tag:'all', sel:null, noStep:false, robotsAt:0, robotsRunning:false},
+  b2bState:{loading:false, error:false, loadedAt:0, view:'funnel', dir:'all', mgr:null, q:'', showClosed:false, openId:null, clientQ:'', pipe:'main', tag:'all', sel:null, noStep:false, robotsAt:0, robotsRunning:false, tg:null},
   projListCollapsed:(()=>{ try{ const v = localStorage.getItem('lj:ui:projCollapsed'); return v===null ? true : v==='1'; }catch(e){ return true; } })(),
   regsState:{loading:false, error:false, loadedAt:0, prio:'all', openId:null, view:'board', q:''},
   analytics:{mode:'month', anchor:null, pastOnly:false, openEmp:null, cats:{info:true, feedback:true, control:true, solutions:true, pr:true, other:true, none:true}},
@@ -4152,8 +4152,10 @@ function renderTasks(root){
   if(checklistsBtn) checklistsBtn.onclick=()=>openChecklistsModal();
   const ideasBtn = document.getElementById('ideasBtn');
   if(ideasBtn) ideasBtn.onclick=()=>openQuickIdeasModal();
-  if(state.taskSubtab==='work') renderTaskBoard(root.querySelector('#taskBody'), false);
-  if(state.taskSubtab==='work' && b2bAccess() && state.b2b===null && !state.b2bState.loading && !state.b2bState.error) loadB2B(true);
+  if(state.taskSubtab==='work'){
+    renderTaskBoard(root.querySelector('#taskBody'), false);
+    if(b2bAccess() && state.b2b===null && !state.b2bState.loading && !state.b2bState.error) loadB2B(true);
+  }
   else if(state.taskSubtab==='analytics') renderTaskAnalytics(root.querySelector('#taskBody'));
   else if(state.taskSubtab==='report') renderTaskReport(root.querySelector('#taskBody'));
   else if(state.taskSubtab==='day') renderDayReview(root.querySelector('#taskBody'));
@@ -8132,7 +8134,7 @@ function b2bLeadCardCompact(l, today){
   }[l.stage] || `<button class="btn ghost small" data-b2-act="${l.id}:reopen">↩ В работу</button>`;
   const rs = b2bClientStats(l.clientId, l.id);
   const extra = [ (l.stage==='won' ? '💰 '+b2bMoney(l.dealSum||l.forecast) : (l.forecast?'💰 '+b2bMoney(l.forecast):'')),
-    rs.others.length?'🔁':'', (l.links||[]).length?'📎'+l.links.length:'', b2bOpenTasks(l).length?'☑'+b2bOpenTasks(l).length:'' ].filter(Boolean).join(' · ');
+    (l.unread?'<b style="color:var(--brick)">💬'+l.unread+'</b>':((l.msgs||[]).length?'💬':'')), rs.others.length?'🔁':'', (l.links||[]).length?'📎'+l.links.length:'', b2bOpenTasks(l).length?'☑'+b2bOpenTasks(l).length:'' ].filter(Boolean).join(' · ');
   return `<div class="item" style="display:block;padding:8px 9px;margin-bottom:6px;" data-b2-id="${l.id}" draggable="true">
     <div style="display:flex;justify-content:space-between;gap:4px;align-items:baseline;">
       <input type="checkbox" data-b2-sel="${l.id}" style="margin:0 2px 0 0;flex:none;">
@@ -8251,6 +8253,7 @@ function openB2bCardModal(leadId){
           <select id="b2kMgr" style="width:auto;max-width:130px;">${state.employees.filter(e=>e.role==='Менеджер'||['Руководитель','Ассистент'].includes(e.role)||e.id===l.managerId).map(e=>`<option value="${e.id}" ${e.id===(b2bPickManager(b2bNextWork(l.managerId,today,true))||l.managerId)?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}</select>
           <button class="btn small" id="b2kAddTask">＋ Задача</button>
         </div>
+        ${b2bChatHTML(l,c)}
         <strong>Заметки и история</strong>
         <div style="display:flex;gap:4px;margin:6px 0;"><input id="b2kNote" placeholder="Написать заметку (итог звонка, договорённости…)" style="flex:1;"><button class="btn small" id="b2kAddNote">Добавить</button></div>
         <div style="max-height:240px;overflow-y:auto;font-size:13px;">${feed.map(m=>`<div style="padding:4px 0;border-bottom:1px solid var(--paper-line);${m.kind==='note'?'background:var(--paper,#faf8f3);padding:6px;border-radius:6px;margin:3px 0;':''}">
@@ -8260,6 +8263,7 @@ function openB2bCardModal(leadId){
   const $ = id=>document.getElementById(id);
   const reopen = ()=>{ render(); openB2bCardModal(leadId); };
   $('b2kClose').onclick = closeModal;
+  b2bWireChat(leadId, l, c, reopen);
   $('b2kEdit').onclick = ()=>openB2bLeadModal(leadId);
   $('b2kTransfer').onclick = ()=>openB2bTransferModal(leadId);
   const kc = $('b2kClient'); if(kc) kc.onclick = ()=>openB2bClientModal(l.clientId);
@@ -8923,7 +8927,7 @@ function openB2bBulkModal(ids){
 function openB2bSettingsModal(){
   const root = document.getElementById('modalRoot');
   const items = [['Причины отказов','b2sReasons','Список, который менеджеры видят при отказе'],['Поля заявки','b2sFields','Количество гостей, дата мероприятия, бюджет и свои поля'],
-    ['🤖 Автосценарии','b2sRobots','Сами ставят задачи при переходе на этап или «зависании»'],['🔍 Дубли клиентов','b2sDups','Найти и объединить одинаковых клиентов'],['📥 Импорт из таблицы','b2sImport','Загрузить заявки из Google Таблицы или файла']];
+    ['🤖 Автосценарии','b2sRobots','Сами ставят задачи при переходе на этап или «зависании»'],['🔍 Дубли клиентов','b2sDups','Найти и объединить одинаковых клиентов'],['📥 Импорт из таблицы','b2sImport','Загрузить заявки из Google Таблицы или файла'],['💬 Мессенджеры','b2sTg','Telegram: заявки из переписки и ответы клиентам прямо из карточки']];
   root.innerHTML = `<div class="overlay"><div class="modal"><h3>⚙ Настройки B2B</h3>
     ${items.map(i=>`<button class="btn ghost" id="${i[1]}" style="display:block;width:100%;text-align:left;margin:6px 0;"><strong>${i[0]}</strong><div class="subtitle" style="font-size:12.5px;">${i[2]}</div></button>`).join('')}
     <div class="modal-actions"><button class="btn ghost" id="b2sClose">Закрыть</button></div></div></div>`;
@@ -8933,7 +8937,104 @@ function openB2bSettingsModal(){
   document.getElementById('b2sRobots').onclick = openB2bRobotsModal;
   document.getElementById('b2sDups').onclick = openB2bDupsModal;
   document.getElementById('b2sImport').onclick = openB2bImportModal;
+  document.getElementById('b2sTg').onclick = openB2bMessengersModal;
 }
+
+// ---------- Telegram: переписка с клиентом в карточке заявки ----------
+async function b2bTgStatus(force){
+  const st = state.b2bState;
+  if(st.tg && !force && Date.now()-st.tg.at < 60000) return st.tg;
+  try{
+    const r = await fetch('/api/integrations/telegram/status', {credentials:'include'});
+    const j = await r.json().catch(()=>({}));
+    st.tg = r.ok ? {...j, at:Date.now()} : {connected:false, denied:true, at:Date.now()};
+  }catch(e){ st.tg = {connected:false, offline:true, at:Date.now()}; }
+  return st.tg;
+}
+function b2bChatHTML(l, c){
+  const msgs = l.msgs||[];
+  const hasChat = !!(c.tg && c.tg.chatId);
+  const tg = state.b2bState.tg;
+  const bubble = m=>`<div style="display:flex;justify-content:${m.dir==='out'?'flex-end':'flex-start'};margin:3px 0;"><div style="max-width:82%;padding:6px 9px;border-radius:10px;font-size:13.5px;white-space:pre-wrap;word-break:break-word;background:${m.dir==='out'?'var(--teal-bg,#e3f1ee)':'var(--paper,#faf8f3)'};border:1px solid var(--paper-line);">${escapeHtml(m.text||'')}<div class="subtitle" style="font-size:11px;margin-top:2px;">${escapeHtml(m.dir==='out'?(m.by?empName(m.by):'студия'):(m.from||'клиент'))} · ${fmtDate(new Date(m.ts).toISOString().slice(0,10))} ${new Date(m.ts).toTimeString().slice(0,5)}</div></div></div>`;
+  if(!msgs.length && !hasChat && !(tg&&tg.connected)) return '';
+  return `<div style="margin-bottom:14px;"><strong>💬 Переписка (Telegram)</strong>
+    <div id="b2kChat" style="max-height:230px;overflow-y:auto;margin:6px 0;padding:4px;border:1px solid var(--paper-line);border-radius:8px;">${msgs.length?msgs.map(bubble).join(''):'<div class="subtitle" style="font-size:12.5px;padding:4px;">Сообщений пока нет</div>'}</div>
+    ${hasChat ? `<div style="display:flex;gap:4px;"><textarea id="b2kMsg" rows="2" placeholder="Ответ клиенту в Telegram…" style="flex:1;"></textarea><button class="btn small" id="b2kSendMsg">Отправить</button></div>`
+      : `<div class="subtitle" style="font-size:12.5px;">Клиент ещё не писал боту. Отправьте ему ссылку — после нажатия «Запустить» переписка привяжется к этой заявке. <button class="btn ghost small" id="b2kTgLink">Скопировать ссылку</button></div>`}</div>`;
+}
+function b2bWireChat(leadId, l, c, reopen){
+  const chat = document.getElementById('b2kChat'); if(chat) chat.scrollTop = chat.scrollHeight;
+  if(l.unread){ b2bUpdateLead(leadId, n=>({...n, unread:0})); }
+  if(!state.b2bState.tg) b2bTgStatus().then(t=>{ if(t.connected && document.getElementById('modalRoot').querySelector('#b2kClose') && !document.getElementById('b2kChat')) reopen(); });
+  const send = document.getElementById('b2kSendMsg');
+  if(send) send.onclick = async ()=>{
+    const ta = document.getElementById('b2kMsg'); const text = ta.value.trim(); if(!text){ toast('Напишите сообщение'); return; }
+    send.disabled = true;
+    try{
+      const r = await fetch('/api/integrations/telegram/send', {method:'POST', credentials:'include', headers:{'content-type':'application/json'}, body:JSON.stringify({leadId, text})});
+      const j = await r.json().catch(()=>({}));
+      if(!r.ok){ toast('⚠️ '+(j.error||'Не удалось отправить')); send.disabled=false; return; }
+    }catch(e){ toast('⚠️ Нет связи с сервером'); send.disabled=false; return; }
+    await loadB2B(true); reopen();
+  };
+  const lk = document.getElementById('b2kTgLink');
+  if(lk) lk.onclick = async ()=>{
+    const t = await b2bTgStatus(true);
+    if(!t.connected || !t.username){ toast('Сначала подключите Telegram: ⚙ Настройки → 💬 Мессенджеры'); return; }
+    const url = `https://t.me/${t.username}?start=L_${leadId}`;
+    try{ await navigator.clipboard.writeText(url); toast('Ссылка скопирована'); }catch(e){ prompt('Скопируйте ссылку:', url); }
+  };
+}
+function openB2bMessengersModal(){
+  const root = document.getElementById('modalRoot');
+  const leader = b2bLeader();
+  root.innerHTML = `<div class="overlay"><div class="modal"><h3>💬 Мессенджеры</h3><div id="tgBody" class="subtitle">Загрузка…</div></div></div>`;
+  b2bTgStatus(true).then(t=>{
+    const body = document.getElementById('tgBody'); if(!body) return;
+    body.className = '';
+    body.innerHTML = `
+      <div style="margin-bottom:10px;"><strong>Telegram</strong> — ${t.denied?'нет доступа':t.connected?`<span style="color:var(--teal,#1f7a6d);">подключён${t.username?' · @'+escapeHtml(t.username):''}</span>`:'не подключён'}
+        ${t.error?`<div style="color:var(--brick);font-size:12.5px;">⚠ ${escapeHtml(t.error)}</div>`:''}
+        ${t.connected&&t.username?`<div class="subtitle" style="font-size:12.5px;">Ссылка для клиентов: https://t.me/${escapeHtml(t.username)}</div>`:''}</div>
+      ${leader&&!t.fromEnv?`<div class="field"><label>Токен бота ${t.connected?'(оставьте пустым, чтобы не менять)':''}</label><input id="tgToken" placeholder="123456:ABC-DEF…" autocomplete="off"></div>`:''}
+      ${t.fromEnv?'<div class="subtitle" style="font-size:12.5px;">Токен задан на сервере (переменная TELEGRAM_BOT_TOKEN).</div>':''}
+      ${leader?`<div class="field"><label>Автоответ на первое сообщение</label><textarea id="tgGreet" rows="3">${escapeHtml(t.greeting||'')}</textarea></div>`:''}
+      <div class="subtitle" style="font-size:12.5px;line-height:1.4;">Как подключить: 1) в Telegram откройте @BotFather → /newbot → придумайте имя; 2) скопируйте выданный токен сюда; 3) дайте клиентам ссылку на бота. Каждое новое сообщение создаст заявку (источник «Telegram») на менеджера, который работает в этот день, а переписка появится в карточке заявки. Бот не может написать первым — клиент должен нажать «Запустить».</div>
+      <div class="modal-actions">${leader&&t.connected&&!t.fromEnv?'<button class="btn ghost" id="tgOff">Отключить</button>':''}<button class="btn ghost" id="tgClose">Закрыть</button>${leader?'<button class="btn" id="tgSave">Сохранить</button>':''}</div>`;
+    document.getElementById('tgClose').onclick = closeModal;
+    const post = async payload=>{
+      try{
+        const r = await fetch('/api/integrations/telegram/config', {method:'POST', credentials:'include', headers:{'content-type':'application/json'}, body:JSON.stringify(payload)});
+        const j = await r.json().catch(()=>({}));
+        if(!r.ok){ toast('⚠️ '+(j.error||'Не удалось сохранить')); return false; }
+        return true;
+      }catch(e){ toast('⚠️ Нет связи с сервером'); return false; }
+    };
+    const sv = document.getElementById('tgSave');
+    if(sv) sv.onclick = async ()=>{
+      const payload = {greeting:document.getElementById('tgGreet').value};
+      const tk = document.getElementById('tgToken'); if(tk && tk.value.trim()) payload.token = tk.value.trim();
+      if(await post(payload)){ state.b2bState.tg=null; toast(payload.token?'Telegram подключён':'Сохранено'); openB2bMessengersModal(); }
+    };
+    const off = document.getElementById('tgOff');
+    if(off) off.onclick = async ()=>{ if(!(await showConfirm('Отключить Telegram? Входящие сообщения перестанут приниматься, история останется.','Отключить'))) return;
+      if(await post({token:''})){ state.b2bState.tg=null; toast('Telegram отключён'); openB2bMessengersModal(); } };
+  });
+}
+// тихое обновление: новые сообщения и заявки из Telegram появляются без перезагрузки
+if(!window.__b2bPoll){ window.__b2bPoll = setInterval(async ()=>{
+  try{
+    if(state.tab!=='b2b' || !state.b2b || state.b2bState.loading || document.hidden) return;
+    const mr = document.getElementById('modalRoot'); if(mr && mr.children.length) return;
+    const r = await sGetState('b2b:data', true); if(r.status!=='ok') return;
+    let o=null; try{ o=JSON.parse(r.value); }catch(e){} if(!o) return;
+    const n = b2bNormalize(o);
+    if(JSON.stringify(n)===JSON.stringify(state.b2b)) return;
+    state.b2b = n; state.b2bState.loadedAt = Date.now();
+    await b2bReconcileTasks();
+    if(state.tab==='b2b') render();
+  }catch(e){}
+}, 30000); }
 
 function renderAnalytics(root){
   const st = state.analytics;

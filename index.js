@@ -160,7 +160,7 @@ function snapshotOfStore() {
   // Копируем весь текущий kv (кроме самих бэкапов, чтобы не вкладывать бэкапы в бэкапы)
   const snapshot = {};
   for (const k of Object.keys(store.kv)) {
-    if (!k.startsWith(AUTO_BACKUP_PREFIX) && !k.startsWith(FREQUENT_BACKUP_PREFIX)) snapshot[k] = store.kv[k];
+    if (!k.startsWith(AUTO_BACKUP_PREFIX) && !k.startsWith(FREQUENT_BACKUP_PREFIX) && !k.startsWith('integrations:')) snapshot[k] = store.kv[k];
   }
   return snapshot;
 }
@@ -803,6 +803,7 @@ function regsKeyDenied(key, role) {
 }
 app.get('/api/storage/:key', requireAuth, (req, res) => {
   const key = req.params.key;
+  if (key.startsWith('integrations:')) return res.status(403).json({ error: 'Нет доступа' });
   if (regsKeyDenied(key, req.employee.role)) return res.status(403).json({ error: 'Нет доступа' });
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
@@ -821,6 +822,7 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
   const key = req.params.key;
   let { value } = req.body || {};
   if (typeof value !== 'string') return res.status(400).json({ error: 'value должен быть строкой' });
+  if (key.startsWith('integrations:')) return res.status(403).json({ error: 'Нет доступа' });
   if (regsKeyDenied(key, req.employee.role)) return res.status(403).json({ error: 'Нет доступа' });
   if (key === 'settings:eventPurposes' && !isPrivilegedRole(req.employee.role)) return res.status(403).json({ error: 'Список назначений меняют только Руководитель и Ассистент' });
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
@@ -865,6 +867,7 @@ app.put('/api/storage/:key', requireAuth, async (req, res) => {
 
 app.delete('/api/storage/:key', requireAuth, async (req, res) => {
   const key = req.params.key;
+  if (key.startsWith('integrations:')) return res.status(403).json({ error: 'Нет доступа' });
   if (isRestrictedKey(key) && !isPrivilegedRole(req.employee.role)) {
     return res.status(403).json({ error: 'Доступно только Руководителю и Ассистенту' });
   }
@@ -946,9 +949,433 @@ app.post('/api/email-backup/send-now', requireAuth, async (req, res) => {
 });
 
 // ---------- статика (сам интерфейс) ----------
+// ================= Telegram: приём сообщений в B2B и ответы из карточки заявки =================
+// Бот работает через long polling (getUpdates) — публичный адрес и webhook не нужны. Токен хранится на сервере
+// (ключ integrations:telegram, из браузера недоступен и в снимки не попадает) либо в переменной TELEGRAM_BOT_TOKEN.
+const TG_API_BASE = process.env.TELEGRAM_API_BASE || 'https://api.telegram.org';
+const TG_KEY = 'integrations:telegram';
+const TG_DEFAULT_GREETING = 'Здравствуйте! Это студия «Свободное Пространство». Напишите, чем можем помочь — менеджер ответит в рабочее время.';
+const tg = { token: '', username: '', error: '', offset: 0, polling: false, gen: 0 };
+const B2B_ROLES = ['Руководитель', 'Ассистент', 'Менеджер'];
+const tgSleep = ms => new Promise(r => setTimeout(r, ms));
+function tgConfig() { try { return JSON.parse(store.kv[TG_KEY] || '{}'); } catch (e) { return {}; } }
+async function tgApi(method, body, timeoutMs) {
+  const r = await fetch(`${TG_API_BASE}/bot${tg.token}/${method}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}),
+    signal: AbortSignal.timeout(timeoutMs || 20000) });
+  let j; try { j = await r.json(); } catch (e) { throw new Error('Telegram ответил не в том формате (HTTP ' + r.status + ')'); }
+  if (!j.ok) throw new Error(j.description || ('Ошибка Telegram ' + r.status));
+  return j.result;
+}
+// «день» студии — по Омску (UTC+6), независимо от часового пояса сервера
+function omskISO(offsetDays) { const d = new Date(Date.now() + 6 * 3600e3 + (offsetDays || 0) * 86400e3); return d.toISOString().slice(0, 10); }
+function isoDiffDays(a, b) { return Math.round((Date.parse(a + 'T00:00:00Z') - Date.parse(b + 'T00:00:00Z')) / 86400e3); }
+function isoPlus(iso, n) { return new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400e3).toISOString().slice(0, 10); }
+function b2bReadData() {
+  let o = {}; try { o = JSON.parse(store.kv['b2b:data'] || '{}'); } catch (e) { o = {}; }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) o = {};
+  o.clients = Array.isArray(o.clients) ? o.clients : []; o.leads = Array.isArray(o.leads) ? o.leads : [];
+  o.schedule = o.schedule && typeof o.schedule === 'object' ? o.schedule : {};
+  o.pipelines = Array.isArray(o.pipelines) && o.pipelines.length ? o.pipelines : [{ id: 'main', name: 'Основная' }];
+  return o;
+}
+async function b2bWriteData(o) {
+  const old = store.kv['b2b:data'];
+  store.kv['b2b:data'] = JSON.stringify(o);
+  const ok = await persist();
+  if (!ok) { if (old === undefined) delete store.kv['b2b:data']; else store.kv['b2b:data'] = old; }
+  return ok;
+}
+// график менеджеров: если из Расписания пришёл календарь дежурств (d.schedule.__duty) — работает только он;
+// день, которого в календаре нет, считается «не задан» (null), старый график 2/2 тогда не используется
+function srvWorks(d, empId, iso) {
+  const du = d.schedule && d.schedule.__duty;
+  if (du && typeof du === 'object' && Object.keys(du).length) { if (!empId) return null; return du[iso] ? du[iso] === empId : null; }
+  const a = d.schedule[empId]; if (!a) return null; return (((isoDiffDays(iso, a) % 4) + 4) % 4) < 2; }
+function srvNextWork(d, empId, from, inclusive) {
+  const start = inclusive ? from : isoPlus(from, 1);
+  for (let i = 0; i < 8; i++) { const x = isoPlus(start, i); if (srvWorks(d, empId, x) !== false) return x; }
+  return start;
+}
+function srvPickManager(d, iso) {
+  const mgrs = getEmployees().filter(e => e.role === 'Менеджер' && srvWorks(d, e.id, iso) === true);
+  if (!mgrs.length) return '';
+  const open = l => ['new', 'meet', 'kp', 'sent'].includes(l.stage);
+  const load = id => d.leads.filter(l => open(l) && l.managerId === id).length;
+  return mgrs.sort((a, b) => load(a.id) - load(b.id))[0].id;
+}
+const tgChain = { p: Promise.resolve() };
+function tgSerial(fn) { const run = tgChain.p.then(fn); tgChain.p = run.catch(() => {}); return run; }
+const OPEN_STAGES = ['new', 'meet', 'kp', 'sent'];
+function tgPushMsg(lead, msg) {
+  lead.msgs = (lead.msgs || []).concat([msg]).slice(-300);
+  lead.lastMsgAt = msg.ts;
+  if (msg.dir === 'in') lead.unread = (lead.unread || 0) + 1;
+  lead.log = (lead.log || []).concat([{ date: omskISO(), ts: msg.ts, stage: null, note: (msg.dir === 'in' ? '💬 Сообщение от клиента (Telegram)' : '📤 Ответ клиенту (Telegram)'), by: msg.by || null }]).slice(-400);
+}
+// Входящее сообщение → заявка. Возвращает {lead, firstContact}
+async function tgHandleIncoming(chat, from, text, startPayload) {
+  return tgSerial(async () => {
+    const d = b2bReadData();
+    const today = omskISO();
+    const name = [from && from.first_name, from && from.last_name].filter(Boolean).join(' ').trim() || (from && from.username ? '@' + from.username : 'Клиент из Telegram');
+    let lead = null, client = null, first = false;
+    // привязка по ссылке из карточки заявки: t.me/бот?start=L_<id заявки>
+    const m = /^L_(.+)$/.exec(startPayload || '');
+    if (m) { lead = d.leads.find(l => l.id === m[1]) || null; if (lead) client = d.clients.find(c => c.id === lead.clientId) || null; }
+    if (!client) client = d.clients.find(c => c.tg && String(c.tg.chatId) === String(chat.id)) || null;
+    if (client && !lead) {
+      const mine = d.leads.filter(l => l.clientId === client.id);
+      lead = mine.filter(l => OPEN_STAGES.includes(l.stage)).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0] || null;
+    }
+    if (client) { client.tg = { chatId: chat.id, username: (from && from.username) || '' }; }
+    if (!client) {
+      client = { id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, person: name, phone: '', instagram: '', note: 'Пришёл из Telegram', createdAt: today, tg: { chatId: chat.id, username: (from && from.username) || '' } };
+      d.clients.push(client);
+    }
+    if (!lead) {
+      const mgr = srvPickManager(d, today);
+      lead = { id: 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), clientId: client.id, stage: 'new', direction: 'in', source: 'Telegram', createdAt: today,
+        managerId: mgr, deadline: srvNextWork(d, mgr, today, false), forecast: 0, comment: '', tasks: [], tags: [], links: [], custom: {}, pipelineId: d.pipelines[0].id,
+        log: [{ date: today, ts: Date.now(), stage: 'new', note: 'Заявка из Telegram' + (mgr ? ' · ответственный по графику' : ''), by: null }], msgs: [] };
+      d.leads.push(lead); first = true;
+    }
+    if (text) tgPushMsg(lead, { id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), dir: 'in', text: String(text).slice(0, 4000), ts: Date.now(), from: name });
+    const ok = await b2bWriteData(d);
+    return { ok, lead, first };
+  });
+}
+async function tgHandleUpdate(u) {
+  const msg = u.message; if (!msg || !msg.chat || msg.chat.type !== 'private' || (msg.from && msg.from.is_bot)) return;
+  let text = msg.text || msg.caption || '';
+  let payload = '';
+  const sm = /^\/start(?:\s+(\S+))?/.exec(text);
+  if (sm) { payload = sm[1] || ''; text = ''; }
+  else if (!text) text = msg.photo ? '[фото]' : msg.document ? '[файл: ' + (msg.document.file_name || 'документ') + ']' : msg.voice ? '[голосовое сообщение]' : msg.video ? '[видео]' : msg.sticker ? '[стикер]' : msg.contact ? '[контакт: ' + (msg.contact.phone_number || '') + ']' : '[вложение]';
+  const r = await tgHandleIncoming(msg.chat, msg.from, text, payload);
+  if (r && r.ok && (r.first || sm)) {
+    const greeting = tgConfig().greeting || TG_DEFAULT_GREETING;
+    try { await tgApi('sendMessage', { chat_id: msg.chat.id, text: greeting }); } catch (e) { /* приветствие не критично */ }
+  }
+}
+async function tgPollLoop(gen) {
+  tg.polling = true;
+  try { await tgApi('deleteWebhook', { drop_pending_updates: false }); } catch (e) { tg.error = e.message; }
+  while (tg.token && tg.gen === gen) {
+    try {
+      const ups = await tgApi('getUpdates', { offset: tg.offset, timeout: 25, allowed_updates: ['message'] }, 40000);
+      tg.error = '';
+      for (const u of ups) { tg.offset = u.update_id + 1; try { await tgHandleUpdate(u); } catch (e) { console.error('tg update', e && e.message); } }
+    } catch (e) { tg.error = e.message; await tgSleep(8000); }
+  }
+  if (tg.gen === gen) tg.polling = false;
+}
+async function tgStart() {
+  const token = (process.env.TELEGRAM_BOT_TOKEN || tgConfig().token || '').trim();
+  tg.gen++; tg.token = token; tg.username = ''; tg.error = '';
+  if (!token) return;
+  try { const me = await tgApi('getMe'); tg.username = me.username || ''; }
+  catch (e) { tg.error = e.message; if (/Unauthorized|not found/i.test(e.message)) { tg.token = ''; return; } }
+  tgPollLoop(tg.gen);
+}
+app.get('/api/integrations/telegram/status', requireAuth, (req, res) => {
+  if (!B2B_ROLES.includes(req.employee.role)) return res.status(403).json({ error: 'Нет доступа' });
+  const cfg = tgConfig();
+  res.json({ connected: !!tg.token, username: tg.username, error: tg.error, greeting: cfg.greeting || TG_DEFAULT_GREETING, fromEnv: !!process.env.TELEGRAM_BOT_TOKEN });
+});
+app.post('/api/integrations/telegram/config', requireAuth, async (req, res) => {
+  if (!isPrivilegedRole(req.employee.role)) return res.status(403).json({ error: 'Подключать мессенджеры могут только Руководитель и Ассистент' });
+  const body = req.body || {};
+  const cfg = tgConfig();
+  if (typeof body.greeting === 'string') cfg.greeting = body.greeting.trim().slice(0, 1000);
+  if (typeof body.token === 'string') {
+    const t = body.token.trim();
+    if (t) {
+      // проверяем токен, прежде чем сохранять
+      const prev = tg.token; tg.token = t;
+      try { await tgApi('getMe'); } catch (e) { tg.token = prev; return res.status(400).json({ error: 'Telegram не принял токен: ' + e.message }); }
+      cfg.token = t;
+    } else delete cfg.token;
+  }
+  const old = store.kv[TG_KEY];
+  store.kv[TG_KEY] = JSON.stringify(cfg);
+  if (!(await persist())) { if (old === undefined) delete store.kv[TG_KEY]; else store.kv[TG_KEY] = old; return res.status(500).json({ error: 'Не удалось сохранить настройки' }); }
+  if (typeof body.token === 'string') await tgStart();
+  res.json({ ok: true, connected: !!tg.token, username: tg.username });
+});
+app.post('/api/integrations/telegram/send', requireAuth, async (req, res) => {
+  if (!B2B_ROLES.includes(req.employee.role)) return res.status(403).json({ error: 'Нет доступа' });
+  const { leadId, text } = req.body || {};
+  const msgText = String(text || '').trim();
+  if (!leadId || !msgText) return res.status(400).json({ error: 'Нужны заявка и текст' });
+  if (!tg.token) return res.status(400).json({ error: 'Telegram не подключён' });
+  const d0 = b2bReadData();
+  const lead0 = d0.leads.find(l => l.id === leadId);
+  const cl0 = lead0 && d0.clients.find(c => c.id === lead0.clientId);
+  if (!cl0 || !cl0.tg || !cl0.tg.chatId) return res.status(400).json({ error: 'Клиент ещё не написал боту — отправьте ему ссылку из карточки' });
+  try { await tgApi('sendMessage', { chat_id: cl0.tg.chatId, text: msgText.slice(0, 4000) }); }
+  catch (e) { return res.status(502).json({ error: /blocked|deactivated/i.test(e.message) ? 'Клиент заблокировал бота' : 'Telegram: ' + e.message }); }
+  const r = await tgSerial(async () => {
+    const d = b2bReadData(); const lead = d.leads.find(l => l.id === leadId);
+    if (!lead) return false;
+    tgPushMsg(lead, { id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), dir: 'out', text: msgText.slice(0, 4000), ts: Date.now(), by: req.employee.id, from: req.employee.name });
+    lead.unread = 0;
+    return await b2bWriteData(d);
+  });
+  if (!r) return res.status(500).json({ error: 'Сообщение отправлено, но не записалось в историю' });
+  res.json({ ok: true });
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ---------- приём заявок и задач из «Расписания студии» (одностороннее обновление) ----------
+// Расписание шлёт сюда заявки (клиент + этап + задачи), а журнал сам создаёт/обновляет их в B2B.
+// Задачи менеджерам в разделе «Задачи» появляются штатным механизмом B2B (b2bReconcileTasks).
+// Безопасность: отдельный секрет SCHEDULE_SYNC_TOKEN (переменная окружения), без cookie-входа;
+// ничего не удаляется; заявки журнала, заведённые не из Расписания, не трогаются; перед записью —
+// снимок данных (runFrequentBackup); запись в хранилище откатывается при ошибке (b2bWriteData).
+const SYNC_TOKEN = (process.env.SCHEDULE_SYNC_TOKEN || '').trim();
+const syncFails = new Map(); // ip → {n, until}
+const SYNC_STAGE = { new: 'new', brief: 'kp', kp: 'sent', thinking: 'sent', sold: 'won', lost: 'lost' };
+const SYNC_LOST_ID = [[/дорого/i, 'price'], [/друг(ую|ой) студи/i, 'competitor'], [/не отвеч|пропал/i, 'noanswer'], [/передума|отлож/i, 'later'], [/формат|программ/i, 'notfit']];
+function syncStr(v, n) { return String(v == null ? '' : v).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, n); }
+function syncDate(v) { return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : ''; }
+function syncSameToken(a) {
+  const crypto = require('crypto');
+  const x = crypto.createHash('sha256').update(String(a || '')).digest();
+  const y = crypto.createHash('sha256').update(SYNC_TOKEN).digest();
+  return crypto.timingSafeEqual(x, y);
+}
+function syncCors(req, res) {
+  res.set('Access-Control-Allow-Origin', '*'); // защита — токен в заголовке, cookie не используются
+  res.set('Access-Control-Allow-Headers', 'content-type, x-sync-token');
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Max-Age', '600');
+}
+function syncFindManagerId(name) {
+  const n = syncStr(name, 80).toLowerCase(); if (!n) return '';
+  const e = getEmployees().find(x => x && x.name && String(x.name).trim().toLowerCase() === n && ['Менеджер', 'Руководитель', 'Ассистент'].includes(x.role));
+  return e ? e.id : '';
+}
+function syncApplyLead(d, p, today, map) {
+  const stage = SYNC_STAGE[p.stage]; if (!stage) return null;
+  const log = (lead, st, note) => { lead.log = (lead.log || []).concat([{ date: today, ts: Date.now(), stage: st, note, by: null }]); };
+  let lead = d.leads.find(l => l.ext && l.ext.src === 'schedule' && l.ext.id === p.id);
+  let created = false, changed = false;
+  const mgrId = syncFindManagerId(p.manager);
+  const open = st => OPEN_STAGES.includes(st);
+  const tasksIn = (Array.isArray(p.tasks) ? p.tasks : []).slice(0, 60).map(t => ({
+    id: syncStr(t && t.id, 60), text: syncStr(t && t.title, 300), deadline: syncDate(t && t.due), done: !!(t && t.done), managerId: syncFindManagerId(t && t.assignee) || mgrId,
+  })).filter(t => t.id && t.text);
+  if (!lead && map.leads[p.id]) return null; // заявку уже заводили, но в журнале её удалили — не воскрешаем
+  if (!lead) {
+    const contact = syncStr(p.contact, 120);
+    const pk = String(contact).replace(/\D/g, '').slice(-10);
+    let client = pk.length === 10 ? d.clients.find(c => String(c.phone || '').replace(/\D/g, '').slice(-10) === pk) : null;
+    if (!client) {
+      const nm = syncStr(p.client, 120) || contact || 'Клиент из Расписания';
+      client = d.clients.find(c => (c.name || '').trim().toLowerCase() === nm.toLowerCase()) || null;
+      if (!client) {
+        client = { id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: nm, person: '', phone: pk.length === 10 ? contact : '', instagram: pk.length === 10 ? '' : (contact.startsWith('@') ? contact : ''), note: 'Из Расписания студии' + (pk.length === 10 || !contact ? '' : ' · ' + contact), createdAt: today };
+        d.clients.push(client);
+      }
+    }
+    const mgr = mgrId || srvPickManager(d, today);
+    const openTasks = tasksIn.filter(t => !t.done && t.deadline).map(t => t.deadline).sort();
+    lead = { id: 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), clientId: client.id, stage, direction: 'in', source: syncStr(p.source, 60) || 'Расписание', createdAt: syncDate(p.createdAt) || today,
+      managerId: mgr, deadline: open(stage) ? (openTasks[0] || srvNextWork(d, mgr, today, true)) : '', forecast: Math.max(0, Number(p.revenue) || 0), comment: syncStr(p.comment, 1000),
+      product: syncStr(p.product, 80), tasks: [], tags: ['Расписание'], links: [], custom: {}, pipelineId: d.pipelines[0].id, log: [], msgs: [], ext: { src: 'schedule', id: p.id, stage: p.stage, revenue: Math.max(0, Number(p.revenue) || 0) } };
+    log(lead, stage, 'Заявка из Расписания студии' + (p.product ? ' · ' + syncStr(p.product, 80) : '') + (mgr ? ' · ответственный по графику' : ''));
+    if (!open(stage)) { lead.doneAt = syncDate(p.saleDate) || today; if (stage === 'won') lead.dealSum = lead.forecast;
+      if (stage === 'lost') { const why = syncStr(p.lostReason, 200); const m = SYNC_LOST_ID.find(r => r[0].test(why)); lead.lostReasonId = m ? m[1] : 'other'; lead.lostReason = m ? '' : why; } }
+    d.leads.push(lead); map.leads[p.id] = lead.id; created = true; changed = true;
+  } else {
+    const ext = lead.ext || (lead.ext = { src: 'schedule', id: p.id });
+    // этапы внутри B2B ведутся в журнале; из Расписания принимаем только итог — «Сделка» или «Отказ»,
+    // и не переоткрываем заявку, которую в журнале уже закрыли
+    if (ext.stage !== p.stage && (!open(stage) || (!open(lead.stage) && (ext.stage === 'sold' || ext.stage === 'lost')))) {
+      const was = lead.stage;
+      lead.stage = stage; ext.stage = p.stage;
+      if (!open(stage)) {
+        lead.prevStage = was; lead.doneAt = syncDate(p.saleDate) || today; lead.deadline = '';
+        if (stage === 'won') lead.dealSum = Math.max(0, Number(p.revenue) || 0);
+        if (stage === 'lost') { const why = syncStr(p.lostReason, 200); const m = SYNC_LOST_ID.find(r => r[0].test(why)); lead.lostReasonId = m ? m[1] : 'other'; lead.lostReason = m ? '' : why; }
+      } else {
+        lead.doneAt = null; lead.lostReason = ''; lead.lostReasonId = '';
+        const ds = tasksIn.filter(t => !t.done && t.deadline).map(t => t.deadline).sort();
+        lead.deadline = ds[0] || srvNextWork(d, lead.managerId, today, true);
+      }
+      log(lead, stage, 'Этап изменён в Расписании студии: ' + B2B_STAGE_LABELS_SRV[stage]);
+      changed = true;
+    } else if (ext.stage !== p.stage) { ext.stage = p.stage; changed = true; }
+    if (Math.max(0, Number(p.revenue) || 0) !== (ext.revenue || 0)) {
+      ext.revenue = Math.max(0, Number(p.revenue) || 0);
+      if (lead.stage === 'won') lead.dealSum = ext.revenue; else lead.forecast = ext.revenue;
+      changed = true;
+    }
+  }
+  // задачи: создаём новые, обновляем только невыполненные (ничего не удаляем, правки журнала по выполненным не трогаем)
+  lead.tasks = Array.isArray(lead.tasks) ? lead.tasks : [];
+  tasksIn.forEach(t => {
+    const id = 'sch' + t.id;
+    const hash = [t.text, t.deadline, t.managerId, t.done ? 1 : 0].join('|');
+    const cur = lead.tasks.find(x => x.id === id);
+    if (!cur) {
+      if (!open(lead.stage) && !t.done) return; // у закрытой заявки новых открытых задач не заводим
+      lead.tasks.push({ id, type: 'other', text: t.text, deadline: t.deadline, time: '', managerId: t.managerId || lead.managerId || '', done: t.done, extHash: hash });
+      changed = true;
+    } else if (cur.extHash !== hash) {
+      if (!cur.done) { cur.text = t.text; cur.deadline = t.deadline; if (t.managerId) cur.managerId = t.managerId; if (t.done) cur.done = true; }
+      cur.extHash = hash; changed = true;
+    }
+  });
+  if (!open(lead.stage)) lead.tasks.forEach(t => { if (String(t.id).startsWith('sch') && !t.done) { t.done = true; changed = true; } });
+  return { lead, created, changed };
+}
+
+// ---------- B2C: задачи по частным заявкам попадают менеджерам в обычные «Задачи» журнала ----------
+// Сама B2C-заявка остаётся в Расписании; в журнале — только задача «кому и что сделать/написать».
+// Соответствие «задача расписания → задача журнала» хранится на сервере (ключ integrations:…, клиенту недоступен),
+// поэтому правки задачи в интерфейсе журнала ничего не ломают и дублей не создают.
+const SYNC_MAP_KEY = 'integrations:schedule-map';
+function syncReadMap() {
+  let m = {}; try { m = JSON.parse(store.kv[SYNC_MAP_KEY] || '{}'); } catch (e) { m = {}; }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) m = {};
+  m.tasks = m.tasks && typeof m.tasks === 'object' ? m.tasks : {};
+  m.leads = m.leads && typeof m.leads === 'object' ? m.leads : {};
+  return m;
+}
+const SYNC_DONE_ST = ['done', 'review', 'approval'];
+function syncApplyTasks(tasksArr, payloadTasks, map, d, today, unmatched, touched) {
+  let changed = false;
+  const leader = getEmployees().find(e => e && e.role === 'Руководитель');
+  const proj = (parseJsonArray(store.kv['tasks:projects']) || []).find(p => p && !p.archived && /b2c|расписан/i.test(p.name || ''));
+  for (const pt of (payloadTasks || []).slice(0, 400)) {
+    if (!pt || typeof pt !== 'object') continue;
+    const id = syncStr(pt.id, 60), title = syncStr(pt.title, 300); if (!id || !title) continue;
+    const due = syncDate(pt.due);
+    const empId = syncFindManagerId(pt.assignee);
+    if (!empId && pt.assignee) unmatched.add(syncStr(pt.assignee, 60));
+    const assignee = empId || srvPickManager(d, today) || (leader ? leader.id : null);
+    const who = syncStr(pt.client, 120) || syncStr(pt.contact, 120) || 'клиент';
+    const fullTitle = `Расписание: ${who} — ${title}`.slice(0, 300);
+    const desc = `Задача по заявке из Расписания студии (B2C).\nКлиент: ${syncStr(pt.contact, 120) || '—'}${pt.product ? '\nПродукт: ' + syncStr(pt.product, 80) : ''}${pt.stage ? '\nЭтап: ' + syncStr(pt.stage, 60) : ''}${Number(pt.amount) > 0 ? '\nСумма: ' + Math.round(Number(pt.amount)) + ' ₽' : ''}${pt.comment ? '\nКомментарий: ' + syncStr(pt.comment, 500) : ''}`;
+    const hash = [fullTitle, due, assignee, pt.done ? 1 : 0].join('|');
+    const rec = map.tasks[id];
+    if (!rec) {
+      if (pt.done) continue;
+      const jid = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      tasksArr.push({ id: jid, title: fullTitle, description: desc, projectId: proj ? proj.id : null, parentId: null, assigneeId: assignee, creatorId: leader ? leader.id : assignee,
+        createdDate: today, deadline: due || today, deadlineTime: '', priority: 'med', status: 'progress', completedAt: null, eventId: null, purchaseAmount: null, purchaseStore: '',
+        purchaseExpenseId: null, comments: [], sortOrder: 0, simple: false });
+      map.tasks[id] = { jid, hash }; touched.add(id); changed = true;
+    } else if (!tasksArr.some(t => t && t.id === rec.jid)) {
+      // задачи нет в журнале: если мы её ещё ни разу не видели там — её затёрла одновременная запись, создаём заново;
+      // если видели — значит, её удалили вручную, не воскрешаем
+      if (!rec.seen && !pt.done) {
+        tasksArr.push({ id: rec.jid, title: fullTitle, description: desc, projectId: proj ? proj.id : null, parentId: null, assigneeId: assignee, creatorId: leader ? leader.id : assignee,
+          createdDate: today, deadline: due || today, deadlineTime: '', priority: 'med', status: 'progress', completedAt: null, eventId: null, purchaseAmount: null, purchaseStore: '',
+          purchaseExpenseId: null, comments: [], sortOrder: 0, simple: false });
+        rec.hash = hash; touched.add(id); changed = true;
+      }
+    } else if (rec.hash !== hash) {
+      const jt = tasksArr.find(t => t && t.id === rec.jid);
+      if (jt && !SYNC_DONE_ST.includes(jt.status)) {
+        if (pt.done) { jt.status = 'done'; jt.completedAt = today; }
+        else { jt.title = fullTitle; jt.description = desc; if (due) jt.deadline = due; if (assignee) jt.assigneeId = assignee; }
+      }
+      rec.hash = hash; touched.add(id); changed = true;
+    }
+  }
+  return changed;
+}
+const B2B_STAGE_LABELS_SRV = { new: 'Новая заявка', meet: 'Встреча / звонок', kp: 'Готовим КП', sent: 'КП отправлено', won: 'Сделка', lost: 'Отказ' };
+app.options('/api/integrations/schedule/sync', (req, res) => { syncCors(req, res); res.sendStatus(204); });
+app.post('/api/integrations/schedule/sync', async (req, res) => {
+  syncCors(req, res);
+  if (!SYNC_TOKEN) return res.status(503).json({ error: 'Связка не настроена: задайте SCHEDULE_SYNC_TOKEN в переменных окружения' });
+  const ip = String(req.ip || '');
+  const f = syncFails.get(ip);
+  if (!syncSameToken(req.get('x-sync-token'))) {
+    // неверный ключ: после 10 попыток подряд отвечаем 429 (верный ключ при этом всегда проходит — нельзя заблокировать связку чужими попытками)
+    for (const [k, v] of syncFails) if (v.until < Date.now()) syncFails.delete(k);
+    if (f && f.until > Date.now() && f.n >= 10) return res.status(429).json({ error: 'Слишком много неверных попыток, подождите 10 минут' });
+    const n = (f && f.until > Date.now() ? f.n : 0) + 1; syncFails.set(ip, { n, until: Date.now() + 10 * 60e3 });
+    return res.status(401).json({ error: 'Неверный ключ' });
+  }
+  syncFails.delete(ip);
+  const body = req.body || {};
+  if (body.ping) return res.json({ ok: true, pong: true });
+  if (body.format !== 'sp-sync' || body.version !== 1 || !Array.isArray(body.leads)) return res.status(400).json({ error: 'Неверный формат данных' });
+  if (body.leads.length > 300) return res.status(400).json({ error: 'Слишком много заявок за раз' });
+  try {
+    const out = await tgSerial(async () => {
+      const d = b2bReadData();
+      const before = JSON.stringify(d);
+      const tasksArr = parseJsonArray(store.kv['tasks:work']) || [];
+      const tasksBefore = JSON.stringify(tasksArr);
+      const map = syncReadMap(); const mapBefore = JSON.stringify(map);
+      const today = omskISO();
+      // график менеджеров ведётся только в календаре Расписания: кладём его в d.schedule.__duty (дата → id сотрудника);
+      // дальше им пользуются и сервер (назначение заявок), и интерфейс журнала (b2bWorks)
+      if (body.duty && typeof body.duty === 'object' && !Array.isArray(body.duty)) {
+        const duty = {}; let n = 0;
+        for (const iso of Object.keys(body.duty)) {
+          if (!syncDate(iso) || n >= 200) continue;
+          const id = syncFindManagerId(body.duty[iso]); if (id) { duty[iso] = id; n++; }
+        }
+        if (n) { d.schedule = d.schedule && typeof d.schedule === 'object' ? d.schedule : {}; d.schedule.__duty = duty; }
+      }
+      const unmatched = new Set();
+      const mapOut = []; let created = 0, updated = 0;
+      for (const p of body.leads) {
+        if (!p || typeof p !== 'object') continue;
+        p.id = syncStr(p.id, 60); if (!p.id) continue;
+        const r = syncApplyLead(d, p, today, map);
+        if (!r) continue;
+        mapOut.push({ id: p.id, journalId: r.lead.id });
+        if (r.created) created++; else if (r.changed) updated++;
+        (r.lead.tasks || []).forEach(() => {});
+      }
+      const touched = new Set();
+      syncApplyTasks(tasksArr, Array.isArray(body.tasks) ? body.tasks : [], map, d, today, unmatched, touched);
+      // ответ: актуальные этапы B2B-заявок и состояние задач в журнале (для показа в Расписании)
+      const track = body.track && typeof body.track === 'object' ? body.track : {};
+      const stages = {}; (Array.isArray(track.leads) ? track.leads : []).slice(0, 500).forEach(id => {
+        const l = d.leads.find(x => x.ext && x.ext.src === 'schedule' && x.ext.id === id);
+        if (l) stages[id] = { stage: l.stage, label: B2B_STAGE_LABELS_SRV[l.stage] || l.stage, manager: (getEmployees().find(e => e.id === l.managerId) || {}).name || '' };
+      });
+      const taskStates = {}; (Array.isArray(track.tasks) ? track.tasks : []).slice(0, 800).forEach(id => {
+        const rec = map.tasks[id]; if (!rec) return;
+        const jt = tasksArr.find(t => t && t.id === rec.jid);
+        if (jt && !rec.seen && !touched.has(id)) { rec.seen = true; }
+        taskStates[id] = !jt ? (rec.seen ? 'deleted' : 'lost') : (SYNC_DONE_ST.includes(jt.status) ? 'done' : 'open');
+      });
+      const result = { ok: true, created, updated, leads: mapOut, stages, taskStates, unmatched: Array.from(unmatched) };
+      const bChanged = JSON.stringify(d) !== before, tChanged = JSON.stringify(tasksArr) !== tasksBefore, mChanged = JSON.stringify(map) !== mapBefore;
+      if (!bChanged && !tChanged && !mChanged) return result;
+      runFrequentBackup().catch(e => console.error('sync pre-backup failed', e && e.message));
+      const old = { b: store.kv['b2b:data'], t: store.kv['tasks:work'], m: store.kv[SYNC_MAP_KEY] };
+      if (bChanged) store.kv['b2b:data'] = JSON.stringify(d);
+      if (tChanged) store.kv['tasks:work'] = JSON.stringify(tasksArr);
+      if (mChanged) store.kv[SYNC_MAP_KEY] = JSON.stringify(map);
+      const ok = await persist();
+      if (!ok) {
+        [['b2b:data', old.b], ['tasks:work', old.t], [SYNC_MAP_KEY, old.m]].forEach(([k, v]) => { if (v === undefined) delete store.kv[k]; else store.kv[k] = v; });
+        return { ok: false };
+      }
+      return result;
+    });
+    if (!out.ok) return res.status(500).json({ error: 'Не удалось сохранить данные в хранилище. Попробуйте ещё раз.' });
+    console.log(`[Расписание→журнал] заявок создано ${out.created}, обновлено ${out.updated}`);
+    res.json(out);
+  } catch (e) {
+    console.error('schedule sync', e && e.message);
+    res.status(500).json({ error: 'Ошибка обработки' });
+  }
 });
 
 // ---------- запуск ----------
@@ -1054,6 +1481,7 @@ async function mergeAdminShiftProfiles() {
 
   serverReady = true;
   console.log('Данные загружены, сервер готов к работе.');
+  tgStart().catch(e => console.error('Telegram:', e && e.message));
 
   // Переход со старого формата: переносим снимки из store.json в отдельный файл (в фоне, сервер уже
   // принимает запросы). Пока перенос не удался, основной файл продолжает писаться целиком — ничего
